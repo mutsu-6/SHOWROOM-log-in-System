@@ -28,11 +28,15 @@ async def launch_browser(pw, cfg: Config) -> Browser:
         proxy={"server": cfg.proxy} if cfg.proxy else None,
         args=["--autoplay-policy=no-user-gesture-required"] + (["--mute-audio"] if cfg.mute else []),
     )
+    if cfg.proxy:
+        log.info("プロキシを使用します: %s", cfg.proxy)
     if cfg.browser_executable:
         return await pw.chromium.launch(executable_path=cfg.browser_executable, **options)
     if cfg.browser_channel:
         try:
-            return await pw.chromium.launch(channel=cfg.browser_channel, **options)
+            browser = await pw.chromium.launch(channel=cfg.browser_channel, **options)
+            log.info("ブラウザを起動しました: %s %s", cfg.browser_channel, browser.version)
+            return browser
         except Exception as e:  # noqa: BLE001
             log.warning(
                 "ブラウザ %r を起動できませんでした (%s)。付属の Chromium を使いますが、"
@@ -165,10 +169,33 @@ async def interactive_login(cfg: Config) -> None:
         browser = await launch_browser(pw, cfg)
         ctx = await new_context(browser, cfg)
         page = await ctx.new_page()
-        await page.goto(BASE_URL, wait_until="domcontentloaded")
         print("開いたブラウザで SHOWROOM にログインしてください。")
         print("ログインが完了したら、このターミナルで Enter キーを押してください。")
+        try:
+            # 読み込みが遅くてもログイン操作はできるので、タイムアウトしても中断しない
+            await page.goto(BASE_URL, wait_until="commit", timeout=60000)
+        except Exception as e:  # noqa: BLE001
+            print(f"(ページの読み込みに時間がかかっています: {str(e).splitlines()[0]})")
+            print("ブラウザに SHOWROOM が表示されない場合は、アドレス欄に www.showroom-live.com を入力してください。")
         await asyncio.get_running_loop().run_in_executor(None, input)
         await save_state(ctx, cfg)
         print(f"セッションを保存しました: {cfg.state_file}")
+        state = await ShowroomAPI(ctx.request).is_logged_in(await _any_room_id(ctx))
+        if state is True:
+            print("ログイン状態を確認できました。")
+        elif state is False:
+            print("まだログインしていないようです。もう一度 login を実行してください。")
         await browser.close()
+
+
+async def _any_room_id(ctx: BrowserContext) -> int | None:
+    """ログイン状態の確認に使うため、配信中のルームを 1 つ探す。"""
+    try:
+        resp = await ctx.request.get(f"{BASE_URL}/api/live/onlives", timeout=15000)
+        for genre in (await resp.json()).get("onlives", []):
+            for live in genre.get("lives", []):
+                if live.get("room_id"):
+                    return int(live["room_id"])
+    except Exception:  # noqa: BLE001
+        pass
+    return None
