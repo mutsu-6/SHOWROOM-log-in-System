@@ -85,11 +85,17 @@ def format_status(info: dict, now: float | None = None) -> str:
         return f"⚪ {info['name']}: 配信していません"
     line = f"🔴 {info['name']}"
     stat = info.get("live_stat") or {}
-    if stat.get("viewer_count") is not None and now - stat.get("viewer_count_at", 0) <= STATS_FRESH:
+    if stat.get("broadcast_style") == "classic":
+        line += "\n   リアルタイム視聴者数: 非公開 (クラシック形式)"
+    elif stat.get("viewer_count") is not None and now - stat.get("viewer_count_at", 0) <= STATS_FRESH:
         at = datetime.fromtimestamp(stat["viewer_count_at"], JST)
         line += f"\n   リアルタイム視聴者数: {stat['viewer_count']:,} 人 ({at:%H:%M:%S} 時点)"
     elif stat.get("viewer_count_error"):
         line += f"\n   リアルタイム視聴者数: 取得できません ({stat['viewer_count_error']})"
+    if stat.get("active_users") is not None and now - stat.get("active_at", 0) <= STATS_FRESH:
+        observed = stat.get("active_observed", 600)
+        note = f"、観測 {int(observed // 60)} 分" if observed < 600 else ""
+        line += f"\n   推定アクティブ人数: {stat['active_users']} 人以上 (直近10分の入室・コメント・ギフト{note})"
     if info["excitement"] is not None:
         line += f"\n   盛り上がり度: {info['excitement']:,}"
     if info["commenters"] is not None:

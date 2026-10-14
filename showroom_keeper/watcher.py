@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from .api import RoomStatus
+from .activity import ActivityTracker
 from .config import Config
 from .status import write_live_stat
 
@@ -43,7 +44,11 @@ async ([roomId, text, since]) => {
 
 # SHOWROOM のサロン形式で使われている在室確認 API。応答の viewer_count がリアルタイム視聴者数 (要ログイン)
 VIEWER_COUNT_JS = """
-async (liveId) => {
+async ([liveId, roomId]) => {
+  // 在室確認はサロン形式 (broadcast_style=2) の配信でのみ公式に使われている。
+  // クラシック形式では誰も送らないため人数が意味を持たない (自分だけの 1 人になる)。送らずに返す
+  const profile = await (await fetch('/api/room/profile?room_id=' + roomId, { credentials: 'include' })).json();
+  if (Number(profile.broadcast_style) !== 2) return { style: 'classic' };
   const t = await (await fetch('/api/csrf_token', { credentials: 'include' })).json();
   const r = await fetch('/api/viewer_presence/heartbeat', {
     method: 'POST', credentials: 'include',
@@ -102,6 +107,8 @@ class RoomWatcher:
         self.reload_count = 0
         self.blocked = False
         self.viewer_count: int | None = None
+        self.activity = ActivityTracker()
+        self._activity_live_id: int | None = None
         self._viewer_count_at: float | None = None
         self._viewer_count_error: str | None = None
         self._failures = 0
@@ -191,6 +198,11 @@ class RoomWatcher:
         self.log.info("視聴ページを開きます: %s", self.status.url)
         page = await self._new_page()
         self.page = page
+        if hasattr(page, "on"):
+            page.on("websocket", self._on_websocket)
+        if self.status.live_id != self._activity_live_id:  # 新しい配信なら数え直す
+            self._activity_live_id = self.status.live_id
+            self.activity.reset(time.time())
         await page.goto(self.status.url, wait_until="commit", timeout=60000)
         self.opened_at = self.last_reload_at = self._clock()
         self._reset_health()
@@ -207,6 +219,15 @@ class RoomWatcher:
         self.last_video_time = None
         self.stall_count = 0
 
+    def _on_websocket(self, ws: Any) -> None:
+        # ページが受信するコメント・ギフト・入室のお知らせから推定アクティブ人数を数える (受信を読むだけ)
+        ws.on("framereceived", lambda payload: self.activity.feed(payload, time.time()))
+
+    def _save_activity(self) -> None:
+        now = time.time()
+        write_live_stat(self._state_dir, self.key, active_users=self.activity.count(now), active_at=now,
+                        active_observed=self.activity.observed_seconds(now))
+
     async def _update_viewer_count(self) -> None:
         """リアルタイム視聴者数を取得し、status コマンド用に保存する。"""
         if not self.cfg.viewer_count or not self._page_alive() or not (self.status and self.status.live_id):
@@ -216,7 +237,13 @@ class RoomWatcher:
             return
         self._viewer_count_at = now
         assert self.page is not None
-        res = await self.page.evaluate(VIEWER_COUNT_JS, self.status.live_id)
+        res = await self.page.evaluate(VIEWER_COUNT_JS, [self.status.live_id, self.status.room_id])
+        if isinstance(res, dict) and res.get("style") == "classic":
+            if self._viewer_count_error != "classic":
+                self.log.info("クラシック形式の配信のため、リアルタイム視聴者数は公開されていません (推定アクティブ人数を表示します)")
+            self.viewer_count, self._viewer_count_error = None, "classic"
+            write_live_stat(self._state_dir, self.key, viewer_count=None, viewer_count_error=None, broadcast_style="classic")
+            return
         data = res.get("data") if isinstance(res, dict) else None
         count = data.get("viewer_count") if isinstance(data, dict) else None
         if isinstance(count, int):
@@ -224,7 +251,7 @@ class RoomWatcher:
                 self.log.info("リアルタイム視聴者数を取得できました: %d 人", count)
             self.viewer_count, self._viewer_count_error = count, None
             write_live_stat(self._state_dir, self.key, viewer_count=count, viewer_count_at=time.time(),
-                            viewer_count_error=None)
+                            viewer_count_error=None, broadcast_style="salon")
         else:
             msg = (data or {}).get("error_user_msg") or (data or {}).get("error") or f"HTTP {res.get('status') if isinstance(res, dict) else '?'}"
             if msg != self._viewer_count_error:
@@ -235,6 +262,7 @@ class RoomWatcher:
     async def _maintain_page(self) -> None:
         assert self.page is not None
         try:
+            self._save_activity()
             await self._update_viewer_count()
         except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
             self.log.debug("視聴者数の取得に失敗: %s", e)

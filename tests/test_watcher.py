@@ -215,3 +215,33 @@ async def test_viewer_count_is_fetched_and_saved(tmp_path):
     await w.step()  # 401
     stat = read_live_stats(tmp_path)["k"]
     assert stat["viewer_count"] is None and "ログイン" in stat["viewer_count_error"]
+
+
+async def test_classic_room_does_not_send_presence(tmp_path):
+    from showroom_keeper.status import read_live_stats
+
+    cfg = Config(rooms=["k"], state_file=tmp_path / "s.json")
+    clock = Clock()
+    calls = []
+
+    async def fetch(key):
+        return RoomStatus(key, 1, "Room", True, live_id=99)
+
+    page = FakePage()
+
+    async def evaluate(js, arg=None):
+        calls.append(js)
+        return {"style": "classic"} if "viewer_presence" in js else None
+
+    page.evaluate = evaluate
+
+    async def new_page():
+        return page
+
+    w = RoomWatcher("k", cfg, fetch, new_page, clock=clock)
+    await w.step()
+    clock.t = 30
+    await w.step()
+    stat = read_live_stats(tmp_path)["k"]
+    assert stat["broadcast_style"] == "classic" and stat["viewer_count"] is None
+    assert "active_users" in stat

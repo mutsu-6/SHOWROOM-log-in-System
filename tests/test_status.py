@@ -31,3 +31,16 @@ def test_format_realtime_viewers_fresh_and_stale():
     assert "リアルタイム視聴者数" not in stale
     err = format_status({**base, "live_stat": {"viewer_count": None, "viewer_count_error": "ログインが必要です。"}}, now=1)
     assert "取得できません (ログインが必要です。)" in err
+
+
+def test_format_classic_and_active_users():
+    base = {"name": "部屋", "is_live": True, "started_at": None, "excitement": 1, "commenters": 0,
+            "commenters_capped": False}
+    stat = {"broadcast_style": "classic", "viewer_count": None, "active_users": 37, "active_at": 1000,
+            "active_observed": 900}
+    s = format_status({**base, "live_stat": stat}, now=1030)
+    assert "リアルタイム視聴者数: 非公開 (クラシック形式)" in s
+    assert "推定アクティブ人数: 37 人以上" in s and "観測" not in s
+    s = format_status({**base, "live_stat": {**stat, "active_observed": 180}}, now=1030)
+    assert "観測 3 分" in s
+    assert "推定アクティブ人数" not in format_status({**base, "live_stat": stat}, now=5000)  # 古い値は出さない
