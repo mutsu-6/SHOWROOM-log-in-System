@@ -44,3 +44,12 @@ def test_format_classic_and_active_users():
     s = format_status({**base, "live_stat": {**stat, "active_observed": 180}}, now=1030)
     assert "観測 3 分" in s
     assert "推定アクティブ人数" not in format_status({**base, "live_stat": stat}, now=5000)  # 古い値は出さない
+
+
+def test_format_login():
+    from showroom_keeper.status import format_login
+
+    assert format_login(None) is None
+    assert "✅ ログイン中" in format_login({"logged_in": True, "checked_at": 1000}, now=1100)
+    assert "❌ 未ログイン" in format_login({"logged_in": False, "checked_at": 1000}, now=1100)
+    assert "途絶えて" in format_login({"logged_in": True, "checked_at": 1000}, now=2000)

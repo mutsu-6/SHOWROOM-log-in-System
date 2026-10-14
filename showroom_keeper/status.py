@@ -22,6 +22,7 @@ COMMENT_WINDOW = 600  # 直近のコメント人数を数える期間 (秒)
 
 
 STATS_FILE = "live_stats.json"
+LOGIN_KEY = "_login"  # ログイン状態の確認結果を保存するキー
 STATS_FRESH = 180  # これより古いリアルタイム視聴者数は表示しない (視聴プログラム停止中など)
 
 
@@ -108,9 +109,24 @@ def format_status(info: dict, now: float | None = None) -> str:
     return line
 
 
+def format_login(stat: dict | None, now: float | None = None) -> str | None:
+    if not stat or "checked_at" not in stat:
+        return None
+    now = now or time.time()
+    at = datetime.fromtimestamp(stat["checked_at"], JST)
+    state = {True: "✅ ログイン中", False: "❌ 未ログイン (login し直してください)"}.get(stat.get("logged_in"), "❔ 確認できませんでした")
+    line = f"ログイン状態: {state} ({at:%H:%M:%S} 確認)"
+    if now - stat["checked_at"] > 600:
+        line += " ※ 確認が途絶えています。視聴が止まっていないか確認してください"
+    return line
+
+
 def print_status(rooms: list[str], state_dir: Path | None = None) -> int:
     print(datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"))
     stats = read_live_stats(state_dir) if state_dir else {}
+    login = format_login(stats.get(LOGIN_KEY))
+    if login:
+        print(login)
     code = 0
     for key in rooms:
         try:

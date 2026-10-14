@@ -73,6 +73,8 @@ class Config:
     stall_threshold: int = 3
     # 定期的にページをリロードする間隔 (分)。0 で無効
     periodic_reload_minutes: float = 60.0
+    # ログイン状態を確認する間隔 (秒)。API に問い合わせるだけでコメント等は送らない
+    login_check_interval: float = 180.0
     # セッション(Cookie)を保存する間隔 (分)
     save_state_minutes: float = 10.0
     # 配信していない時もページを開いたままにするか

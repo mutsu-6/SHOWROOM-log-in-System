@@ -16,6 +16,7 @@ from playwright.async_api import Browser, BrowserContext, async_playwright
 from .api import BASE_URL, ShowroomAPI
 from .config import Config
 from .comments import CommentDispatcher, queue_dir
+from .status import LOGIN_KEY, write_live_stat
 from .watcher import RoomWatcher
 
 log = logging.getLogger("keeper")
@@ -115,9 +116,16 @@ async def save_state(ctx: BrowserContext, cfg: Config) -> None:
     log.debug("セッションを保存しました: %s", path)
 
 
+def record_login(cfg: Config, state: bool | None) -> None:
+    """ログイン状態の確認結果を status コマンド用に保存する。"""
+    with suppress(Exception):
+        write_live_stat(Path(cfg.state_file).parent, LOGIN_KEY, logged_in=state, checked_at=time.time())
+
+
 async def ensure_login(ctx: BrowserContext, cfg: Config, room_id: int | None) -> None:
     api = ShowroomAPI(ctx.request)
     state = await api.is_logged_in(room_id)
+    record_login(cfg, state)
     if state is True:
         log.info("ログイン済みです")
         return
@@ -207,14 +215,26 @@ class Keeper:
                     await browser.close()
 
     async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, room_id: int | None) -> None:
-        interval = max(60.0, self.cfg.save_state_minutes * 60)
+        """ログイン状態を定期的に確認し (コメント等は送らず API で問い合わせるだけ)、セッションを保存する。"""
+        save_interval = max(60.0, self.cfg.save_state_minutes * 60)
+        check_interval = max(60.0, min(self.cfg.login_check_interval, save_interval))
+        last_save = time.monotonic()
+        last_state: bool | None = True
         while True:
-            await asyncio.sleep(interval)
-            # セッション切れなら再ログインを試みる
-            if await api.is_logged_in(room_id) is False and self.cfg.credentials.available:
-                log.warning("セッションが切れています。再ログインします")
+            await asyncio.sleep(check_interval)
+            state = await api.is_logged_in(room_id)
+            record_login(self.cfg, state)
+            if state is False and last_state is not False:
+                log.warning("セッションが切れています%s", "。再ログインします" if self.cfg.credentials.available else
+                            " (`showroom-keeper login` でログインし直してください)")
+            if state is False and self.cfg.credentials.available:
                 await ensure_login(ctx, self.cfg, room_id)
-            await save_state(ctx, self.cfg)
+            elif state is True and last_state is False:
+                log.info("ログイン状態に戻りました")
+            last_state = state
+            if time.monotonic() - last_save >= save_interval:
+                await save_state(ctx, self.cfg)
+                last_save = time.monotonic()
 
 
 async def interactive_login(cfg: Config) -> None:
