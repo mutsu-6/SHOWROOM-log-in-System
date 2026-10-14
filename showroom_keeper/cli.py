@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     com.add_argument("text", nargs="*", help="コメント本文 (省略すると 1 行ずつ入力して送る会話モード)")
     com.add_argument("--room", help="投稿先のルーム (複数ルームを監視している場合に指定)")
 
-    st = sub.add_parser("status", help="監視中ルームの配信状況と視聴者数を表示する")
+    st = sub.add_parser("status", help="監視中ルームの配信状況を表示する")
     st.add_argument("rooms", nargs="*", help="ルーム (省略時は設定の rooms)")
     st.add_argument("-w", "--watch", type=int, metavar="秒", help="指定秒ごとに更新し続ける (Ctrl+C で終了)")
 

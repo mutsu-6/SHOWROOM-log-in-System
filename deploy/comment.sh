@@ -3,7 +3,7 @@
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは      1 件投稿
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh                 会話モード (1 行ずつ入力して投稿)
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh --room ルーム名 こんにちは   (複数ルーム監視時)
-# `bash deploy/comment.sh --install` で短縮コマンド `c` (コメント) と `s` (視聴者数) を登録する。
+# `bash deploy/comment.sh --install` で短縮コマンド `c` (コメント) と `s` (配信状況) を登録する。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ "${1:-}" = "--install" ]; then

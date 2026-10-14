@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# サーバー (Docker) で監視中ルームの配信状況と視聴者数を表示する。
+# サーバー (Docker) で監視中ルームの配信状況を表示する。
 #   ~/SHOWROOM-log-in-System/deploy/status.sh            1 回表示
 #   ~/SHOWROOM-log-in-System/deploy/status.sh -w 60      60 秒ごとに更新 (Ctrl+C で終了)
 set -euo pipefail
