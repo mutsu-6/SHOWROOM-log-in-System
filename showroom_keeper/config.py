@@ -79,6 +79,9 @@ class Config:
     keep_open_when_offline: bool = False
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
+    # アバター等の 3D 描画 (WebGL) を止めて CPU 負荷を約 1/10 にする。
+    # GPU の無いサーバーでは 3D 描画が CPU を使い切り映像が止まるため。None なら画面非表示時のみ止める
+    disable_3d: bool | None = None
     # 広告・アクセス解析の読み込みを遮断する (読み込みが速くなる)
     block_trackers: bool = True
     mute: bool = True

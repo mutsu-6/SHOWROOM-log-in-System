@@ -49,7 +49,9 @@ async def launch_browser(pw, cfg: Config) -> Browser:
     options = dict(
         headless=cfg.headless,
         proxy={"server": cfg.proxy} if cfg.proxy else None,
-        args=["--autoplay-policy=no-user-gesture-required"] + (["--mute-audio"] if cfg.mute else []),
+        args=["--autoplay-policy=no-user-gesture-required"]
+        + (["--mute-audio"] if cfg.mute else [])
+        + (["--disable-3d-apis"] if (cfg.headless if cfg.disable_3d is None else cfg.disable_3d) else []),
     )
     if cfg.proxy:
         log.info("プロキシを使用します: %s", cfg.proxy)
