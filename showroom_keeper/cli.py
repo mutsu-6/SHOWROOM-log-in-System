@@ -9,7 +9,7 @@ import signal
 from contextlib import suppress
 
 from . import __version__
-from .config import Config
+from .config import Config, load_dotenv
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    load_dotenv()
     cfg = Config.load(args.config)
     logging.basicConfig(
         level=getattr(logging, str(cfg.log_level).upper(), logging.INFO),

@@ -47,7 +47,7 @@ cp .env.example .env                 # 必要ならログイン情報を記入
 
 2. **自動ログイン**
 
-   環境変数 `SHOWROOM_ACCOUNT_ID` / `SHOWROOM_PASSWORD` を設定しておくと、未ログイン時やセッション切れ時に自動でログインします。
+   `.env` (または環境変数) に `SHOWROOM_ACCOUNT_ID` / `SHOWROOM_PASSWORD` を設定しておくと、未ログイン時やセッション切れ時に自動でログインします。
    CAPTCHA を要求された場合は自動ログインできないため、1 の手動ログインを行ってください。
 
 ログインしなくても匿名で視聴状態は維持されます。
@@ -76,7 +76,7 @@ python -m showroom_keeper run --headed
 
 ## 設定
 
-`config.example.yaml` に全項目と説明があります。環境変数は設定ファイルより優先されます。
+`config.example.yaml` に全項目と説明があります。カレントディレクトリの `.env` は自動で読み込まれ、環境変数は設定ファイルより優先されます。
 
 | 環境変数 | 内容 |
 | --- | --- |

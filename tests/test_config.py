@@ -60,3 +60,13 @@ def test_proxy_and_channel_from_env():
     assert cfg.proxy == "http://p:1"
     assert cfg.browser_channel == ""
     assert Config.load(None, env={}).browser_channel == "chrome"
+
+
+def test_load_dotenv(tmp_path):
+    from showroom_keeper.config import load_dotenv
+
+    p = tmp_path / ".env"
+    p.write_text('# c\nSHOWROOM_ACCOUNT_ID=me\nSHOWROOM_PASSWORD="p=w"\nSHOWROOM_ROOMS=\nEXISTING=new\n', encoding="utf-8")
+    env = {"EXISTING": "old"}
+    load_dotenv(p, env)
+    assert env == {"EXISTING": "old", "SHOWROOM_ACCOUNT_ID": "me", "SHOWROOM_PASSWORD": "p=w"}

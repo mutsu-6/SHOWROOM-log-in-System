@@ -24,6 +24,25 @@ def normalize_room_key(value: str) -> str:
     return value
 
 
+def load_dotenv(path: str | os.PathLike = ".env", environ: dict[str, str] | None = None) -> None:
+    """.env の KEY=VALUE を環境変数に読み込む。既に設定済みの変数と空の値は無視する。"""
+    environ = os.environ if environ is None else environ
+    p = Path(path)
+    if not p.is_file():
+        return
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and value and key not in environ:
+            environ[key] = value
+
+
 @dataclass
 class Credentials:
     account_id: str | None = None
