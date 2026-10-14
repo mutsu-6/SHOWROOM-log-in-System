@@ -1,0 +1,108 @@
+"""設定ファイル (YAML) と環境変数の読み込み。"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+ROOM_URL_RE = re.compile(r"showroom-live\.com/(?:r/)?([A-Za-z0-9_\-]+)/?(?:\?.*)?$")
+
+
+def normalize_room_key(value: str) -> str:
+    """URL でも room_url_key でも受け付け、room_url_key に正規化する。"""
+    value = value.strip()
+    m = ROOM_URL_RE.search(value)
+    if m:
+        return m.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", value):
+        raise ValueError(f"不正なルーム指定です: {value!r}")
+    return value
+
+
+@dataclass
+class Credentials:
+    account_id: str | None = None
+    password: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return bool(self.account_id and self.password)
+
+
+@dataclass
+class Config:
+    rooms: list[str] = field(default_factory=list)
+    credentials: Credentials = field(default_factory=Credentials)
+    state_file: Path = Path("state/storage_state.json")
+    headless: bool = True
+    browser_executable: str | None = None
+    # 配信中かどうかを確認する間隔 (秒)
+    status_poll_interval: float = 60.0
+    # 再生が進んでいるかを確認する間隔 (秒)
+    health_check_interval: float = 30.0
+    # 何回連続で再生停止を検出したらリロードするか
+    stall_threshold: int = 3
+    # 定期的にページをリロードする間隔 (分)。0 で無効
+    periodic_reload_minutes: float = 60.0
+    # セッション(Cookie)を保存する間隔 (分)
+    save_state_minutes: float = 10.0
+    # 配信していない時もページを開いたままにするか
+    keep_open_when_offline: bool = False
+    # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
+    block_media: bool = False
+    mute: bool = True
+    # 障害時の再試行待ち (秒) の上限
+    max_backoff: float = 300.0
+    log_level: str = "INFO"
+
+    @classmethod
+    def load(cls, path: str | os.PathLike | None, env: dict[str, str] | None = None) -> "Config":
+        env = dict(os.environ if env is None else env)
+        data: dict[str, Any] = {}
+        if path is not None:
+            p = Path(path)
+            if p.exists():
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            elif path != "config.yaml":
+                raise FileNotFoundError(f"設定ファイルが見つかりません: {p}")
+
+        cfg = cls()
+        creds = data.pop("credentials", {}) or {}
+        rooms = data.pop("rooms", []) or []
+        for key, value in data.items():
+            if not hasattr(cfg, key):
+                raise ValueError(f"未知の設定項目です: {key}")
+            current = getattr(cfg, key)
+            if isinstance(current, Path):
+                value = Path(value)
+            setattr(cfg, key, value)
+
+        # 環境変数は設定ファイルより優先 (パスワードはファイルに書かない運用を推奨)
+        cfg.credentials = Credentials(
+            account_id=env.get("SHOWROOM_ACCOUNT_ID") or creds.get("account_id"),
+            password=env.get("SHOWROOM_PASSWORD") or creds.get("password"),
+        )
+        if env.get("SHOWROOM_ROOMS"):
+            rooms = [r for r in env["SHOWROOM_ROOMS"].split(",") if r.strip()]
+        if env.get("SHOWROOM_HEADLESS"):
+            cfg.headless = env["SHOWROOM_HEADLESS"].lower() not in ("0", "false", "no")
+        if env.get("SHOWROOM_STATE_FILE"):
+            cfg.state_file = Path(env["SHOWROOM_STATE_FILE"])
+        if env.get("SHOWROOM_BROWSER_EXECUTABLE"):
+            cfg.browser_executable = env["SHOWROOM_BROWSER_EXECUTABLE"]
+
+        cfg.rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in rooms))
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        for name in ("status_poll_interval", "health_check_interval", "max_backoff"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} は正の数である必要があります")
+        if self.stall_threshold < 1:
+            raise ValueError("stall_threshold は 1 以上である必要があります")

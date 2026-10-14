@@ -1,0 +1,29 @@
+# config.example.yaml をコピーして config.yaml を作成してください。
+#   cp config.example.yaml config.yaml
+
+# 視聴を維持するルーム (URL または room_url_key)
+rooms:
+  - https://www.showroom-live.com/r/ROOM_URL_KEY
+
+# ログイン情報。パスワードはこのファイルではなく環境変数
+# SHOWROOM_ACCOUNT_ID / SHOWROOM_PASSWORD (.env) で渡すことを推奨します。
+credentials:
+  account_id: ""
+  password: ""
+
+# ログインセッション (Cookie) の保存先
+state_file: state/storage_state.json
+
+headless: true                # false にするとブラウザ画面を表示
+# browser_executable: /usr/bin/chromium   # 既存の Chromium/Chrome を使う場合
+
+status_poll_interval: 60      # 配信状態の確認間隔 (秒)
+health_check_interval: 30     # 再生状況の確認間隔 (秒)
+stall_threshold: 3            # 連続何回の再生停止でリロードするか
+periodic_reload_minutes: 60   # 定期リロード間隔 (分)。0 で無効
+save_state_minutes: 10        # セッション保存・ログイン確認の間隔 (分)
+keep_open_when_offline: false # 配信していない時もページを開いておく
+block_media: false            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
+mute: true
+max_backoff: 300              # 障害時の再試行待ちの上限 (秒)
+log_level: INFO

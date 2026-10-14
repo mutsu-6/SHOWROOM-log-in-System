@@ -1,0 +1,18 @@
+# systemd ユニット例: /etc/systemd/system/showroom-keeper.service に配置
+#   sudo systemctl daemon-reload && sudo systemctl enable --now showroom-keeper
+[Unit]
+Description=SHOWROOM viewing keeper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=showroom
+WorkingDirectory=/opt/SHOWROOM-log-in-System
+EnvironmentFile=/opt/SHOWROOM-log-in-System/.env
+ExecStart=/opt/SHOWROOM-log-in-System/.venv/bin/python -m showroom_keeper run
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

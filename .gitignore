@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# ログイン情報・セッションは絶対にコミットしない
+.env
+config.yaml
+state/
+logs/
