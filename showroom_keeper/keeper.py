@@ -56,7 +56,9 @@ async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
         user_agent=USER_AGENT,
         locale="ja-JP",
         timezone_id="Asia/Tokyo",
-        viewport={"width": 1280, "height": 720},
+        # 画面表示時はウィンドウ全体を使う。ヘッドレス時は一般的な画面サイズに固定
+        viewport=None if not cfg.headless else {"width": 1280, "height": 720},
+        no_viewport=not cfg.headless,
     )
     if cfg.block_media:
         for pattern in MEDIA_PATTERNS:

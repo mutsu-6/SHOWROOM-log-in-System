@@ -134,14 +134,14 @@ class RoomWatcher:
         self.log.info("視聴ページを開きます: %s", self.status.url)
         page = await self._new_page()
         self.page = page
-        await page.goto(self.status.url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(self.status.url, wait_until="commit", timeout=60000)
         self.opened_at = self.last_reload_at = self._clock()
         self._reset_health()
 
     async def _reload(self, reason: str) -> None:
         assert self.page is not None
         self.log.info("ページを再読み込みします (%s)", reason)
-        await self.page.reload(wait_until="domcontentloaded", timeout=60000)
+        await self.page.reload(wait_until="commit", timeout=60000)
         self.last_reload_at = self._clock()
         self.reload_count += 1
         self._reset_health()
