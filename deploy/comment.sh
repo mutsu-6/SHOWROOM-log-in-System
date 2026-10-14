@@ -3,12 +3,13 @@
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは      1 件投稿
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh                 会話モード (1 行ずつ入力して投稿)
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh --room ルーム名 こんにちは   (複数ルーム監視時)
-# `bash deploy/comment.sh --install` で短縮コマンド `c` を登録する。
+# `bash deploy/comment.sh --install` で短縮コマンド `c` (コメント) と `s` (視聴者数) を登録する。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ "${1:-}" = "--install" ]; then
-  LINE="alias c='$(pwd)/deploy/comment.sh'"
-  grep -qxF "$LINE" ~/.bashrc 2>/dev/null || echo "$LINE" >> ~/.bashrc
+  for LINE in "alias c='$(pwd)/deploy/comment.sh'" "alias s='$(pwd)/deploy/status.sh'"; do
+    grep -qxF "$LINE" ~/.bashrc 2>/dev/null || echo "$LINE" >> ~/.bashrc
+  done
   echo "登録しました。次のコマンドで有効にしてください:  source ~/.bashrc"
   exit 0
 fi

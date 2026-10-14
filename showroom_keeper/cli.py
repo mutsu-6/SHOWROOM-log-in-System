@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     com.add_argument("text", nargs="*", help="コメント本文 (省略すると 1 行ずつ入力して送る会話モード)")
     com.add_argument("--room", help="投稿先のルーム (複数ルームを監視している場合に指定)")
 
+    st = sub.add_parser("status", help="監視中ルームの配信状況と視聴者数を表示する")
+    st.add_argument("rooms", nargs="*", help="ルーム (省略時は設定の rooms)")
+    st.add_argument("-w", "--watch", type=int, metavar="秒", help="指定秒ごとに更新し続ける (Ctrl+C で終了)")
+
     diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
     diag.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
@@ -114,6 +118,26 @@ def main(argv: list[str] | None = None) -> int:
             if not line.strip():  # 日本語入力の確定などで空の Enter が来ても終了しない
                 continue
             send_comment(cfg, line, room)
+
+    if args.command == "status":
+        import time
+
+        from .config import normalize_room_key
+        from .status import print_status
+
+        rooms = [normalize_room_key(r) for r in args.rooms] or cfg.rooms
+        if not rooms:
+            print("ルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS)")
+            return 2
+        if not args.watch:
+            return print_status(rooms)
+        try:
+            while True:
+                print_status(rooms)
+                time.sleep(max(10, args.watch))
+                print()
+        except KeyboardInterrupt:
+            return 0
 
     if args.command == "diagnose":
         from .keeper import diagnose

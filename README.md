@@ -106,6 +106,16 @@ python -m showroom_keeper comment こんにちは
 - 連投を防ぐため、投稿と投稿の間は最低 3 秒空けます。自動・定期投稿の機能はありません
   (SHOWROOM の利用規約はボット等による自動化された利用を禁止しています)。
 
+## 視聴者数を確認する
+
+```bash
+python -m showroom_keeper status          # 手元の PC
+~/SHOWROOM-log-in-System/deploy/status.sh  # サーバー (Docker)。-w 60 で 60 秒ごとに更新
+```
+
+SHOWROOM が公開している視聴者数を表示します。この値は配信開始からの累計とみられ、
+同時接続数そのものではない点に注意してください (SHOWROOM は同時接続数を公開していないようです)。
+
 ## 設定
 
 `config.example.yaml` に全項目と説明があります。カレントディレクトリの `.env` は自動で読み込まれ、環境変数は設定ファイルより優先されます。
