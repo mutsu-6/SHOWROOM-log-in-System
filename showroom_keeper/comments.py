@@ -46,7 +46,8 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def enqueue(qdir: Path, text: str, room: str | None = None, now: float | None = None) -> str:
-    req_id = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+    # ファイル名順 = 依頼順になるよう、ナノ秒の時刻を固定幅で先頭に付ける
+    req_id = f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}"
     _write_json(qdir / f"{req_id}.req.json", {"text": validate(text), "room": room, "at": now or time.time()})
     return req_id
 
