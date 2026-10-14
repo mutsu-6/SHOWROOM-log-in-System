@@ -25,6 +25,7 @@ stall_threshold: 3            # 連続何回の再生停止でリロードする
 periodic_reload_minutes: 60   # 定期リロード間隔 (分)。0 で無効
 save_state_minutes: 10        # セッション保存・ログイン確認の間隔 (分)
 keep_open_when_offline: false # 配信していない時もページを開いておく
+block_trackers: true          # 広告・アクセス解析の読み込みを遮断 (読み込みが速くなる)
 block_media: false            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
 mute: true
 max_backoff: 300              # 障害時の再試行待ちの上限 (秒)

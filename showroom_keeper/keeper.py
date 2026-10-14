@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -15,9 +17,11 @@ from .watcher import RoomWatcher
 
 log = logging.getLogger("keeper")
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+# 視聴に不要な広告・アクセス解析。初回読み込みが詰まる原因になるため遮断する
+TRACKER_RE = re.compile(
+    r"^https?://([^/]*\.)?(facebook\.net|facebook\.com|googletagmanager\.com|google-analytics\.com"
+    r"|analytics\.google\.com|doubleclick\.net|googlesyndication\.com|googleadservices\.com"
+    r"|a-mpd\.com|criteo\.(com|net)|adnxs\.com|amazon-adsystem\.com)(:\d+)?/"
 )
 MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
 
@@ -47,19 +51,34 @@ async def launch_browser(pw, cfg: Config) -> Browser:
     return await pw.chromium.launch(**options)
 
 
+async def _user_agent(browser: Browser, cfg: Config) -> str | None:
+    """ブラウザ本来の User-Agent を使う。ヘッドレス時のみ "HeadlessChrome" の表記を通常の Chrome に直す。"""
+    if not cfg.headless:
+        return None
+    ctx = await browser.new_context()
+    try:
+        page = await ctx.new_page()
+        ua = await page.evaluate("() => navigator.userAgent")
+    finally:
+        await ctx.close()
+    return ua.replace("HeadlessChrome", "Chrome")
+
+
 async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
     state = str(cfg.state_file) if Path(cfg.state_file).exists() else None
     if state:
         log.info("保存済みセッションを読み込みます: %s", state)
     ctx = await browser.new_context(
         storage_state=state,
-        user_agent=USER_AGENT,
+        user_agent=await _user_agent(browser, cfg),
         locale="ja-JP",
         timezone_id="Asia/Tokyo",
         # 画面表示時はウィンドウ全体を使う。ヘッドレス時は一般的な画面サイズに固定
         viewport=None if not cfg.headless else {"width": 1280, "height": 720},
         no_viewport=not cfg.headless,
     )
+    if cfg.block_trackers:
+        await ctx.route(TRACKER_RE, lambda route: route.abort())
     if cfg.block_media:
         for pattern in MEDIA_PATTERNS:
             await ctx.route(pattern, lambda route: route.abort())
@@ -201,3 +220,43 @@ async def _any_room_id(ctx: BrowserContext) -> int | None:
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+async def diagnose(cfg: Config, url: str = BASE_URL) -> None:
+    """ページの読み込みを計測し、遅い・失敗した通信を表示する。"""
+    async with async_playwright() as pw:
+        browser = await launch_browser(pw, cfg)
+        ctx = await new_context(browser, cfg)
+        page = await ctx.new_page()
+        started: dict = {}
+        done: list[tuple[float, str, str]] = []
+        t0 = time.monotonic()
+        page.on("request", lambda r: started.__setitem__(r, time.monotonic()))
+        page.on("requestfinished", lambda r: done.append((time.monotonic() - started.get(r, t0), "OK", r.url)))
+        page.on("requestfailed", lambda r: done.append((time.monotonic() - started.get(r, t0), f"失敗 {r.failure}", r.url)))
+        print(f"ブラウザ: {browser.version}")
+        print(f"User-Agent: {await page.evaluate('() => navigator.userAgent')}")
+        print(f"計測中: {url} (最大 90 秒)")
+        marks = {}
+        try:
+            await page.goto(url, wait_until="commit", timeout=90000)
+            marks["応答開始"] = time.monotonic() - t0
+            for state, label in (("domcontentloaded", "HTML 読み込み完了"), ("load", "全体の読み込み完了")):
+                await page.wait_for_load_state(state, timeout=max(1000, 90000 - (time.monotonic() - t0) * 1000))
+                marks[label] = time.monotonic() - t0
+        except Exception as e:  # noqa: BLE001
+            print(f"タイムアウト/エラー: {str(e).splitlines()[0]}")
+        for label, sec in marks.items():
+            print(f"  {label}: {sec:.1f} 秒")
+        finished = {u for _, _, u in done}
+        pending = [r.url for r in started if r.url not in finished]
+        # 意図的に遮断した広告・解析の通信は除く
+        slow = sorted((d for d in done if (d[0] >= 2 or d[1] != "OK") and not TRACKER_RE.match(d[2])), reverse=True)[:15]
+        print("遅い/失敗した通信 (2 秒以上):" if slow else "2 秒以上かかった通信はありません")
+        for sec, status, u in slow:
+            print(f"  {sec:5.1f} 秒 {status} {u[:120]}")
+        if pending and "全体の読み込み完了" not in marks:
+            print("終わらなかった通信:")
+            for u in pending[:15]:
+                print(f"  {u[:120]}")
+        await browser.close()

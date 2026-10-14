@@ -79,6 +79,8 @@ class Config:
     keep_open_when_offline: bool = False
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
+    # 広告・アクセス解析の読み込みを遮断する (読み込みが速くなる)
+    block_trackers: bool = True
     mute: bool = True
     # 障害時の再試行待ち (秒) の上限
     max_backoff: float = 300.0

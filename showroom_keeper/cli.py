@@ -23,6 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
 
     sub.add_parser("login", help="ブラウザを開いて手動ログインし、セッションを保存する")
+
+    diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
+    diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
+    diag.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
     return p
 
 
@@ -39,6 +43,13 @@ def main(argv: list[str] | None = None) -> int:
         from .keeper import interactive_login
 
         asyncio.run(interactive_login(cfg))
+        return 0
+
+    if args.command == "diagnose":
+        from .keeper import diagnose
+
+        cfg.headless = not args.headed
+        asyncio.run(diagnose(cfg, args.url))
         return 0
 
     if getattr(args, "rooms", None):
