@@ -223,7 +223,11 @@ class RoomWatcher:
         self.last_video_time = video_time
 
         if self.stall_count >= self.cfg.stall_threshold:
-            await self._reload("再生停止を検出")
+            state = (
+                f"再生位置 {probe.get('time', 0):.0f} 秒, paused={probe.get('paused')}, readyState={probe.get('ready')}"
+                if isinstance(probe, dict) else "動画要素なし"
+            )
+            await self._reload(f"再生停止を検出: {state}, 累計視聴 {self.watched_seconds / 60:.1f} 分")
 
     async def _close_page(self) -> None:
         page, self.page = self.page, None
