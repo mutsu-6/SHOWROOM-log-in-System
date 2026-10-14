@@ -236,18 +236,18 @@ async def diagnose(cfg: Config, url: str = BASE_URL) -> None:
         page.on("requestfailed", lambda r: done.append((time.monotonic() - started.get(r, t0), f"失敗 {r.failure}", r.url)))
         print(f"ブラウザ: {browser.version}")
         print(f"User-Agent: {await page.evaluate('() => navigator.userAgent')}")
-        print(f"計測中: {url} (最大 90 秒)")
+        print(f"計測中: {url} (最大 90 秒)", flush=True)
         marks = {}
         try:
             await page.goto(url, wait_until="commit", timeout=90000)
             marks["応答開始"] = time.monotonic() - t0
+            print(f"  応答開始: {marks['応答開始']:.1f} 秒", flush=True)
             for state, label in (("domcontentloaded", "HTML 読み込み完了"), ("load", "全体の読み込み完了")):
                 await page.wait_for_load_state(state, timeout=max(1000, 90000 - (time.monotonic() - t0) * 1000))
                 marks[label] = time.monotonic() - t0
+                print(f"  {label}: {marks[label]:.1f} 秒", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"タイムアウト/エラー: {str(e).splitlines()[0]}")
-        for label, sec in marks.items():
-            print(f"  {label}: {sec:.1f} 秒")
         finished = {u for _, _, u in done}
         pending = [r.url for r in started if r.url not in finished]
         # 意図的に遮断した広告・解析の通信は除く
