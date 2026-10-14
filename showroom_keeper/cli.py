@@ -24,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("login", help="ブラウザを開いて手動ログインし、セッションを保存する")
 
+    com = sub.add_parser("comment", help="常駐中の keeper から配信にコメントを 1 件投稿する")
+    com.add_argument("text", nargs="+", help="コメント本文")
+    com.add_argument("--room", help="投稿先のルーム (複数ルームを監視している場合に指定)")
+
     diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
     diag.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
@@ -44,6 +48,25 @@ def main(argv: list[str] | None = None) -> int:
 
         asyncio.run(interactive_login(cfg))
         return 0
+
+    if args.command == "comment":
+        from .comments import enqueue, queue_dir, validate, wait_result
+        from .config import normalize_room_key
+
+        try:
+            text = validate(" ".join(args.text))
+        except ValueError as e:
+            print(f"エラー: {e}")
+            return 2
+        room = normalize_room_key(args.room) if args.room else None
+        req_id = enqueue(queue_dir(cfg), text, room)
+        print(f"投稿を依頼しました: {text}")
+        result = asyncio.run(wait_result(queue_dir(cfg), req_id))
+        if result is None:
+            print("応答がありません。視聴 (run) が動いているか確認してください")
+            return 1
+        print(("✅ " if result["ok"] else "❌ ") + result["message"])
+        return 0 if result["ok"] else 1
 
     if args.command == "diagnose":
         from .keeper import diagnose

@@ -15,6 +15,7 @@ from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from .api import BASE_URL, ShowroomAPI
 from .config import Config
+from .comments import CommentDispatcher, queue_dir
 from .watcher import RoomWatcher
 
 log = logging.getLogger("keeper")
@@ -175,6 +176,7 @@ class Keeper:
                 RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
             ]
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
+            tasks.append(asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments"))
             saver = asyncio.create_task(self._periodic_save(ctx, api, first.room_id))
             stop_wait = asyncio.create_task(self._stop.wait())
             disc_wait = asyncio.create_task(disconnected.wait())
@@ -183,6 +185,7 @@ class Keeper:
             finally:
                 for w in watchers:
                     w.stop()
+                tasks[-1].cancel()  # コメント受付
                 await asyncio.gather(*tasks, return_exceptions=True)
                 for t in (saver, stop_wait, disc_wait):
                     t.cancel()

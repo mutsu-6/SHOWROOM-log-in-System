@@ -86,6 +86,22 @@ python -m showroom_keeper run --headed
 - **Docker (手動)**: `.env` を用意し `docker compose up -d`。セッションは `./data/storage_state.json` に保存されます。
 - **systemd**: `deploy/showroom-keeper.service` を参照。
 
+## 手動でコメントする
+
+視聴 (`run`) を動かしたまま、別のターミナルから配信にコメントを 1 件ずつ投稿できます。
+開いている配信ページのコメント欄から送信し、コメント履歴に載ったことを確認して結果を表示します。
+
+```bash
+# 手元の PC で run している場合
+python -m showroom_keeper comment こんにちは
+# サーバー (Docker) の場合
+~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは
+```
+
+- 1 件 50 文字まで。複数ルームを監視している場合は `--room ルーム名` で投稿先を指定します。
+- 連投を防ぐため、投稿と投稿の間は最低 3 秒空けます。自動・定期投稿の機能はありません
+  (SHOWROOM の利用規約はボット等による自動化された利用を禁止しています)。
+
 ## 設定
 
 `config.example.yaml` に全項目と説明があります。カレントディレクトリの `.env` は自動で読み込まれ、環境変数は設定ファイルより優先されます。

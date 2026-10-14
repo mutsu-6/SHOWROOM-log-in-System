@@ -24,8 +24,25 @@ PROBE_JS = """
 """
 
 
+COMMENT_INPUT = 'input[placeholder="コメントを投稿"]'
+COMMENT_SUBMIT = "button.st-comment__button"
+
+# 自分のコメントがコメント履歴に載ったかを確認する
+COMMENT_LOG_JS = """
+async ([roomId, text, since]) => {
+  const get = async (path) => (await fetch(path, { credentials: 'include' })).json();
+  const me = await get('/api/live/current_user?room_id=' + roomId).catch(() => ({}));
+  const log = (await get('/api/live/comment_log?room_id=' + roomId)).comment_log || [];
+  return log.some(c => c.comment === text && (c.created_at || since) >= since
+                       && (!me.user_id || c.user_id === me.user_id));
+}
+"""
+
+
 class Page(Protocol):  # playwright.async_api.Page と互換
     async def goto(self, url: str, **kwargs: Any) -> Any: ...
+    async def fill(self, selector: str, value: str, **kwargs: Any) -> None: ...
+    async def click(self, selector: str, **kwargs: Any) -> None: ...
     async def reload(self, **kwargs: Any) -> Any: ...
     async def evaluate(self, expression: str, arg: Any = None) -> Any: ...
     async def close(self) -> None: ...
@@ -109,6 +126,23 @@ class RoomWatcher:
             self.log.warning("エラーが発生しました (%d 回目): %s / %.0f 秒後に再試行", self._failures, e, delay)
             await self._close_page()
             return delay
+
+    async def post_comment(self, text: str) -> tuple[bool, str]:
+        """開いている配信ページのコメント欄から投稿し、コメント履歴で反映を確認する。"""
+        if not self._page_alive() or not (self.status and self.status.is_live):
+            return False, "配信中のページが開いていません"
+        if self.blocked:
+            return False, "このルームは視聴できない状態です"
+        page = self.page
+        assert page is not None
+        since = int(time.time()) - 5
+        await page.fill(COMMENT_INPUT, text, timeout=10000)
+        await page.click(COMMENT_SUBMIT, timeout=10000)
+        for _ in range(8):
+            await self._sleep(1)
+            if await page.evaluate(COMMENT_LOG_JS, [self.status.room_id, text, since]):
+                return True, "投稿しました"
+        return False, "投稿を確認できませんでした (未ログイン、コメント制限、または同じ内容の連投の可能性)"
 
     # ------------------------------------------------------------------ 内部処理
     async def _wait(self, seconds: float) -> None:

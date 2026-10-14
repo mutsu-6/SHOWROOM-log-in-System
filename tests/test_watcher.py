@@ -143,3 +143,37 @@ async def test_blocked_room_does_not_reload(env):
         clock.t = i * 30
         await w.step()
     assert w.blocked and pages[0].reloads == 0
+
+
+async def test_post_comment_fills_submits_and_confirms(env):
+    w, live, pages, clock = env
+    await w.step()
+    page = pages[0]
+    actions = []
+
+    async def fill(sel, value, **kw):
+        actions.append(("fill", value))
+
+    async def click(sel, **kw):
+        actions.append(("click", sel))
+
+    checks = iter([False, True])
+
+    async def evaluate(js, arg=None):
+        return next(checks)
+
+    async def no_sleep(s):
+        pass
+
+    page.fill, page.click, page.evaluate = fill, click, evaluate
+    w._sleep = no_sleep
+    ok, msg = await w.post_comment("こんにちは")
+    assert ok and actions == [("fill", "こんにちは"), ("click", "button.st-comment__button")]
+
+
+async def test_post_comment_requires_open_live_page(env):
+    w, live, pages, clock = env
+    live["v"] = False
+    await w.step()
+    ok, msg = await w.post_comment("hi")
+    assert not ok
