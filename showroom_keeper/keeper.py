@@ -133,12 +133,19 @@ class Keeper:
         if not cfg.rooms:
             raise ValueError("監視するルームが指定されていません (rooms / SHOWROOM_ROOMS)")
         self.cfg = cfg
-        self._stop = asyncio.Event()
+        # Python 3.9 の asyncio.Event は生成時のイベントループに結び付くため、run() 内で生成する
+        self._stop: asyncio.Event | None = None
+        self._stop_requested = False
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_requested = True
+        if self._stop is not None:
+            self._stop.set()
 
     async def run(self) -> None:
+        self._stop = asyncio.Event()
+        if self._stop_requested:
+            self._stop.set()
         failures = 0
         async with async_playwright() as pw:
             while not self._stop.is_set():
@@ -183,6 +190,10 @@ class Keeper:
                 raise RuntimeError("ブラウザが切断されました")
             if saver.done() and not saver.cancelled() and saver.exception():
                 raise saver.exception()
+            if not self._stop.is_set():
+                # 想定外の終了。即座に再起動を繰り返さないよう障害として扱う (バックオフさせる)
+                reason = stop_wait.exception() if stop_wait.done() and not stop_wait.cancelled() else None
+                raise RuntimeError(f"監視が予期せず終了しました: {reason!r}")
         finally:
             if browser.is_connected():
                 with suppress(Exception):
