@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
+import sys
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -26,7 +28,23 @@ TRACKER_RE = re.compile(
 MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
 
 
+def running_under_rosetta() -> bool:
+    """Apple Silicon の Mac で Intel 版 Python (Rosetta 2 経由) から起動しているか。"""
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(["sysctl", "-n", "sysctl.proc_translated"], capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() == "1"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def launch_browser(pw, cfg: Config) -> Browser:
+    if running_under_rosetta():
+        log.warning(
+            "Intel 版 Python (Rosetta 2) で動いています。Chrome も Intel 版として起動され、非常に遅くなります。"
+            "Apple Silicon 版 Python で .venv を作り直してください (README のトラブルシューティング参照)"
+        )
     options = dict(
         headless=cfg.headless,
         proxy={"server": cfg.proxy} if cfg.proxy else None,

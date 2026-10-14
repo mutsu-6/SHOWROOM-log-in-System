@@ -94,6 +94,7 @@ python -m showroom_keeper run --headed
 | --- | --- |
 | `このルームは視聴できません` | 年齢制限付きルームなど、未ログインでは見られないルームです。`login` でログインしてください |
 | `再生が進んでいません` が続きリロードを繰り返す | Chrome ではなく付属 Chromium で起動している (起動時の警告を確認)、または回線が WebRTC (UDP) を通さない可能性があります |
+| `Intel 版 Python (Rosetta 2) で動いています` | Apple Silicon の Mac で Intel 版 Python を使っていると Chrome も Intel 版で動き非常に遅くなります。`rm -rf .venv && arch -arm64 /usr/bin/python3 -m venv .venv` で作り直し、再度 `pip install -r requirements.txt` してください |
 | ページの読み込みが異常に遅い | `python -m showroom_keeper diagnose` で、どの通信が遅いかを計測できます |
 | `未ログインです` | 保存したセッションの期限切れです。`login` をやり直すか、ID/パスワードを設定してください |
 
