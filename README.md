@@ -81,7 +81,8 @@ python -m showroom_keeper run --headed
   ssh -t ユーザー名@サーバーのIP 'sudo bash SHOWROOM-log-in-System/deploy/setup-server.sh'
   ```
 
-  更新するときも同じ 2 行を実行します。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
+  更新するときも同じ 2 行を実行します (リポジトリが公開されていれば、サーバー上で
+  `cd SHOWROOM-log-in-System && git pull && sudo bash deploy/setup-server.sh` でも更新できます)。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
 - **Docker (手動)**: `.env` を用意し `docker compose up -d`。セッションは `./data/storage_state.json` に保存されます。
 - **systemd**: `deploy/showroom-keeper.service` を参照。
 

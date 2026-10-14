@@ -2,7 +2,7 @@
 # サーバー (Ubuntu 22.04 / 24.04, x86_64) で SHOWROOM keeper を Docker で常駐させる。
 # 手元の PC からこのフォルダをサーバーにコピーしたうえで、サーバー上で実行する:
 #   sudo bash ~/SHOWROOM-log-in-System/deploy/setup-server.sh
-# 何度実行してもよい (更新時は再コピー後に再実行)。
+# 何度実行してもよい (更新時は再コピー、または git clone した場合は git pull 後に再実行)。
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")/.." && pwd)
