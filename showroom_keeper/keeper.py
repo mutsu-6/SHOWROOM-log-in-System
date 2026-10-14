@@ -23,11 +23,24 @@ MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
 
 
 async def launch_browser(pw, cfg: Config) -> Browser:
-    return await pw.chromium.launch(
+    options = dict(
         headless=cfg.headless,
-        executable_path=cfg.browser_executable,
+        proxy={"server": cfg.proxy} if cfg.proxy else None,
         args=["--autoplay-policy=no-user-gesture-required"] + (["--mute-audio"] if cfg.mute else []),
     )
+    if cfg.browser_executable:
+        return await pw.chromium.launch(executable_path=cfg.browser_executable, **options)
+    if cfg.browser_channel:
+        try:
+            return await pw.chromium.launch(channel=cfg.browser_channel, **options)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "ブラウザ %r を起動できませんでした (%s)。付属の Chromium を使いますが、"
+                "H.264 非対応のため映像を再生できない可能性があります。Google Chrome のインストールを推奨します",
+                cfg.browser_channel,
+                str(e).splitlines()[0],
+            )
+    return await pw.chromium.launch(**options)
 
 
 async def new_context(browser: Browser, cfg: Config) -> BrowserContext:

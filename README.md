@@ -17,14 +17,16 @@
 
 ## セットアップ
 
-Python 3.10 以上が必要です。
+Python 3.10 以上と **Google Chrome** が必要です。
+Playwright 付属の Chromium は H.264 に非対応で SHOWROOM の映像を再生できないため、インストール済みの Chrome を使います
+(Chrome が無い場合は警告を出して付属 Chromium で起動します)。
 
 ```bash
 git clone https://github.com/mutsu-6/SHOWROOM-log-in-System.git
 cd SHOWROOM-log-in-System
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
+playwright install chromium   # Chrome が無い環境向けの予備
 
 cp config.example.yaml config.yaml   # rooms を編集
 cp .env.example .env                 # 必要ならログイン情報を記入
@@ -82,7 +84,17 @@ python -m showroom_keeper run --headed
 | `SHOWROOM_ROOMS` | 監視ルーム (カンマ区切り) |
 | `SHOWROOM_HEADLESS` | `false` で画面表示 |
 | `SHOWROOM_STATE_FILE` | セッション保存先 |
-| `SHOWROOM_BROWSER_EXECUTABLE` | 使用する Chromium/Chrome のパス |
+| `SHOWROOM_BROWSER_CHANNEL` | 使用ブラウザ (`chrome` / `msedge` / 空で付属 Chromium) |
+| `SHOWROOM_BROWSER_EXECUTABLE` | 使用するブラウザ実行ファイルのパス |
+| `SHOWROOM_PROXY` (または `HTTPS_PROXY`) | ブラウザが使うプロキシ |
+
+## トラブルシューティング
+
+| ログ | 原因と対処 |
+| --- | --- |
+| `このルームは視聴できません` | 年齢制限付きルームなど、未ログインでは見られないルームです。`login` でログインしてください |
+| `再生が進んでいません` が続きリロードを繰り返す | Chrome ではなく付属 Chromium で起動している (起動時の警告を確認)、または回線が WebRTC (UDP) を通さない可能性があります |
+| `未ログインです` | 保存したセッションの期限切れです。`login` をやり直すか、ID/パスワードを設定してください |
 
 ## 構成
 
@@ -99,5 +111,6 @@ tests/        pytest によるテスト
 ## 注意事項
 
 - `.env`、`config.yaml`、`state/` (セッション Cookie) には認証情報が含まれます。`.gitignore` 済みですが、共有しないでください。保存したセッションファイルは権限 600 で書き出します。
+- 映像は WebRTC (UDP) で受信します。UDP を遮断するネットワークやプロキシ経由では映像を受信できません。
 - SHOWROOM の非公式 API・ページ構造に依存しているため、サイト側の仕様変更で動かなくなる可能性があります。
 - SHOWROOM の利用規約を確認のうえ、自己責任で利用してください。

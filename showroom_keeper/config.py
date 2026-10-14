@@ -41,6 +41,11 @@ class Config:
     state_file: Path = Path("state/storage_state.json")
     headless: bool = True
     browser_executable: str | None = None
+    # 使用するブラウザ。"chrome" / "msedge" (インストール済みのものを使用) / "" (Playwright 付属 Chromium)
+    # 付属 Chromium は H.264 に非対応で SHOWROOM の映像を再生できないため、Chrome を推奨
+    browser_channel: str = "chrome"
+    # ブラウザが使うプロキシ (例: http://127.0.0.1:8080)。未指定なら環境変数 HTTPS_PROXY
+    proxy: str | None = None
     # 配信中かどうかを確認する間隔 (秒)
     status_poll_interval: float = 60.0
     # 再生が進んでいるかを確認する間隔 (秒)
@@ -95,6 +100,11 @@ class Config:
             cfg.state_file = Path(env["SHOWROOM_STATE_FILE"])
         if env.get("SHOWROOM_BROWSER_EXECUTABLE"):
             cfg.browser_executable = env["SHOWROOM_BROWSER_EXECUTABLE"]
+
+        if "SHOWROOM_BROWSER_CHANNEL" in env:
+            cfg.browser_channel = env["SHOWROOM_BROWSER_CHANNEL"]
+        if not cfg.proxy:
+            cfg.proxy = env.get("SHOWROOM_PROXY") or env.get("HTTPS_PROXY") or env.get("https_proxy") or None
 
         cfg.rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in rooms))
         cfg.validate()

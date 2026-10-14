@@ -129,3 +129,17 @@ async def test_errors_back_off_and_recover(env):
     assert await w.step() == 10
     assert await w.step() == 30
     assert len(pages) == 1
+
+
+async def test_blocked_room_does_not_reload(env):
+    w, live, pages, clock = env
+    await w.step()
+
+    async def blocked(js, arg=None):
+        return {"blocked": True}
+
+    pages[0].evaluate = blocked
+    for i in range(1, 6):
+        clock.t = i * 30
+        await w.step()
+    assert w.blocked and pages[0].reloads == 0

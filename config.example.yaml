@@ -15,7 +15,9 @@ credentials:
 state_file: state/storage_state.json
 
 headless: true                # false にするとブラウザ画面を表示
-# browser_executable: /usr/bin/chromium   # 既存の Chromium/Chrome を使う場合
+browser_channel: chrome      # インストール済み Google Chrome を使用 (推奨)。"" で Playwright 付属 Chromium
+# browser_executable: /path/to/chrome   # ブラウザの実行ファイルを直接指定する場合
+# proxy: http://127.0.0.1:8080          # 未指定なら環境変数 HTTPS_PROXY を使用
 
 status_poll_interval: 60      # 配信状態の確認間隔 (秒)
 health_check_interval: 30     # 再生状況の確認間隔 (秒)

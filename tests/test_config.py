@@ -53,3 +53,10 @@ def test_unknown_key_rejected(tmp_path):
 def test_missing_explicit_config_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         Config.load(tmp_path / "nope.yaml", env={})
+
+
+def test_proxy_and_channel_from_env():
+    cfg = Config.load(None, env={"HTTPS_PROXY": "http://p:1", "SHOWROOM_BROWSER_CHANNEL": ""})
+    assert cfg.proxy == "http://p:1"
+    assert cfg.browser_channel == ""
+    assert Config.load(None, env={}).browser_channel == "chrome"

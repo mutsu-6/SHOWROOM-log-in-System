@@ -13,6 +13,8 @@ from .config import Config
 # 動画要素の状態を返しつつ、止まっていたら(ミュートで)再生を再開する
 PROBE_JS = """
 () => {
+  const text = document.body ? document.body.innerText : '';
+  if (text.includes('視聴不可のルーム')) return { blocked: true };
   const v = document.querySelector('video');
   if (!v) return null;
   if (MUTE) v.muted = true;
@@ -62,6 +64,7 @@ class RoomWatcher:
         self.last_status_at: float | None = None
         self.watched_seconds = 0.0
         self.reload_count = 0
+        self.blocked = False
         self._failures = 0
         self._stop = asyncio.Event()
 
@@ -163,6 +166,14 @@ class RoomWatcher:
 
         js = PROBE_JS.replace("MUTE", "true" if self.cfg.mute else "false")
         probe = await self.page.evaluate(js)
+        if isinstance(probe, dict) and probe.get("blocked"):
+            # 年齢制限など。リロードしても解決しないので、定期リロード時に再確認する
+            if not self.blocked:
+                self.log.error("このルームは視聴できません (未ログイン・年齢制限など)。ログイン状態を確認してください")
+            self.blocked = True
+            self._reset_health()
+            return
+        self.blocked = False
         video_time = probe.get("time") if isinstance(probe, dict) else None
         progressing = (
             video_time is not None
