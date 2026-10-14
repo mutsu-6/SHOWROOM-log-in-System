@@ -92,24 +92,27 @@ def main(argv: list[str] | None = None) -> int:
         room = normalize_room_key(args.room) if args.room else None
         if args.text:
             return send_comment(cfg, " ".join(args.text), room)
-        print("コメントを入力して Enter で投稿します。終了するには何も入力せずに Enter (または Ctrl+D)")
+        print("コメントを入力して Enter で投稿します。終了するには /q (または Ctrl+D)")
         enable_utf8_line_editing()
         while True:
             print("コメント> ", end="", flush=True)
             try:
                 raw = sys.stdin.buffer.readline()
             except KeyboardInterrupt:
-                print()
+                print("\n会話モードを終了しました")
                 return 0
             if not raw:  # Ctrl+D
-                print()
+                print("\n会話モードを終了しました")
                 return 0
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if "\ufffd" in line:
                 print("❌ 文字が崩れて受け取りました。お手数ですがもう一度入力してください")
                 continue
-            if not line.strip():
+            if line.strip() == "/q":
+                print("会話モードを終了しました")
                 return 0
+            if not line.strip():  # 日本語入力の確定などで空の Enter が来ても終了しない
+                continue
             send_comment(cfg, line, room)
 
     if args.command == "diagnose":

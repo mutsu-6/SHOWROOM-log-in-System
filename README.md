@@ -98,7 +98,7 @@ python -m showroom_keeper comment こんにちは
 ~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは
 ```
 
-本文を省略すると会話モードになり、1 行入力して Enter を押すたびに投稿します (空のまま Enter で終了)。
+本文を省略すると会話モードになり、1 行入力して Enter を押すたびに投稿します (`/q` または Ctrl+D で終了)。
 サーバーで `bash ~/SHOWROOM-log-in-System/deploy/comment.sh --install` を一度実行すると、
 `c こんにちは` (1 件投稿) や `c` (会話モード) と短く打てるようになります。
 
