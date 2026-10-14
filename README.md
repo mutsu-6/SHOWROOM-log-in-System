@@ -25,6 +25,8 @@ Playwright 付属の Chromium は H.264 に非対応で SHOWROOM の映像を再
 git clone https://github.com/mutsu-6/SHOWROOM-log-in-System.git
 cd SHOWROOM-log-in-System
 python -m venv .venv && . .venv/bin/activate
+# Apple Silicon の Mac では Intel 版 Python だと極端に遅くなるため、代わりに次を推奨:
+#   arch -arm64 /usr/bin/python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium   # Chrome が無い環境向けの予備
 
