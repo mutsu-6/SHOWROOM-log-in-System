@@ -12,6 +12,11 @@ if [ "${1:-}" = "--install" ]; then
   echo "登録しました。次のコマンドで有効にしてください:  source ~/.bashrc"
   exit 0
 fi
+if [ -z "$(sudo docker compose ps -q --status running showroom-keeper 2>/dev/null)" ]; then
+  echo "視聴が止まっているためコメントできません。先に次のコマンドで視聴を開始してください:"
+  echo "  cd $(pwd) && sudo docker compose up -d"
+  exit 1
+fi
 # 本文が無ければ会話モード (端末入力が必要なので -T を付けない)
 TTY=-T
 if [ $# -eq 0 ] || { [ "$1" = "--room" ] && [ $# -eq 2 ]; }; then TTY=; fi
