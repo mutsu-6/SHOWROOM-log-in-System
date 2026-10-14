@@ -71,9 +71,18 @@ python -m showroom_keeper run --headed
 
 ### 常駐させる
 
-- **Docker**: `.env` と `config.yaml` を用意し `docker compose up -d`。
-  セッションは `./data/storage_state.json` に保存されます。手動ログインはコンテナ内ではできないため、
-  ローカルで `login` を実行して作った `state/storage_state.json` を `./data/` にコピーしてください。
+- **サーバー (24 時間稼働)**: Ubuntu 22.04/24.04 (x86_64、メモリ 2GB 以上推奨) のサーバーを用意し、
+  手元の PC (`login` 済み) から次を実行します。フォルダとログイン状態をコピーし、
+  Docker のインストールから起動まで自動で行います。サーバー再起動後も自動で再開します。
+
+  ```bash
+  cd ~/SHOWROOM-log-in-System
+  rsync -a --exclude .venv --exclude .git --exclude data ./ ユーザー名@サーバーのIP:SHOWROOM-log-in-System/
+  ssh -t ユーザー名@サーバーのIP 'sudo bash SHOWROOM-log-in-System/deploy/setup-server.sh'
+  ```
+
+  更新するときも同じ 2 行を実行します。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
+- **Docker (手動)**: `.env` を用意し `docker compose up -d`。セッションは `./data/storage_state.json` に保存されます。
 - **systemd**: `deploy/showroom-keeper.service` を参照。
 
 ## 設定
