@@ -26,6 +26,7 @@ class RoomStatus:
     room_id: int | None
     room_name: str
     is_live: bool
+    live_id: int | None = None
 
     @property
     def url(self) -> str:
@@ -43,6 +44,7 @@ def parse_room_status(room_url_key: str, data: dict[str, Any]) -> RoomStatus:
         room_id=int(room_id) if room_id not in (None, "") else None,
         room_name=str(data.get("room_name") or room_url_key),
         is_live=bool(is_live),
+        live_id=int(data["live_id"]) if data.get("live_id") else None,
     )
 
 

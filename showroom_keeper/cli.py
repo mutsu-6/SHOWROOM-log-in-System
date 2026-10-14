@@ -129,11 +129,14 @@ def main(argv: list[str] | None = None) -> int:
         if not rooms:
             print("ルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS)")
             return 2
+        from pathlib import Path
+
+        state_dir = Path(cfg.state_file).parent
         if not args.watch:
-            return print_status(rooms)
+            return print_status(rooms, state_dir)
         try:
             while True:
-                print_status(rooms)
+                print_status(rooms, state_dir)
                 time.sleep(max(10, args.watch))
                 print()
         except KeyboardInterrupt:

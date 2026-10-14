@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from .api import RoomStatus
 from .config import Config
+from .status import write_live_stat
 
 # 動画要素の状態を返しつつ、止まっていたら(ミュートで)再生を再開する
 PROBE_JS = """
@@ -35,6 +37,22 @@ async ([roomId, text, since]) => {
   const log = (await get('/api/live/comment_log?room_id=' + roomId)).comment_log || [];
   return log.some(c => c.comment === text && (c.created_at || since) >= since
                        && (!me.user_id || c.user_id === me.user_id));
+}
+"""
+
+
+# SHOWROOM のサロン形式で使われている在室確認 API。応答の viewer_count がリアルタイム視聴者数 (要ログイン)
+VIEWER_COUNT_JS = """
+async (liveId) => {
+  const t = await (await fetch('/api/csrf_token', { credentials: 'include' })).json();
+  const r = await fetch('/api/viewer_presence/heartbeat', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ live_id: String(liveId), csrf_token: t.csrf_token || '' }),
+  });
+  let data = null;
+  try { data = await r.json(); } catch (e) {}
+  return { status: r.status, data };
 }
 """
 
@@ -71,6 +89,7 @@ class RoomWatcher:
         self._clock = clock
         self._sleep = sleep
         self.log = logging.getLogger(f"room.{room_url_key}")
+        self._state_dir = Path(config.state_file).parent
 
         self.page: Page | None = None
         self.status: RoomStatus | None = None
@@ -82,6 +101,9 @@ class RoomWatcher:
         self.watched_seconds = 0.0
         self.reload_count = 0
         self.blocked = False
+        self.viewer_count: int | None = None
+        self._viewer_count_at: float | None = None
+        self._viewer_count_error: str | None = None
         self._failures = 0
         self._stop = asyncio.Event()
 
@@ -185,8 +207,37 @@ class RoomWatcher:
         self.last_video_time = None
         self.stall_count = 0
 
+    async def _update_viewer_count(self) -> None:
+        """リアルタイム視聴者数を取得し、status コマンド用に保存する。"""
+        if not self.cfg.viewer_count or not self._page_alive() or not (self.status and self.status.live_id):
+            return
+        now = self._clock()
+        if self._viewer_count_at is not None and now - self._viewer_count_at < self.cfg.viewer_count_interval:
+            return
+        self._viewer_count_at = now
+        assert self.page is not None
+        res = await self.page.evaluate(VIEWER_COUNT_JS, self.status.live_id)
+        data = res.get("data") if isinstance(res, dict) else None
+        count = data.get("viewer_count") if isinstance(data, dict) else None
+        if isinstance(count, int):
+            if self.viewer_count is None:
+                self.log.info("リアルタイム視聴者数を取得できました: %d 人", count)
+            self.viewer_count, self._viewer_count_error = count, None
+            write_live_stat(self._state_dir, self.key, viewer_count=count, viewer_count_at=time.time(),
+                            viewer_count_error=None)
+        else:
+            msg = (data or {}).get("error_user_msg") or (data or {}).get("error") or f"HTTP {res.get('status') if isinstance(res, dict) else '?'}"
+            if msg != self._viewer_count_error:
+                self.log.warning("リアルタイム視聴者数を取得できません: %s", msg)
+            self._viewer_count_error = msg
+            write_live_stat(self._state_dir, self.key, viewer_count=None, viewer_count_error=msg)
+
     async def _maintain_page(self) -> None:
         assert self.page is not None
+        try:
+            await self._update_viewer_count()
+        except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
+            self.log.debug("視聴者数の取得に失敗: %s", e)
         now = self._clock()
         period = self.cfg.periodic_reload_minutes * 60
         if period > 0 and self.last_reload_at is not None and now - self.last_reload_at >= period:

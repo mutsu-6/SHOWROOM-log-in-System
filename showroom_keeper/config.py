@@ -79,6 +79,9 @@ class Config:
     keep_open_when_offline: bool = False
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
+    # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
+    viewer_count: bool = True
+    viewer_count_interval: float = 60.0
     # アバター等の 3D 描画 (WebGL) を止めて CPU 負荷を約 1/10 にする。
     # GPU の無いサーバーでは 3D 描画が CPU を使い切り映像が止まるため。None なら画面非表示時のみ止める
     disable_3d: bool | None = None

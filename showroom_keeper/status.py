@@ -13,10 +13,37 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from pathlib import Path
+
 from .api import BASE_URL
 
 JST = timezone(timedelta(hours=9))
 COMMENT_WINDOW = 600  # 直近のコメント人数を数える期間 (秒)
+
+
+STATS_FILE = "live_stats.json"
+STATS_FRESH = 180  # これより古いリアルタイム視聴者数は表示しない (視聴プログラム停止中など)
+
+
+def write_live_stat(state_dir: Path, room_url_key: str, **values) -> None:
+    """視聴プログラムが取得した値をルームごとに保存する (status コマンドが読む)。"""
+    path = state_dir / STATS_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault(room_url_key, {}).update(values)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def read_live_stats(state_dir: Path) -> dict:
+    try:
+        return json.loads((state_dir / STATS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def _get(path: str) -> dict:
@@ -53,9 +80,16 @@ def count_recent_commenters(log: list[dict], now: float, window: float = COMMENT
 
 
 def format_status(info: dict, now: float | None = None) -> str:
+    now = now or time.time()
     if not info["is_live"]:
         return f"⚪ {info['name']}: 配信していません"
     line = f"🔴 {info['name']}"
+    stat = info.get("live_stat") or {}
+    if stat.get("viewer_count") is not None and now - stat.get("viewer_count_at", 0) <= STATS_FRESH:
+        at = datetime.fromtimestamp(stat["viewer_count_at"], JST)
+        line += f"\n   リアルタイム視聴者数: {stat['viewer_count']:,} 人 ({at:%H:%M:%S} 時点)"
+    elif stat.get("viewer_count_error"):
+        line += f"\n   リアルタイム視聴者数: 取得できません ({stat['viewer_count_error']})"
     if info["excitement"] is not None:
         line += f"\n   盛り上がり度: {info['excitement']:,}"
     if info["commenters"] is not None:
@@ -63,17 +97,20 @@ def format_status(info: dict, now: float | None = None) -> str:
         line += f"\n   直近10分のコメント人数: {info['commenters']} 人{more}"
     if info["started_at"]:
         started = datetime.fromtimestamp(info["started_at"], JST)
-        elapsed = int((now or time.time()) - info["started_at"])
+        elapsed = int(now - info["started_at"])
         line += f"\n   開始 {started:%m/%d %H:%M} (経過 {elapsed // 3600} 時間 {elapsed % 3600 // 60} 分)"
     return line
 
 
-def print_status(rooms: list[str]) -> int:
+def print_status(rooms: list[str], state_dir: Path | None = None) -> int:
     print(datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"))
+    stats = read_live_stats(state_dir) if state_dir else {}
     code = 0
     for key in rooms:
         try:
-            print(format_status(fetch(key)))
+            info = fetch(key)
+            info["live_stat"] = stats.get(key)
+            print(format_status(info))
         except Exception as e:  # noqa: BLE001
             print(f"❌ {key}: 取得できませんでした ({e})")
             code = 1

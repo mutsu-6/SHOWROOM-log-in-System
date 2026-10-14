@@ -27,7 +27,9 @@ save_state_minutes: 10        # セッション保存・ログイン確認の間
 keep_open_when_offline: false # 配信していない時もページを開いておく
 # disable_3d: true             # アバター等の 3D 描画を止めて CPU 負荷を下げる (既定: 画面非表示時のみ)
 block_trackers: true          # 広告・アクセス解析の読み込みを遮断 (読み込みが速くなる)
-block_media: false            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
+block_media: false
+viewer_count: true            # リアルタイム視聴者数を取得 (要ログイン)
+viewer_count_interval: 60     # その間隔 (秒)            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
 mute: true
 max_backoff: 300              # 障害時の再試行待ちの上限 (秒)
 log_level: INFO

@@ -20,3 +20,14 @@ def test_count_recent_commenters():
     assert count_recent_commenters(log, now) == (2, False)
     busy = [{"user_id": i % 40, "created_at": now - i} for i in range(100)]  # 100 件が 100 秒に収まる
     assert count_recent_commenters(busy, now) == (40, True)
+
+
+def test_format_realtime_viewers_fresh_and_stale():
+    base = {"name": "部屋", "is_live": True, "started_at": None, "excitement": 1, "commenters": 0,
+            "commenters_capped": False}
+    fresh = format_status({**base, "live_stat": {"viewer_count": 42, "viewer_count_at": 1000}}, now=1060)
+    assert "リアルタイム視聴者数: 42 人" in fresh
+    stale = format_status({**base, "live_stat": {"viewer_count": 42, "viewer_count_at": 1000}}, now=2000)
+    assert "リアルタイム視聴者数" not in stale
+    err = format_status({**base, "live_stat": {"viewer_count": None, "viewer_count_error": "ログインが必要です。"}}, now=1)
+    assert "取得できません (ログインが必要です。)" in err

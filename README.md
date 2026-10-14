@@ -113,8 +113,12 @@ python -m showroom_keeper status          # 手元の PC
 ~/SHOWROOM-log-in-System/deploy/status.sh  # サーバー (Docker)。-w 60 で 60 秒ごとに更新
 ```
 
-SHOWROOM は同時接続数を公開していないため、目安として「盛り上がり度」(SHOWROOM が表示している値) と
-「直近 10 分間にコメントした人数」を表示します。どちらも同時接続数そのものではありません。
+- **リアルタイム視聴者数**: 視聴中の keeper が 60 秒ごとに SHOWROOM の在室確認 API
+  (`/api/viewer_presence/heartbeat`、公式にはサロン形式の配信で使われているもの) に問い合わせて取得します。
+  ログインが必要で、クラシック形式の配信で正しい値が返るかは SHOWROOM 側の仕様次第です。
+  視聴 (`run`) が止まっている間は表示されません。`viewer_count: false` で無効にできます。
+- **盛り上がり度**: SHOWROOM が画面に表示している値です (視聴者数ではありません)。
+- **直近 10 分のコメント人数**: 直近 10 分間にコメントしたユーザー数です。
 
 ## 設定
 

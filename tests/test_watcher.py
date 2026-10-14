@@ -177,3 +177,41 @@ async def test_post_comment_requires_open_live_page(env):
     await w.step()
     ok, msg = await w.post_comment("hi")
     assert not ok
+
+
+async def test_viewer_count_is_fetched_and_saved(tmp_path):
+    from showroom_keeper.status import read_live_stats
+
+    cfg = Config(rooms=["k"], state_file=tmp_path / "s.json", viewer_count_interval=60)
+    clock = Clock()
+    responses = iter([
+        {"status": 200, "data": {"viewer_count": 123}}, None,  # 30 秒: 視聴者数, 再生確認
+        None,  # 60 秒: 再生確認のみ
+        {"status": 401, "data": {"error_user_msg": "ログインが必要です。"}}, None,  # 95 秒
+    ])
+
+    async def fetch(key):
+        return RoomStatus(key, 1, "Room", True, live_id=99)
+
+    page = FakePage()
+
+    async def evaluate(js, arg=None):
+        return next(responses)
+
+    page.evaluate = evaluate
+
+    async def new_page():
+        return page
+
+    w = RoomWatcher("k", cfg, fetch, new_page, clock=clock)
+    await w.step()  # ページを開く
+    clock.t = 30
+    await w.step()  # 視聴者数 (200) + 再生確認
+    assert w.viewer_count == 123
+    assert read_live_stats(tmp_path)["k"]["viewer_count"] == 123
+    clock.t = 60
+    await w.step()  # 60 秒未満なので視聴者数は取りに行かない (再生確認のみ)
+    clock.t = 95
+    await w.step()  # 401
+    stat = read_live_stats(tmp_path)["k"]
+    assert stat["viewer_count"] is None and "ログイン" in stat["viewer_count_error"]
