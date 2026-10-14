@@ -6,6 +6,8 @@ services:
     volumes:
       - ./data:/data          # ログイン状態 (storage_state.json) の保存先
     shm_size: "1gb"
+    # 停止時にログイン状態を保存してからブラウザを閉じるため、強制終了までの猶予を長めに取る
+    stop_grace_period: 60s
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
