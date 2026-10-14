@@ -6,8 +6,8 @@ from showroom_keeper.comments import MAX_LENGTH, CommentDispatcher, enqueue, val
 
 
 class Target:
-    def __init__(self, key, ok=True):
-        self.key, self.ok, self.posted = key, ok, []
+    def __init__(self, key, ok=True, live=True):
+        self.key, self.ok, self.posted, self.can_comment = key, ok, [], live
 
     async def post_comment(self, text):
         self.posted.append(text)
@@ -55,6 +55,15 @@ async def test_posts_to_single_room_and_spaces_out_posts(tmp_path):
     assert slept == [3.0]  # 2 件目は最小間隔まで待つ
     assert result(tmp_path, a)["ok"] and result(tmp_path, b)["ok"]
     assert not list(tmp_path.glob("*.req.json"))
+
+
+async def test_auto_selects_the_only_live_room(tmp_path):
+    clock = Clock()
+    t1, t2 = Target("r1", live=False), Target("r2", live=True)
+    d, _ = make(tmp_path, [t1, t2], clock)
+    a = enqueue(tmp_path, "hi", now=clock.t)
+    await d.process_pending()
+    assert result(tmp_path, a)["ok"] and t2.posted == ["hi"] and t1.posted == []
 
 
 async def test_requires_room_when_multiple(tmp_path):

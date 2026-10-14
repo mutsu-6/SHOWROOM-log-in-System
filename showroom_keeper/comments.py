@@ -69,6 +69,9 @@ async def wait_result(qdir: Path, req_id: str, timeout: float = 30.0) -> dict[st
 class CommentTarget(Protocol):
     key: str
 
+    @property
+    def can_comment(self) -> bool: ...
+
     async def post_comment(self, text: str) -> tuple[bool, str]: ...
 
 
@@ -123,7 +126,14 @@ class CommentDispatcher:
         elif len(self.targets) == 1:
             target = next(iter(self.targets.values()))
         else:
-            return False, f"ルームを --room で指定してください ({', '.join(self.targets)})"
+            # 配信中で投稿できるルームが 1 つだけなら、そこに送る
+            live = [t for t in self.targets.values() if getattr(t, "can_comment", False)]
+            if len(live) == 1:
+                target = live[0]
+            elif not live:
+                return False, "配信中のルームがありません"
+            else:
+                return False, f"配信中のルームが複数あります。--room で指定してください ({', '.join(t.key for t in live)})"
 
         if self._last_post is not None:
             wait = self.min_interval - (self._clock() - self._last_post)

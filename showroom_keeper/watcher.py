@@ -156,6 +156,10 @@ class RoomWatcher:
             await self._close_page()
             return delay
 
+    @property
+    def can_comment(self) -> bool:
+        return self._page_alive() and bool(self.status and self.status.is_live) and not self.blocked
+
     async def post_comment(self, text: str) -> tuple[bool, str]:
         """開いている配信ページのコメント欄から投稿し、コメント履歴で反映を確認する。"""
         if not self._page_alive() or not (self.status and self.status.is_live):
