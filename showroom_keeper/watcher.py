@@ -143,7 +143,7 @@ class RoomWatcher:
             await self._sleep(1)
             if await page.evaluate(COMMENT_LOG_JS, [self.status.room_id, text, since]):
                 return True, "投稿しました"
-        return False, "投稿を確認できませんでした (未ログイン、コメント制限、または同じ内容の連投の可能性)"
+        return False, "投稿を確認できませんでした (NGワード、未ログイン、コメント制限、または同じ内容の連投の可能性)"
 
     # ------------------------------------------------------------------ 内部処理
     async def _wait(self, seconds: float) -> None:
