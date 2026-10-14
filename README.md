@@ -98,6 +98,10 @@ python -m showroom_keeper comment こんにちは
 ~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは
 ```
 
+本文を省略すると会話モードになり、1 行入力して Enter を押すたびに投稿します (空のまま Enter で終了)。
+サーバーで `bash ~/SHOWROOM-log-in-System/deploy/comment.sh --install` を一度実行すると、
+`c こんにちは` (1 件投稿) や `c` (会話モード) と短く打てるようになります。
+
 - 1 件 50 文字まで。複数ルームを監視している場合は `--room ルーム名` で投稿先を指定します。
 - 連投を防ぐため、投稿と投稿の間は最低 3 秒空けます。自動・定期投稿の機能はありません
   (SHOWROOM の利用規約はボット等による自動化された利用を禁止しています)。

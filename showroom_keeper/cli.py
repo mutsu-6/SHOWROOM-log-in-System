@@ -25,13 +25,31 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("login", help="ブラウザを開いて手動ログインし、セッションを保存する")
 
     com = sub.add_parser("comment", help="常駐中の keeper から配信にコメントを 1 件投稿する")
-    com.add_argument("text", nargs="+", help="コメント本文")
+    com.add_argument("text", nargs="*", help="コメント本文 (省略すると 1 行ずつ入力して送る会話モード)")
     com.add_argument("--room", help="投稿先のルーム (複数ルームを監視している場合に指定)")
 
     diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
     diag.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
     return p
+
+
+def send_comment(cfg: Config, text: str, room: str | None) -> int:
+    from .comments import enqueue, queue_dir, validate, wait_result
+
+    try:
+        text = validate(text)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 2
+    req_id = enqueue(queue_dir(cfg), text, room)
+    print(f"投稿中: {text}", flush=True)
+    result = asyncio.run(wait_result(queue_dir(cfg), req_id))
+    if result is None:
+        print("❌ 応答がありません。視聴 (run) が動いているか確認してください")
+        return 1
+    print(("✅ " if result["ok"] else "❌ ") + result["message"])
+    return 0 if result["ok"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,23 +68,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "comment":
-        from .comments import enqueue, queue_dir, validate, wait_result
         from .config import normalize_room_key
 
-        try:
-            text = validate(" ".join(args.text))
-        except ValueError as e:
-            print(f"エラー: {e}")
-            return 2
         room = normalize_room_key(args.room) if args.room else None
-        req_id = enqueue(queue_dir(cfg), text, room)
-        print(f"投稿を依頼しました: {text}")
-        result = asyncio.run(wait_result(queue_dir(cfg), req_id))
-        if result is None:
-            print("応答がありません。視聴 (run) が動いているか確認してください")
-            return 1
-        print(("✅ " if result["ok"] else "❌ ") + result["message"])
-        return 0 if result["ok"] else 1
+        if args.text:
+            return send_comment(cfg, " ".join(args.text), room)
+        print("コメントを入力して Enter で投稿します。終了するには何も入力せずに Enter (または Ctrl+D)")
+        while True:
+            try:
+                line = input("コメント> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if not line.strip():
+                return 0
+            send_comment(cfg, line, room)
 
     if args.command == "diagnose":
         from .keeper import diagnose

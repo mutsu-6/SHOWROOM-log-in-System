@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# サーバー (Docker) で常駐中の keeper から配信にコメントを 1 件投稿する。
-#   ~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは
+# サーバー (Docker) で常駐中の keeper から配信にコメントする。
+#   ~/SHOWROOM-log-in-System/deploy/comment.sh こんにちは      1 件投稿
+#   ~/SHOWROOM-log-in-System/deploy/comment.sh                 会話モード (1 行ずつ入力して投稿)
 #   ~/SHOWROOM-log-in-System/deploy/comment.sh --room ルーム名 こんにちは   (複数ルーム監視時)
+# `bash deploy/comment.sh --install` で短縮コマンド `c` を登録する。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-if [ $# -eq 0 ]; then echo "使い方: $0 [--room ルーム名] コメント"; exit 2; fi
-exec sudo docker compose exec -T showroom-keeper python -m showroom_keeper comment "$@"
+if [ "${1:-}" = "--install" ]; then
+  LINE="alias c='$(pwd)/deploy/comment.sh'"
+  grep -qxF "$LINE" ~/.bashrc 2>/dev/null || echo "$LINE" >> ~/.bashrc
+  echo "登録しました。次のコマンドで有効にしてください:  source ~/.bashrc"
+  exit 0
+fi
+# 本文が無ければ会話モード (端末入力が必要なので -T を付けない)
+TTY=-T
+if [ $# -eq 0 ] || { [ "$1" = "--room" ] && [ $# -eq 2 ]; }; then TTY=; fi
+exec sudo docker compose exec $TTY -e PYTHONIOENCODING=utf-8 showroom-keeper python -m showroom_keeper comment "$@"

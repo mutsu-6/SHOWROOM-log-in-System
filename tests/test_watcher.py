@@ -154,8 +154,8 @@ async def test_post_comment_fills_submits_and_confirms(env):
     async def fill(sel, value, **kw):
         actions.append(("fill", value))
 
-    async def click(sel, **kw):
-        actions.append(("click", sel))
+    async def press(sel, key, **kw):
+        actions.append(("press", key))
 
     checks = iter([False, True])
 
@@ -165,10 +165,10 @@ async def test_post_comment_fills_submits_and_confirms(env):
     async def no_sleep(s):
         pass
 
-    page.fill, page.click, page.evaluate = fill, click, evaluate
+    page.fill, page.press, page.evaluate = fill, press, evaluate
     w._sleep = no_sleep
     ok, msg = await w.post_comment("こんにちは")
-    assert ok and actions == [("fill", "こんにちは"), ("click", "button.st-comment__button")]
+    assert ok and actions == [("fill", "こんにちは"), ("press", "Enter")]
 
 
 async def test_post_comment_requires_open_live_page(env):

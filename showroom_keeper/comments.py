@@ -132,6 +132,6 @@ class CommentDispatcher:
         try:
             ok, message = await target.post_comment(text)
         except Exception as e:  # noqa: BLE001
-            ok, message = False, f"投稿中にエラーが発生しました: {e}"
+            ok, message = False, f"投稿中にエラーが発生しました: {str(e).splitlines()[0]}"
         self._last_post = self._clock()
         return ok, message
