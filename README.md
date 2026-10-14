@@ -17,7 +17,7 @@
 
 ## セットアップ
 
-Python 3.10 以上と **Google Chrome** が必要です。
+Python 3.9 以上と **Google Chrome** が必要です。
 Playwright 付属の Chromium は H.264 に非対応で SHOWROOM の映像を再生できないため、インストール済みの Chrome を使います
 (Chrome が無い場合は警告を出して付属 Chromium で起動します)。
 

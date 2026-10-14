@@ -2,7 +2,7 @@
 name = "showroom-keeper"
 version = "0.1.0"
 description = "SHOWROOM の視聴状態を維持し続ける常駐システム"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = ["playwright>=1.45", "PyYAML>=6.0"]
 
 [project.scripts]
