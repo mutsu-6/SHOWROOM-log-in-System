@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
+import sys
 import signal
 from contextlib import suppress
 
@@ -32,6 +34,23 @@ def build_parser() -> argparse.ArgumentParser:
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
     diag.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
     return p
+
+
+def enable_utf8_line_editing() -> None:
+    """端末の行編集を UTF-8 対応にする (Backspace で日本語 1 文字を丸ごと消せるように)。
+
+    Docker の端末などでは既定で無効なため、日本語を消すと 1 バイトだけ消えて文字が壊れる。
+    """
+    try:
+        import termios
+
+        fd = sys.stdin.fileno()
+        if os.isatty(fd) and hasattr(termios, "IUTF8"):
+            attrs = termios.tcgetattr(fd)
+            attrs[0] |= termios.IUTF8
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except Exception:  # noqa: BLE001 - 対応していない環境ではそのまま
+        pass
 
 
 def send_comment(cfg: Config, text: str, room: str | None) -> int:
@@ -74,12 +93,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.text:
             return send_comment(cfg, " ".join(args.text), room)
         print("コメントを入力して Enter で投稿します。終了するには何も入力せずに Enter (または Ctrl+D)")
+        enable_utf8_line_editing()
         while True:
+            print("コメント> ", end="", flush=True)
             try:
-                line = input("コメント> ")
-            except (EOFError, KeyboardInterrupt):
+                raw = sys.stdin.buffer.readline()
+            except KeyboardInterrupt:
                 print()
                 return 0
+            if not raw:  # Ctrl+D
+                print()
+                return 0
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if "\ufffd" in line:
+                print("❌ 文字が崩れて受け取りました。お手数ですがもう一度入力してください")
+                continue
             if not line.strip():
                 return 0
             send_comment(cfg, line, room)
