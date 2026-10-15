@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if getattr(args, "no_web", False):
         cfg.web_port = 0
-    if not (cfg.rooms or cfg.record_rooms or cfg.events or cfg.web_port or login_available(cfg)):
+    if not (cfg.rooms or cfg.enter_rooms or cfg.record_rooms or cfg.events or cfg.web_port or login_available(cfg)):
         logging.error("監視するルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS。"
                       "ギフト記録だけなら SHOWROOM_RECORD_ROOMS / SHOWROOM_EVENTS)")
         return 2

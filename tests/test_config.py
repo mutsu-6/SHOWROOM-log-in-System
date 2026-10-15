@@ -88,3 +88,17 @@ def test_record_targets_have_no_count_limit():
     assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "false"}).keep_open_when_offline is False
     assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "true"}).keep_open_when_offline is True
     assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "auto"}).keep_open_when_offline is None
+
+
+def test_enter_rooms_from_env_survive_older_saved_settings(tmp_path):
+    import json
+
+    env = {"SHOWROOM_ENTER_ROOMS": "x,https://www.showroom-live.com/r/y,x",
+           "SHOWROOM_STATE_FILE": str(tmp_path / "s.json")}
+    assert Config.load(None, env=env).enter_rooms == ["x", "y"]
+    # 入室するルームの項目が無い、以前の管理画面の保存内容
+    (tmp_path / "settings.json").write_text(json.dumps({"rooms": ["a"], "record_rooms": [], "events": []}))
+    cfg = Config.load(None, env=env)
+    assert cfg.rooms == ["a"] and cfg.enter_rooms == ["x", "y"]
+    (tmp_path / "settings.json").write_text(json.dumps({"rooms": ["a"], "enter_rooms": []}))
+    assert Config.load(None, env=env).enter_rooms == []

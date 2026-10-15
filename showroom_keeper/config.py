@@ -73,6 +73,8 @@ class Config:
     # 視聴はせずギフトだけ記録するルームと、参加ルームすべてを記録するイベント (件数の上限なし)
     record_rooms: list[str] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
+    # 視聴はせず、配信が始まったら一度だけ入室するルーム (視聴するルームと重なる分は除く)
+    enter_rooms: list[str] = field(default_factory=list)
     credentials: Credentials = field(default_factory=Credentials)
     state_file: Path = Path("state/storage_state.json")
     headless: bool = True
@@ -168,6 +170,9 @@ class Config:
             cfg.record_rooms = [r for r in env["SHOWROOM_RECORD_ROOMS"].split(",") if r.strip()]
         if env.get("SHOWROOM_EVENTS"):
             cfg.events = [e for e in env["SHOWROOM_EVENTS"].split(",") if e.strip()]
+        if env.get("SHOWROOM_ENTER_ROOMS"):
+            cfg.enter_rooms = [r for r in env["SHOWROOM_ENTER_ROOMS"].split(",") if r.strip()]
+        cfg.enter_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.enter_rooms or []))
         cfg.record_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.record_rooms or []))
         cfg.events = list(dict.fromkeys(normalize_event_key(str(e)) for e in cfg.events or []))
 
@@ -191,7 +196,7 @@ class Config:
             raise ValueError("stall_threshold は 1 以上である必要があります")
 
 
-SETTINGS_KEYS = ("rooms", "record_rooms", "events")
+SETTINGS_KEYS = ("rooms", "record_rooms", "events", "enter_rooms")
 
 
 def settings_path(cfg: Config) -> Path:
@@ -228,6 +233,9 @@ def apply_settings(cfg: Config) -> bool:
     except ValueError:
         return False
     cfg.rooms, cfg.record_rooms, cfg.events = values["rooms"], values["record_rooms"], values["events"]
+    # 入室するルームの項目が無い以前の保存内容では、.env / config.yaml の指定を残す
+    if "enter_rooms" in data:
+        cfg.enter_rooms = values["enter_rooms"]
     return True
 
 

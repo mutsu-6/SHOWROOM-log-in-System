@@ -74,7 +74,7 @@ def test_page_and_overview(admin):
     a, b = data["rooms"]
     assert a["watcher"]["state"] == "watching" and a["watcher"]["can_comment"] is True
     assert b["watcher"]["state"] == "waiting" and a["excitement"] == 10
-    assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": []}
+    assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": [], "enter_rooms": []}
 
 
 def test_rejects_other_hosts_and_cross_site_posts(admin):
@@ -97,6 +97,7 @@ def test_save_settings_and_request_reload(admin, tmp_path):
     assert keeper.reloads == 1
     cfg = Config(state_file=tmp_path / "s.json")
     assert apply_settings(cfg) and (cfg.rooms, cfg.record_rooms, cfg.events) == (["new_room"], ["rec"], ["ev1"])
+    assert cfg.enter_rooms == []
     code, body = call(base + "/api/settings", {"rooms": ["not a room!"]}, POST)
     assert code == 400 and keeper.reloads == 1
 

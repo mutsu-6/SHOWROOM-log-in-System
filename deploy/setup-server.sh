@@ -36,8 +36,8 @@ fi
 [ -f data/storage_state.json ] && chmod 600 data/storage_state.json || \
   echo "注意: ログイン状態 (data/storage_state.json) がありません。未ログインで視聴します"
 
-# 視聴ルーム・ギフト記録のルーム・イベントのどれも設定されていなければ尋ねる
-if [ ! -f .env ] || ! grep -qE "^SHOWROOM_(ROOMS|RECORD_ROOMS|EVENTS)=..*" .env; then
+# 視聴ルーム・入室するルーム・ギフト記録のルーム・イベントのどれも設定されていなければ尋ねる
+if [ ! -f .env ] || ! grep -qE "^SHOWROOM_(ROOMS|ENTER_ROOMS|RECORD_ROOMS|EVENTS)=..*" .env; then
   echo "==> 設定 (.env) に視聴するルームを追加します"
   read -r -p "視聴するルームの URL (複数はカンマ区切り): " ROOMS < /dev/tty
   umask 077

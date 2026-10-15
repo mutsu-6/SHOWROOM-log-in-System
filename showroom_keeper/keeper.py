@@ -16,6 +16,7 @@ from playwright.async_api import Browser, BrowserContext, async_playwright
 from .api import BASE_URL, ShowroomAPI
 from .config import Config, apply_settings, settings_path
 from .comments import CommentDispatcher, queue_dir
+from .entrance import RoomEntrance
 from .status import LOGIN_KEY, write_live_stat
 from .watcher import RoomWatcher
 
@@ -213,7 +214,7 @@ async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_
 
 class Keeper:
     def __init__(self, cfg: Config):
-        if not (cfg.rooms or cfg.record_rooms or cfg.events or cfg.web_port or login_available(cfg)):
+        if not (cfg.rooms or cfg.enter_rooms or cfg.record_rooms or cfg.events or cfg.web_port or login_available(cfg)):
             raise ValueError("監視するルームが指定されていません (rooms / record_rooms / events)")
         self.cfg = cfg
         # 視聴ルームが無いときにログイン確認に使う配信中のルーム。確認できなくなったら探し直す
@@ -275,8 +276,8 @@ class Keeper:
                 if self._reload_requested:
                     self._reload_requested = False
                     apply_settings(self.cfg)
-                    log.info("ルーム設定を反映しました (視聴 %d / ギフト記録 %d / イベント %d)",
-                             len(self.cfg.rooms), len(self.cfg.record_rooms), len(self.cfg.events))
+                    log.info("ルーム設定を反映しました (視聴 %d / 入室 %d / ギフト記録 %d / イベント %d)",
+                             len(self.cfg.rooms), len(self.cfg.enter_rooms), len(self.cfg.record_rooms), len(self.cfg.events))
                 if not self._stop.is_set():
                     self._wake.clear()
                 await self._run_targets()
@@ -294,8 +295,8 @@ class Keeper:
             self.recorder = GiftRecorder(self.cfg)
             recorder = asyncio.ensure_future(self.recorder.run())
         try:
-            if self.cfg.rooms or login_available(self.cfg):
-                if not self.cfg.rooms:
+            if self.cfg.rooms or self.cfg.enter_rooms or login_available(self.cfg):
+                if not (self.cfg.rooms or self.cfg.enter_rooms):
                     log.info("視聴するルームはありません。ブラウザはログインの維持だけに使います")
                 await self._run_loop()
             else:
@@ -353,9 +354,15 @@ class Keeper:
             for w in watchers:
                 w.keep_open = keep_open
             self.watchers = watchers
-            self.browser_state = "動作中" if watchers else "動作中 (ログイン維持のみ)"
+            enter_rooms = [key for key in self.cfg.enter_rooms if key not in self.cfg.rooms]
+            self.browser_state = "動作中" if watchers or enter_rooms else "動作中 (ログイン維持のみ)"
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
-            tasks.append(asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments"))
+            # 止める指示を待たず動き続けるので、終了時に取り消す
+            background = [asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments")]
+            if enter_rooms:
+                entrance = RoomEntrance(enter_rooms, self.cfg.status_poll_interval, api.room_status, ctx.new_page)
+                background.append(asyncio.create_task(entrance.run(), name="entrance"))
+            tasks += background
             saver = asyncio.create_task(self._periodic_save(ctx, api, watchers))
             wake_wait = asyncio.create_task(self._wake.wait())
             disc_wait = asyncio.create_task(disconnected.wait())
@@ -364,7 +371,8 @@ class Keeper:
             finally:
                 for w in watchers:
                     w.stop()
-                tasks[-1].cancel()  # コメント受付
+                for t in background:
+                    t.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 for t in (saver, wake_wait, disc_wait):
                     t.cancel()
