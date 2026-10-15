@@ -143,7 +143,11 @@ class GiftRecorder:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.state_dir = Path(cfg.state_file).parent
-        self._tasks: dict[str, tuple[Any, asyncio.Task]] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        # 記録中の配信の live_id。同じルームでも配信が変われば live_id が変わるので、それで接続し直す
+        self._live_ids: dict[str, int | None] = {}
+        # 直近の確認で取得に失敗したものがあるか (あれば、対象から外れたルームでも記録を止めない)
+        self._incomplete = False
         self._events: dict[str, dict[str, Any]] = {}
         self._ended_logged: set[str] = set()
         self._fetch_slots: asyncio.Semaphore | None = None
@@ -159,7 +163,7 @@ class GiftRecorder:
                     log.warning("配信状況の確認に失敗: %s", e)
                 await asyncio.sleep(REFRESH_INTERVAL)
         finally:
-            for _, task in self._tasks.values():
+            for task in self._tasks.values():
                 task.cancel()
 
     def _limits(self) -> None:
@@ -178,29 +182,39 @@ class GiftRecorder:
     def _cookie(self) -> str | None:
         return session_cookie(Path(self.cfg.state_file))
 
+    async def _room_status(self, key: str, cookie: str | None) -> Any:
+        try:
+            st = await self._fetch(f"/api/room/status?room_url_key={key}", cookie)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s の配信状況を確認できません: %s", key, e)
+            st = None
+        if not isinstance(st, dict):
+            self._incomplete = True
+            return None
+        return st
+
     async def _targets(self) -> dict[str, dict[str, Any]]:
-        """配信中の記録対象ルーム {room_url_key: {room_id, source}}。"""
+        """配信中の記録対象ルーム {room_url_key: {room_id, live_id, source}}。
+
+        イベントの参加ルーム一覧には live_id が無いため、イベント由来のルームの live_id は None。
+        """
         cookie = self._cookie()
         watched = set(self.cfg.rooms)
         live: dict[str, dict[str, Any]] = {}
-
-        async def room_status(key: str) -> tuple[str, Any]:
-            try:
-                return key, await self._fetch(f"/api/room/status?room_url_key={key}", cookie)
-            except Exception as e:  # noqa: BLE001
-                log.warning("%s の配信状況を確認できません: %s", key, e)
-                return key, None
+        self._incomplete = False
 
         keys = [key for key in self.cfg.record_rooms if key not in watched]
-        for key, st in await asyncio.gather(*[room_status(key) for key in keys]):
-            room_id = st.get("room_id") if isinstance(st, dict) else None
+        statuses = await asyncio.gather(*[self._room_status(key, cookie) for key in keys])
+        for key, st in zip(keys, statuses):
+            room_id = st.get("room_id") if st else None
             if room_id and st.get("is_live"):
-                live[key] = {"room_id": room_id, "source": "ルーム指定"}
+                live[key] = {"room_id": room_id, "live_id": st.get("live_id"), "source": "ルーム指定"}
         now = time.time()
         for ev in self.cfg.events:
             try:
                 await self._add_event(ev, cookie, watched, live, now)
             except Exception as e:  # noqa: BLE001 - 1 件の失敗で他のイベントまで止めない
+                self._incomplete = True
                 log.warning("イベント %s の確認に失敗: %s", ev, e)
         return live
 
@@ -224,19 +238,45 @@ class GiftRecorder:
             key = room.get("room_url_key")
             room_id = room.get("room_id")
             if key and room_id and room.get("is_on_live") and key not in watched:
-                live.setdefault(key, {"room_id": room_id, "source": info.get("title") or ev})
+                live.setdefault(key, {"room_id": room_id, "live_id": None, "source": info.get("title") or ev})
 
     async def _refresh(self) -> None:
         targets = await self._targets()
+        running = {key for key, task in self._tasks.items() if not task.done()}
+
+        # 配信終了のお知らせを受け損ねると古い配信に接続したまま残るため、配信していないと確認できたら止める。
+        # 取得に失敗したものがある時は、失敗のせいで対象から外れただけかもしれないので止めない
+        if not self._incomplete:
+            for key in running - set(targets):
+                log.info("%s は配信していないため記録を終えます", key)
+                self._stop_task(key)
+
+        # イベント由来のルームは live_id が分からないため、記録中のものだけ個別に確認する
+        cookie = self._cookie()
+        unknown = [key for key in running & set(targets) if targets[key].get("live_id") is None]
+        for key, st in zip(unknown, await asyncio.gather(*[self._room_status(key, cookie) for key in unknown])):
+            if st and st.get("live_id"):
+                targets[key]["live_id"] = st["live_id"]
+
         for key, target in targets.items():
-            current = self._tasks.get(key)
-            if current is not None and not current[1].done() and current[0] == target["room_id"]:
-                continue
-            if current is not None and not current[1].done():
-                current[1].cancel()
-            self._tasks[key] = (target["room_id"], asyncio.ensure_future(self._record_room(key, target["room_id"])))
-        for key in [k for k, (_, task) in self._tasks.items() if task.done()]:
+            task = self._tasks.get(key)
+            if task is not None and not task.done():
+                recorded, current = self._live_ids.get(key), target.get("live_id")
+                if recorded is None or current is None or recorded == current:
+                    continue
+                log.info("%s の配信が切り替わったため接続し直します", key)
+                self._stop_task(key)
+            self._live_ids[key] = target.get("live_id")
+            self._tasks[key] = asyncio.ensure_future(self._record_room(key, target["room_id"]))
+        for key in [k for k, task in self._tasks.items() if task.done()]:
             del self._tasks[key]
+            self._live_ids.pop(key, None)
+
+    def _stop_task(self, key: str) -> None:
+        task = self._tasks.pop(key, None)
+        self._live_ids.pop(key, None)
+        if task is not None:
+            task.cancel()
 
     async def _record_room(self, key: str, room_id: int) -> None:
         import websockets  # 記録機能を使う時だけ必要
@@ -247,6 +287,7 @@ class GiftRecorder:
             if not isinstance(info, dict) or info.get("live_status") != 2 or not info.get("bcsvr_key"):
                 return
             live_id = info.get("live_id")
+            self._live_ids[key] = live_id
             log.info("記録開始: %s", info.get("room_name") or key)
             count = 0
             connect_kwargs: dict[str, Any] = {"open_timeout": 20, "ping_interval": None}

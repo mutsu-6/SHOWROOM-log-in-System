@@ -28,6 +28,8 @@ TRACKER_RE = re.compile(
     r"|a-mpd\.com|criteo\.(com|net)|adnxs\.com|amazon-adsystem\.com)(:\d+)?/"
 )
 MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
+# これ以上のルームを常に開いておく時は、メモリ不足の可能性を知らせる
+KEEP_OPEN_WARN_ROOMS = 3
 
 
 def running_under_rosetta() -> bool:
@@ -211,6 +213,12 @@ class Keeper:
         api = ShowroomAPI(ctx.request)
         try:
             room_ids = await self._room_ids(api, required=True)
+            if self.cfg.keep_open_when_offline and len(self.cfg.rooms) >= KEEP_OPEN_WARN_ROOMS:
+                log.warning(
+                    "%d ルームのページを常に開いたままにします。1 ルームにつき約 0.5GB のメモリを使うため、"
+                    "メモリが足りない場合は keep_open_when_offline: false (配信中だけ開く) にしてください",
+                    len(self.cfg.rooms),
+                )
             await ensure_login(ctx, self.cfg, api, room_ids)
 
             watchers = [
@@ -270,7 +278,10 @@ class Keeper:
         last_state: bool | None = True
         while True:
             await asyncio.sleep(check_interval)
-            room_ids = await self._room_ids(api)
+            # 各ルームの room_id はウォッチャーが配信状況の確認で取得済みなので、問い合わせ直さない
+            room_ids = [w.status.room_id for w in watchers if w.status and w.status.room_id is not None]
+            if not room_ids:
+                room_ids = await self._room_ids(api)
             state = await probe_login(api, room_ids)
             record_login(self.cfg, state)
             if state is False and last_state is not False:

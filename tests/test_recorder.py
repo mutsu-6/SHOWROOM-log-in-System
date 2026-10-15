@@ -69,39 +69,96 @@ async def test_broken_room_or_event_does_not_drop_the_others(monkeypatch, tmp_pa
     assert set(targets) == {"good", "live", "more"}
 
 
-async def test_refresh_restarts_when_the_live_changes(tmp_path):
+def _recorder_with_fake_tasks(tmp_path, box, statuses=None):
     import asyncio
 
     started = []
 
     async def hang(key, room_id):
-        started.append(room_id)
+        started.append((key, box[key]["live_id"] if key in box else None))
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
-            started.append(("cancel", room_id))
+            started.append(("cancel", key))
             raise
 
     recorder = rec.GiftRecorder(Config(state_file=tmp_path / "s.json"))
-    box = {"a": {"room_id": 1, "source": "ルーム指定"}}
 
     async def targets():
-        return dict(box)
+        recorder._incomplete = box.get("_incomplete", False)
+        return {k: dict(v) for k, v in box.items() if not k.startswith("_")}
+
+    async def room_status(key, cookie):
+        return (statuses or {}).get(key)
 
     recorder._targets = targets
     recorder._record_room = hang
-    await recorder._refresh()
-    await asyncio.sleep(0)
-    await recorder._refresh()
-    assert started == [1]
-    box["a"] = {"room_id": 2, "source": "ルーム指定"}
-    await recorder._refresh()
-    await asyncio.sleep(0)
-    assert started[0] == 1 and started.count(1) == 1
-    assert ("cancel", 1) in started and 2 in started
-    for _, task in recorder._tasks.values():
+    recorder._room_status = room_status
+    return recorder, started
+
+
+async def _cleanup(recorder):
+    import asyncio
+
+    for task in recorder._tasks.values():
         task.cancel()
     await asyncio.sleep(0)
+
+
+async def test_refresh_reconnects_when_the_next_live_starts(tmp_path):
+    import asyncio
+
+    # 同じルームでも配信が変われば live_id が変わる (room_id は変わらない)
+    box = {"a": {"room_id": 1, "live_id": 100, "source": "ルーム指定"}}
+    recorder, started = _recorder_with_fake_tasks(tmp_path, box)
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    await recorder._refresh()
+    assert started == [("a", 100)]
+    box["a"]["live_id"] = 200
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    assert started == [("a", 100), ("cancel", "a"), ("a", 200)]
+    await _cleanup(recorder)
+
+
+async def test_event_room_live_id_is_checked_while_recording(tmp_path):
+    import asyncio
+
+    box = {"e": {"room_id": 5, "live_id": None, "source": "大会"}}
+    statuses = {"e": {"live_id": 7}}
+    recorder, started = _recorder_with_fake_tasks(tmp_path, box, statuses)
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    recorder._live_ids["e"] = 7  # 記録開始時に live_info から分かった値
+    await recorder._refresh()
+    assert started == [("e", None)]
+    statuses["e"] = {"live_id": 8}
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    assert ("cancel", "e") in started and started.count(("e", None)) == 2
+    await _cleanup(recorder)
+
+
+async def test_refresh_stops_rooms_confirmed_offline_but_not_on_fetch_errors(tmp_path):
+    import asyncio
+
+    box = {"a": {"room_id": 1, "live_id": 100, "source": "ルーム指定"}}
+    recorder, started = _recorder_with_fake_tasks(tmp_path, box)
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    # 取得に失敗して対象から外れただけの時は記録を続ける
+    box.clear()
+    box["_incomplete"] = True
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    assert ("cancel", "a") not in started and "a" in recorder._tasks
+    # 配信していないと確認できたら止める (配信終了のお知らせを受け損ねた場合)
+    box["_incomplete"] = False
+    await recorder._refresh()
+    await asyncio.sleep(0)
+    assert ("cancel", "a") in started and "a" not in recorder._tasks
+    await _cleanup(recorder)
 
 
 async def test_event_rooms_follow_every_page(monkeypatch):

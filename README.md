@@ -83,6 +83,10 @@ python -m showroom_keeper run --headed
 
   更新するときも同じ 2 行を実行します (リポジトリが公開されていれば、サーバー上で
   `cd SHOWROOM-log-in-System && git pull && sudo bash deploy/setup-server.sh` でも更新できます)。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
+- **メモリの目安**: 既定では指定した全ルームのページを常に開いておくため、ルームの数だけメモリを使います。
+  計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB 増えました (3 ルームで約 1.9GB)。
+  ルームが多い場合やメモリ 2GB のサーバーでは `keep_open_when_offline: false` (配信中だけ開く) にしてください。
+  ログインはルームごとではなくアカウント単位で全ページ共通のため、この設定でもログイン状態の確認・再ログインは同じように行われます。
 - **Docker (手動)**: `.env` を用意し `docker compose up -d`。セッションは `./data/storage_state.json` に保存されます。
 - **systemd**: `deploy/showroom-keeper.service` を参照。
 
