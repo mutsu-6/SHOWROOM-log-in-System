@@ -44,3 +44,54 @@ def test_match_user_by_id_and_name_including_renames():
     assert [g["at"] for g in match_user(gifts, "7")] == [1, 2]
     assert [g["at"] for g in match_user(gifts, "たろう")] == [1, 2]  # 名前で見つけた人の改名後も含む
     assert match_user(gifts, "いない人") == []
+
+
+def test_summarize_splits_paid_and_free_points():
+    catalog = {1: {"gift_name": "星", "point": 1, "free": True}, 100: {"gift_name": "花火", "point": 100, "free": False}}
+    gifts = [
+        {"at": 1, "user_id": 7, "name": "A", "gift_id": 1, "num": 50},
+        {"at": 2, "user_id": 7, "name": "A", "gift_id": 100, "num": 2},
+        {"at": 3, "user_id": 7, "name": "A", "gift_id": 999, "num": 1},  # 不明なギフトは有料に含めない
+    ]
+    (u,) = summarize(gifts, catalog)
+    assert (u["points"], u["paid_points"], u["free_points"]) == (250, 200, 50)
+
+
+def _contrib_fetch(calls, fail=()):
+    def fetch(path):
+        room_id = int(path.rsplit("=", 1)[1])
+        calls.append(room_id)
+        if room_id in fail:
+            raise OSError("down")
+        return {"ranking": [{"rank": 1, "user_id": 7, "name": "A", "point": room_id * 10},
+                            {"rank": 2, "user_id": room_id, "name": f"U{room_id}", "point": 5}]}
+    return fetch
+
+
+def test_fetch_contributions_collects_every_room_and_caches(tmp_path):
+    from showroom_keeper.gifts import fetch_contributions, summarize_official
+
+    rooms = [{"room_id": 1, "room_name": "R1"}, {"room_id": 2, "room_name": "R2"}, {"room_name": "ID なし"}]
+    calls = []
+    rows, failed = fetch_contributions(tmp_path, 99, rooms, final=False, fetch=_contrib_fetch(calls), now=1000)
+    assert failed == 0 and sorted(calls) == [1, 2] and len(rows) == 4
+    top = summarize_official(rows)[0]
+    assert (top["user_id"], top["points"], top["rooms"]) == (7, 30, [("R2", 20), ("R1", 10)])
+
+    # 開催中は 10 分間だけ使い回し、過ぎたら取り直す
+    fetch_contributions(tmp_path, 99, rooms, final=False, fetch=_contrib_fetch(calls), now=1500)
+    assert len(calls) == 2
+    fetch_contributions(tmp_path, 99, rooms, final=True, fetch=_contrib_fetch(calls), now=2000)
+    assert len(calls) == 4
+    # 終了済み (確定値) として保存したものは期限なしで使う
+    fetch_contributions(tmp_path, 99, rooms, final=True, fetch=_contrib_fetch(calls), now=10 ** 9)
+    assert len(calls) == 4
+
+
+def test_fetch_contributions_does_not_cache_partial_results(tmp_path):
+    from showroom_keeper.gifts import contribution_cache, fetch_contributions
+
+    rooms = [{"room_id": 1, "room_name": "R1"}, {"room_id": 2, "room_name": "R2"}]
+    rows, failed = fetch_contributions(tmp_path, 5, rooms, final=True, fetch=_contrib_fetch([], fail={2}), now=1)
+    assert failed == 1 and {r["room"] for r in rows} == {"R1"}
+    assert not contribution_cache(tmp_path, 5).exists()
