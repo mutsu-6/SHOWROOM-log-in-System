@@ -216,13 +216,15 @@ class RoomWatcher:
         assert page is not None
         since = int(time.time()) - 5
         started = time.monotonic()
-        await self._ensure_my_user_id(page)
+        await self._ensure_my_user_id(page)  # 通常は視聴中に取得済み
+        t_uid = time.monotonic()
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         waiter = (text, fut)
         self._comment_waiters.append(waiter)
         try:
             try:
                 await page.fill(COMMENT_INPUT, text, timeout=COMMENT_FILL_TIMEOUT)
+                t_fill = time.monotonic()
                 # ボタンのクリックはお知らせ等の重なりで阻まれることがあるため、入力欄で Enter を押して送信する
                 await page.press(COMMENT_INPUT, "Enter", timeout=COMMENT_FILL_TIMEOUT)
             except Exception as e:  # noqa: BLE001
@@ -231,18 +233,18 @@ class RoomWatcher:
                 return False, ("配信ページの反応が遅く、コメント欄に入力できませんでした。サーバーのメモリや CPU が足りていない可能性があります "
                                "(見張るルームを減らすか、keep_open_when_offline: false にしてください)")
             sent = time.monotonic()
+            steps = f"ID 確認 {t_uid - started:.1f} 秒 / 入力 {t_fill - t_uid:.1f} 秒 / 送信 {sent - t_fill:.1f} 秒"
             # 配信ページが受信するコメントで確かめる (ほぼすぐ届く)
             try:
                 await asyncio.wait_for(asyncio.shield(fut), timeout=self.comment_echo_wait)
-                self.log.info("コメントの反映を確認しました (入力・送信 %.1f 秒 / 反映 %.1f 秒)", sent - started, time.monotonic() - sent)
+                self.log.info("コメントの反映を確認しました (%s / 反映 %.1f 秒)", steps, time.monotonic() - sent)
                 return True, "投稿しました"
             except asyncio.TimeoutError:
                 pass
             # 届かなければコメント履歴で確かめる (履歴は 7〜10 秒ほど遅れて載る)
             for _ in range(int(COMMENT_LOG_WAIT // 2)):
                 if fut.done() or await page.evaluate(COMMENT_LOG_JS, [self.status.room_id, text, since]):
-                    self.log.info("コメントの反映を確認しました (入力・送信 %.1f 秒 / 反映 %.1f 秒、履歴で確認)",
-                                  sent - started, time.monotonic() - sent)
+                    self.log.info("コメントの反映を確認しました (%s / 反映 %.1f 秒、履歴で確認)", steps, time.monotonic() - sent)
                     return True, "投稿しました"
                 await self._sleep(2)
         finally:
@@ -389,6 +391,7 @@ class RoomWatcher:
             return
         try:
             self._save_activity()
+            await self._ensure_my_user_id(self.page)  # コメント投稿時に問い合わせなくて済むよう先に取っておく
             await self._update_viewer_count()
         except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
             self.log.debug("視聴者数の取得に失敗: %s", e)

@@ -18,6 +18,8 @@ class FakePage:
         self.reloads += 1
 
     async def evaluate(self, js, arg=None):
+        if "current_user" in js and "comment_log" not in js:  # 自分のユーザー ID (視聴中に先に取得する)
+            return {"user_id": 1}
         t = self.video_times.pop(0) if self.video_times else None
         return None if t is None else {"time": t, "paused": False, "ready": 4}
 
@@ -330,6 +332,8 @@ async def test_viewer_count_is_fetched_and_saved(tmp_path):
     page = FakePage()
 
     async def evaluate(js, arg=None):
+        if "current_user" in js and "comment_log" not in js:
+            return {"user_id": 1}
         return next(responses)
 
     page.evaluate = evaluate
