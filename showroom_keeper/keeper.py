@@ -60,16 +60,18 @@ def resolve_keep_open(cfg: Config, mem: float | None = None) -> bool:
     """配信していないルームのページも開いておくかを決める。
 
     keep_open_when_offline が未指定なら、全ルームを開いてもメモリが足りる時だけ開いておく。
+    入室するルームがあれば、入室の間だけ開くページ 1 つ分も見込む。
     """
+    pages = len(cfg.rooms) + (1 if any(key not in cfg.rooms for key in cfg.enter_rooms) else 0)
     if cfg.keep_open_when_offline is not None:
-        need = BROWSER_BASE_GB + ROOM_GB * len(cfg.rooms)
+        need = BROWSER_BASE_GB + ROOM_GB * pages
         mem = memory_gb() if mem is None else mem
         if cfg.keep_open_when_offline and mem is not None and mem < need:
             log.warning("%d ルームのページを常に開いておくには約 %.1fGB のメモリが必要ですが、このサーバーは %.1fGB です。"
                         "重くなって視聴やコメントが止まる場合は keep_open_when_offline: false にしてください",
                         len(cfg.rooms), need, mem)
         return cfg.keep_open_when_offline
-    need = BROWSER_BASE_GB + ROOM_GB * len(cfg.rooms)
+    need = BROWSER_BASE_GB + ROOM_GB * pages
     mem = memory_gb() if mem is None else mem
     if mem is None or mem >= need:
         return True
@@ -369,7 +371,8 @@ class Keeper:
             # 止める指示を待たず動き続けるので、終了時に取り消す
             background = [asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments")]
             if enter_rooms:
-                entrance = RoomEntrance(enter_rooms, self.cfg.status_poll_interval, api.room_status, ctx.new_page)
+                entrance = RoomEntrance(enter_rooms, self.cfg.status_poll_interval, api.room_status, ctx.new_page,
+                                        state_dir=Path(self.cfg.state_file).parent)
                 background.append(asyncio.create_task(entrance.run(), name="entrance"))
             tasks += background
             saver = asyncio.create_task(self._periodic_save(ctx, api, watchers))
