@@ -141,7 +141,8 @@ def show_user(gifts: list[dict[str, Any]], catalog: dict[int, dict[str, Any]], q
             info = catalog.get(g["gift_id"], {})
             gname = info.get("gift_name") or f"ギフト{g['gift_id']}"
             pt = int(info.get("point") or 0) * g["num"]
-            print(f"     {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {gname}×{g['num']}  ({pt:,} pt)")
+            where = f"  @{g['room']}" if g.get("room") else ""
+            print(f"     {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {gname}×{g['num']}  ({pt:,} pt){where}")
 
 
 def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_lines: int,
@@ -179,4 +180,51 @@ def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_line
             info = catalog.get(g["gift_id"], {})
             gname = info.get("gift_name") or f"ギフト{g['gift_id']}"
             print(f"  {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {g['name']}  {gname}×{g['num']}")
+    return 0
+
+
+def show_event(state_dir: Path, event_key: str, top: int, user: str | None = None) -> int:
+    """イベント参加ルーム全体の記録を集計する (イベント期間のギフトのみ)。"""
+    info = _get(f"/api/event/{event_key}/abstraction")
+    start, end = info.get("event_start_at") or 0, info.get("event_end_at") or time.time()
+    rooms, page = [], 1
+    while page:
+        data = _get(f"/api/event/{event_key}/rooms?page={page}")
+        rooms.extend(data.get("rooms") or [])
+        page = data.get("next_page") if data.get("next_page") and data.get("next_page") != page else None
+    gifts: list[dict[str, Any]] = []
+    per_room: list[tuple[str, list[dict[str, Any]]]] = []
+    for r in rooms:
+        key = r.get("room_url_key")
+        items = [dict(g, room=r.get("room_name") or key) for g in load_recorded(state_dir, key)
+                 if start <= g["at"] <= end + 600] if key else []
+        gifts.extend(items)
+        per_room.append((r.get("room_name") or key, items))
+    catalog: dict[int, dict[str, Any]] = {}
+    for r in rooms[:3]:  # ギフト名・ポイントの対応表 (ルーム間で共通)
+        try:
+            catalog.update(fetch_catalog(r["room_id"]))
+        except Exception:  # noqa: BLE001
+            continue
+    title = info.get("title") or event_key
+    print(f"🏆 {title}")
+    print(f"   期間 {datetime.fromtimestamp(start, JST):%m/%d %H:%M} 〜 {datetime.fromtimestamp(end, JST):%m/%d %H:%M}"
+          f" / 参加 {len(rooms)} ルーム / 記録 {len(gifts)} 件")
+    if not gifts:
+        print("   記録されたギフトはまだありません (記録は設定後に配信したルームから始まります)")
+        return 0
+    if user:
+        show_user(sorted(gifts, key=lambda g: g["at"]), catalog, user)
+        return 0
+    print(f"\n【ルーム別】 上位 {top}")
+    room_rank = sorted(((name, summarize(items, catalog)) for name, items in per_room if items),
+                       key=lambda x: sum(u["points"] for u in x[1]), reverse=True)
+    for i, (name, users) in enumerate(room_rank[:top], 1):
+        pts = sum(u["points"] for u in users)
+        print(f"{i:>3}. {name}  {pts:,} pt (リスナー {len(users)} 人)")
+    print(f"\n【リスナー別 (イベント全体)】 上位 {top} 人")
+    for i, u in enumerate(summarize(gifts, catalog)[:top], 1):
+        rooms_of = sorted({g["room"] for g in gifts if g["user_id"] == u["user_id"]})
+        where = "、".join(rooms_of[:3]) + (f" ほか {len(rooms_of) - 3}" if len(rooms_of) > 3 else "")
+        print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt / {u['count']:,} 個  ({where})")
     return 0

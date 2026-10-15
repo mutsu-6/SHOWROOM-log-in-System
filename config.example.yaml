@@ -5,6 +5,11 @@
 rooms:
   - https://www.showroom-live.com/r/ROOM_URL_KEY
 
+# 視聴はせずギフトだけ記録するルーム (最大 30) とイベント (参加ルームすべて、最大 3)
+record_rooms: []
+events: []
+#  - https://www.showroom-live.com/event/イベント名
+
 # ログイン情報。パスワードはこのファイルではなく環境変数
 # SHOWROOM_ACCOUNT_ID / SHOWROOM_PASSWORD (.env) で渡すことを推奨します。
 credentials:

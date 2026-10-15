@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     gf.add_argument("--log", type=int, default=10, metavar="件数", help="最近のギフトの表示件数 (既定 10、0 で非表示)")
     gf.add_argument("--user", metavar="名前かID", help="特定のリスナーの履歴だけを表示 (名前は部分一致、数字はユーザー ID)")
     gf.add_argument("--all", action="store_true", help="期間で絞り込まず、記録のすべてを対象にする")
+    gf.add_argument("--event", metavar="イベントURL", help="イベント参加ルーム全体を集計する (イベント期間のみ)")
 
     diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
@@ -154,8 +155,16 @@ def main(argv: list[str] | None = None) -> int:
         from pathlib import Path
 
         from .config import normalize_room_key
-        from .gifts import show
+        from .gifts import show, show_event
 
+        if args.event:
+            from .config import normalize_event_key
+
+            try:
+                return show_event(Path(cfg.state_file).parent, normalize_event_key(args.event), args.top, args.user)
+            except Exception as e:  # noqa: BLE001
+                print(f"❌ イベントを取得できませんでした ({e})")
+                return 1
         rooms = [normalize_room_key(r) for r in args.rooms] or cfg.rooms
         if not rooms:
             print("ルームを指定してください")

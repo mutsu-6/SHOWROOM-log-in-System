@@ -70,3 +70,16 @@ def test_load_dotenv(tmp_path):
     env = {"EXISTING": "old"}
     load_dotenv(p, env)
     assert env == {"EXISTING": "old", "SHOWROOM_ACCOUNT_ID": "me", "SHOWROOM_PASSWORD": "p=w"}
+
+
+def test_record_targets_and_limits(tmp_path):
+    from showroom_keeper.config import normalize_event_key
+
+    assert normalize_event_key("https://www.showroom-live.com/event/healyourselfweek_9?block_id=1") == "healyourselfweek_9"
+    cfg = Config.load(None, env={"SHOWROOM_RECORD_ROOMS": "a,https://www.showroom-live.com/r/b",
+                                 "SHOWROOM_EVENTS": "https://www.showroom-live.com/event/ev1"})
+    assert cfg.record_rooms == ["a", "b"] and cfg.events == ["ev1"]
+    with pytest.raises(ValueError):
+        Config.load(None, env={"SHOWROOM_RECORD_ROOMS": ",".join(f"r{i}" for i in range(31))})
+    with pytest.raises(ValueError):
+        Config.load(None, env={"SHOWROOM_EVENTS": "a,b,c,d"})

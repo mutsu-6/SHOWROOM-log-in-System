@@ -157,6 +157,20 @@ class Keeper:
         self._stop = asyncio.Event()
         if self._stop_requested:
             self._stop.set()
+        recorder = None
+        if self.cfg.record_rooms or self.cfg.events:
+            from .recorder import GiftRecorder
+
+            recorder = asyncio.ensure_future(GiftRecorder(self.cfg).run())
+        try:
+            await self._run_loop()
+        finally:
+            if recorder is not None:
+                recorder.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await recorder
+
+    async def _run_loop(self) -> None:
         failures = 0
         async with async_playwright() as pw:
             while not self._stop.is_set():

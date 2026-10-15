@@ -43,6 +43,22 @@ def load_dotenv(path: str | os.PathLike = ".env", environ: dict[str, str] | None
             environ[key] = value
 
 
+EVENT_URL_RE = re.compile(r"showroom-live\.com/event/([A-Za-z0-9_\-]+)")
+MAX_RECORD_ROOMS = 30
+MAX_EVENTS = 3
+
+
+def normalize_event_key(value: str) -> str:
+    """イベントの URL でも event_url_key でも受け付ける。"""
+    value = value.strip()
+    m = EVENT_URL_RE.search(value)
+    if m:
+        return m.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", value):
+        raise ValueError(f"不正なイベント指定です: {value!r}")
+    return value
+
+
 @dataclass
 class Credentials:
     account_id: str | None = None
@@ -56,6 +72,9 @@ class Credentials:
 @dataclass
 class Config:
     rooms: list[str] = field(default_factory=list)
+    # 視聴はせずギフトだけ記録するルーム (最大 30) と、参加ルームすべてを記録するイベント (最大 3)
+    record_rooms: list[str] = field(default_factory=list)
+    events: list[str] = field(default_factory=list)
     credentials: Credentials = field(default_factory=Credentials)
     state_file: Path = Path("state/storage_state.json")
     headless: bool = True
@@ -137,6 +156,13 @@ class Config:
         if not cfg.proxy:
             cfg.proxy = env.get("SHOWROOM_PROXY") or env.get("HTTPS_PROXY") or env.get("https_proxy") or None
 
+        if env.get("SHOWROOM_RECORD_ROOMS"):
+            cfg.record_rooms = [r for r in env["SHOWROOM_RECORD_ROOMS"].split(",") if r.strip()]
+        if env.get("SHOWROOM_EVENTS"):
+            cfg.events = [e for e in env["SHOWROOM_EVENTS"].split(",") if e.strip()]
+        cfg.record_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.record_rooms or []))
+        cfg.events = list(dict.fromkeys(normalize_event_key(str(e)) for e in cfg.events or []))
+
         cfg.rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in rooms))
         cfg.validate()
         return cfg
@@ -145,5 +171,9 @@ class Config:
         for name in ("status_poll_interval", "health_check_interval", "max_backoff"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} は正の数である必要があります")
+        if len(self.record_rooms) > MAX_RECORD_ROOMS:
+            raise ValueError(f"record_rooms は {MAX_RECORD_ROOMS} ルームまでです ({len(self.record_rooms)} 件)")
+        if len(self.events) > MAX_EVENTS:
+            raise ValueError(f"events は {MAX_EVENTS} 件までです ({len(self.events)} 件)")
         if self.stall_threshold < 1:
             raise ValueError("stall_threshold は 1 以上である必要があります")
