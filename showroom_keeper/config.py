@@ -91,7 +91,7 @@ class Config:
     # 定期的にページをリロードする間隔 (分)。0 で無効
     periodic_reload_minutes: float = 60.0
     # ログイン状態を確認する間隔 (秒)。API に問い合わせるだけでコメント等は送らない
-    login_check_interval: float = 180.0
+    login_check_interval: float = 7200.0
     # セッション(Cookie)を保存する間隔 (分)
     save_state_minutes: float = 10.0
     # 配信していない時も全ルームのページを開いたままにするか。None (既定) はメモリに余裕がある時だけ開いておく
