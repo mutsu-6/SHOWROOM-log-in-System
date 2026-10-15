@@ -69,6 +69,35 @@ python -m showroom_keeper run --headed
 
 `Ctrl+C` (SIGINT) / SIGTERM で、セッションを保存してから安全に終了します。
 
+## 管理画面
+
+`run` を起動すると、ブラウザで操作できる管理画面が開けるようになります。
+
+```
+http://localhost:8080/
+```
+
+| 画面 | できること |
+| --- | --- |
+| ダッシュボード | ログイン状態、各ルームの配信状況 (視聴者数・推定アクティブ人数・盛り上がり度・コメント人数・経過時間)、視聴の様子、ギフトを記録中のルーム。15 秒ごとに自動更新 |
+| コメント | 配信中のルームを選んで 1 件ずつ投稿し、結果 (投稿できたか) を確認 |
+| ギフト | ルームごと・イベントごとのランキング (有料・無料の内訳つき)、最近のギフト、公式の貢献ランキングと取りこぼしの目安。名前をクリックするとそのリスナーの履歴 |
+| ルーム設定 | 視聴するルーム・ギフトだけ記録するルーム・イベントを URL の貼り付けで追加・削除。「保存して反映」で keeper を止めずに反映 |
+| ログ | 最近の動作記録 (警告とエラーだけの表示も可) |
+
+- 管理画面で保存したルーム設定は `state/settings.json` に保存され、以後は `.env` / `config.yaml` のルーム指定より優先されます
+  (元に戻すにはこのファイルを削除します)。
+- **サーバー (Docker)** では、サーバーの外には公開していません (`127.0.0.1:8080` のみ)。手元の PC から次のように
+  SSH でつなぐと、手元のブラウザで `http://localhost:8080/` を開けます。
+
+  ```bash
+  ssh -L 8080:localhost:8080 ユーザー名@サーバーのIP
+  ```
+
+- 他の端末から直接開きたい場合は `.env` に `SHOWROOM_WEB_PASSWORD=...` を設定し、`docker-compose.yml` の `ports` を変更してください
+  (パスワードが無い間は、localhost 宛て以外の接続を拒否します)。インターネットに公開する場合は HTTPS の中継 (リバースプロキシ) も用意してください。
+- 管理画面が要らなければ `run --no-web` または `web_port: 0`。ポートは `SHOWROOM_WEB_PORT` で変更できます。
+
 ### 常駐させる
 
 - **サーバー (24 時間稼働)**: Ubuntu 22.04/24.04 (x86_64、メモリ 2GB 以上推奨) のサーバーを用意し、
@@ -187,6 +216,8 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 | `SHOWROOM_BROWSER_CHANNEL` | 使用ブラウザ (`chrome` / `msedge` / 空で付属 Chromium) |
 | `SHOWROOM_BROWSER_EXECUTABLE` | 使用するブラウザ実行ファイルのパス |
 | `SHOWROOM_PROXY` (または `HTTPS_PROXY`) | ブラウザが使うプロキシ |
+| `SHOWROOM_WEB_PORT` / `SHOWROOM_WEB_HOST` | 管理画面のポート (既定 8080、0 で無効) と待ち受けアドレス (既定 127.0.0.1) |
+| `SHOWROOM_WEB_PASSWORD` | 管理画面のパスワード。設定すると localhost 以外からも開ける |
 
 ## トラブルシューティング
 
@@ -212,6 +243,8 @@ showroom_keeper/
   activity.py  リアルタイム通信の読み取りと推定アクティブ人数
   gifts.py     ギフト履歴の記録と集計 (gifts コマンド)
   recorder.py  ブラウザを使わないギフト記録 (record_rooms / events)
+  web.py       管理画面のサーバー (標準ライブラリのみ。run と同じプロセスで動く)
+  admin.html   管理画面 (1 ファイルで完結し、外部のライブラリや CDN を読み込まない)
 deploy/        サーバー用スクリプト (setup-server.sh / comment.sh / status.sh / gifts.sh) と systemd ユニット例
 tests/         pytest によるテスト
 ```

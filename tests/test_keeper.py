@@ -8,7 +8,7 @@ from showroom_keeper.config import Config
 
 def test_keeper_requires_some_target():
     with pytest.raises(ValueError):
-        kp.Keeper(Config())
+        kp.Keeper(Config(web_port=0))
 
 
 async def test_record_only_runs_without_browser(monkeypatch):
@@ -27,7 +27,7 @@ async def test_record_only_runs_without_browser(monkeypatch):
 
     monkeypatch.setattr("showroom_keeper.recorder.GiftRecorder", FakeRecorder)
     monkeypatch.setattr(kp, "async_playwright", no_browser)
-    keeper = kp.Keeper(Config(record_rooms=["a"]))
+    keeper = kp.Keeper(Config(record_rooms=["a"], web_port=0))
     task = asyncio.ensure_future(keeper.run())
     await asyncio.wait_for(started.wait(), timeout=1)
     keeper.stop()

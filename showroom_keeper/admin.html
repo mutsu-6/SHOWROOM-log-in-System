@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHOWROOM keeper 管理画面</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel2: #f0f2f5; --text: #1d2330; --muted: #667085; --line: #e3e6ec;
+  --accent: #e5484d; --accent-soft: #fdecec; --ok: #18794e; --ok-soft: #e6f6ee; --warn: #b4580f; --warn-soft: #fdf1e3;
+  --info: #2f5bd3; --info-soft: #e9efff; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  --radius: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --panel: #1b1f27; --panel2: #232833; --text: #e7eaf0; --muted: #98a2b3; --line: #2c3240;
+    --accent: #ff6369; --accent-soft: #3a1d20; --ok: #4cc38a; --ok-soft: #15291f; --warn: #f1a10d; --warn-soft: #33260f;
+    --info: #8aa8ff; --info-soft: #1c2440; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--info); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); }
+.bar { max-width: 1180px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.badges { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+nav { max-width: 1180px; margin: 0 auto; padding: 0 8px; display: flex; gap: 2px; overflow-x: auto; }
+nav a { padding: 10px 14px; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; font-weight: 600; }
+nav a:hover { color: var(--text); text-decoration: none; }
+nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px; }
+section[data-tab] { display: none; }
+section[data-tab].active { display: block; }
+h2 { font-size: 18px; margin: 0 0 4px; }
+h3 { font-size: 15px; margin: 22px 0 10px; }
+.sub { color: var(--muted); margin: 0 0 16px; }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--panel2); color: var(--muted); white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.live { background: var(--accent-soft); color: var(--accent); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.info { background: var(--info-soft); color: var(--info); }
+.pill.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; align-items: start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; }
+.card.live { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.card-head { display: flex; align-items: flex-start; gap: 10px; justify-content: space-between; }
+.card-title { font-weight: 700; font-size: 15px; word-break: break-word; }
+.card-key { color: var(--muted); font-size: 12px; }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 12px; }
+.metric { background: var(--panel2); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+.metric .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric .l { color: var(--muted); font-size: 11px; }
+.metric .v small { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0 1px; }
+.card-foot { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 12px; }
+.card-foot .spacer { flex: 1; }
+
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 7px 14px; cursor: pointer; font-weight: 600; }
+.btn:hover { background: var(--panel2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.05); }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+input[type=text], input[type=search], input[type=password], select, textarea {
+  border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 8px 10px; min-width: 0; }
+input:focus, select:focus, textarea:focus, .btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--info) 60%, transparent); outline-offset: 1px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row > .grow { flex: 1 1 220px; }
+.empty { text-align: center; color: var(--muted); padding: 36px 16px; border: 1px dashed var(--line); border-radius: var(--radius); }
+.empty .btn { margin-top: 10px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { background: var(--panel2); border-radius: 999px; padding: 3px 10px; font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* コメント */
+.composer { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.composer input { flex: 1 1 260px; font-size: 16px; padding: 12px 14px; }
+.counter { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; align-self: center; min-width: 48px; text-align: right; }
+.counter.over { color: var(--accent); font-weight: 700; }
+.history { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.history li { display: flex; gap: 10px; align-items: baseline; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.history .t { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.history .m { color: var(--muted); font-size: 12px; margin-left: auto; text-align: right; }
+.history .ok { color: var(--ok); } .history .ng { color: var(--accent); }
+
+/* ギフト */
+.seg { display: inline-flex; background: var(--panel2); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: transparent; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; color: var(--muted); }
+.seg button.active { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.summary { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 4px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
+.stat .v { font-weight: 700; font-size: 17px; font-variant-numeric: tabular-nums; }
+.stat .l { color: var(--muted); font-size: 11px; }
+.table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--muted); font-size: 12px; font-weight: 600; background: var(--panel2); position: sticky; top: 0; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td.rank { color: var(--muted); width: 1%; }
+td .uid { color: var(--muted); font-size: 11px; }
+td.name { max-width: 280px; word-break: break-word; }
+.splitbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--panel2); min-width: 80px; margin-top: 4px; }
+.splitbar .p { background: var(--accent); } .splitbar .f { background: var(--info); }
+.legend { display: flex; gap: 12px; color: var(--muted); font-size: 12px; align-items: center; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.coverage { margin-top: 10px; }
+.coverage .bar { height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; margin: 6px 0; }
+.coverage .bar div { height: 100%; background: var(--ok); min-width: 3px; }
+.linkish { background: none; border: 0; padding: 0; color: var(--info); cursor: pointer; text-align: left; }
+.linkish:hover { text-decoration: underline; }
+.loading { display: flex; gap: 10px; align-items: center; color: var(--muted); padding: 24px 4px; }
+.spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 設定 */
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.list { list-style: none; padding: 0; margin: 10px 0; display: flex; flex-direction: column; gap: 6px; min-height: 40px; }
+.list li { display: flex; align-items: center; gap: 8px; background: var(--panel2); border-radius: 9px; padding: 6px 6px 6px 12px; }
+.list li span { flex: 1; word-break: break-all; }
+.list li small { color: var(--muted); font-size: 11px; }
+.list .x { border: 0; background: transparent; cursor: pointer; color: var(--muted); font-size: 16px; width: 28px; height: 28px; border-radius: 7px; }
+.list .x:hover { background: var(--accent-soft); color: var(--accent); }
+.list .none { color: var(--muted); background: transparent; padding-left: 0; }
+.savebar { position: sticky; bottom: 0; margin-top: 16px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.savebar .note { color: var(--muted); font-size: 12px; flex: 1 1 260px; }
+.dirty { color: var(--warn); font-weight: 600; }
+
+/* ログ */
+.logs { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); max-height: 65vh; overflow: auto;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 8px 0; }
+.logs div { padding: 1px 14px; white-space: pre-wrap; word-break: break-word; }
+.logs .t { color: var(--muted); }
+.logs .WARNING { background: var(--warn-soft); } .logs .ERROR, .logs .CRITICAL { background: var(--accent-soft); }
+.logs .n { color: var(--info); }
+
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none;
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: calc(100% - 32px); z-index: 10; }
+#toast.show { opacity: 1; transform: translateX(-50%); }
+.hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+@media (max-width: 560px) {
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .badges { margin-left: 0; width: 100%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>SHOWROOM keeper</div>
+    <div class="badges" id="badges"><span class="pill">読み込み中…</span></div>
+  </div>
+  <nav id="nav">
+    <a href="#dashboard" data-tab="dashboard">ダッシュボード</a>
+    <a href="#comment" data-tab="comment">コメント</a>
+    <a href="#gifts" data-tab="gifts">ギフト</a>
+    <a href="#settings" data-tab="settings">ルーム設定</a>
+    <a href="#logs" data-tab="logs">ログ</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ダッシュボード -->
+  <section data-tab="dashboard">
+    <h2>ダッシュボード</h2>
+    <p class="sub">視聴しているルームの状況です。15 秒ごとに自動で更新します。</p>
+    <div id="rooms" class="grid"></div>
+    <h3>ギフトを記録中のルーム <span class="pill" id="rec-count">0</span></h3>
+    <div id="recording"></div>
+  </section>
+
+  <!-- コメント -->
+  <section data-tab="comment">
+    <h2>コメント</h2>
+    <p class="sub">開いている配信ページのコメント欄から 1 件ずつ投稿します。投稿と投稿の間は 3 秒以上空きます。</p>
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <label for="c-room" style="color:var(--muted)">投稿先</label>
+        <select id="c-room" class="grow"></select>
+      </div>
+      <form class="composer" id="c-form" autocomplete="off">
+        <input type="text" id="c-text" placeholder="コメントを入力して Enter" maxlength="200">
+        <span class="counter" id="c-count">0/50</span>
+        <button class="btn primary" id="c-send" type="submit">投稿</button>
+      </form>
+      <div class="hint" id="c-hint"></div>
+    </div>
+    <ul class="history" id="c-history"></ul>
+  </section>
+
+  <!-- ギフト -->
+  <section data-tab="gifts">
+    <h2>ギフト</h2>
+    <p class="sub">リスナー別のランキングと最近のギフトを表示します。名前をクリックするとそのリスナーの履歴を表示します。</p>
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <div class="seg" id="g-mode">
+          <button type="button" data-mode="room" class="active">ルーム</button>
+          <button type="button" data-mode="event">イベント</button>
+        </div>
+      </div>
+      <form id="g-form" class="row">
+        <span id="g-room-wrap" class="row grow">
+          <input type="text" id="g-room" class="grow" list="g-room-list" placeholder="ルーム (URL または room_url_key)">
+          <datalist id="g-room-list"></datalist>
+          <select id="g-hours">
+            <option value="">今回の配信</option>
+            <option value="24">直近 24 時間</option>
+            <option value="168">直近 7 日</option>
+            <option value="100000000">記録のすべて</option>
+          </select>
+        </span>
+        <span id="g-event-wrap" class="row grow" hidden>
+          <input type="text" id="g-event" class="grow" list="g-event-list" placeholder="イベント (URL または event_url_key)">
+          <datalist id="g-event-list"></datalist>
+          <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="g-official" checked> 公式の貢献ランキング</label>
+        </span>
+        <input type="search" id="g-user" placeholder="リスナー (名前の一部かユーザー ID)" style="flex:0 1 230px">
+        <button class="btn primary" type="submit">表示</button>
+      </form>
+    </div>
+    <div id="g-result"></div>
+  </section>
+
+  <!-- 設定 -->
+  <section data-tab="settings">
+    <h2>ルーム設定</h2>
+    <p class="sub">URL をそのまま貼り付けて追加できます。保存すると、視聴とギフト記録をやり直して反映します。</p>
+    <div class="settings">
+      <div class="card" data-list="rooms">
+        <h3 style="margin-top:0">視聴するルーム</h3>
+        <div class="hint" style="margin-top:0">ページを開いて視聴状態を保ちます。1 ルームにつき約 0.5GB のメモリを使います。</div>
+        <ul class="list"></ul>
+        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/r/…"><button class="btn" type="submit">追加</button></form>
+      </div>
+      <div class="card" data-list="record_rooms">
+        <h3 style="margin-top:0">ギフトだけ記録するルーム</h3>
+        <div class="hint" style="margin-top:0">ブラウザを使わず、配信中のギフトを受信して記録します。件数の上限はありません。</div>
+        <ul class="list"></ul>
+        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/r/…"><button class="btn" type="submit">追加</button></form>
+      </div>
+      <div class="card" data-list="events">
+        <h3 style="margin-top:0">ギフトを記録するイベント</h3>
+        <div class="hint" style="margin-top:0">参加ルームすべてのギフトを記録します。終了すると自動で記録をやめます。</div>
+        <ul class="list"></ul>
+        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/event/…"><button class="btn" type="submit">追加</button></form>
+      </div>
+    </div>
+    <div class="savebar">
+      <span class="note" id="s-note">変更はまだありません。</span>
+      <button class="btn" id="s-reset" type="button">元に戻す</button>
+      <button class="btn primary" id="s-save" type="button">保存して反映</button>
+    </div>
+  </section>
+
+  <!-- ログ -->
+  <section data-tab="logs">
+    <h2>ログ</h2>
+    <div class="row" style="margin-bottom:10px">
+      <p class="sub" style="margin:0" >最近の動作記録です (最大 500 件)。</p>
+      <span class="grow"></span>
+      <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="l-warn"> 警告とエラーだけ</label>
+      <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="l-follow" checked> 最新を追う</label>
+    </div>
+    <div class="logs" id="logs"></div>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const num = (v) => (v === null || v === undefined || v === "") ? "—" : Number(v).toLocaleString("ja-JP");
+// 時刻は見ている端末の設定にかかわらず、SHOWROOM と同じ日本時間で表示する
+const JST = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+const tm = (sec, withDate = false) => {
+  if (!sec) return "—";
+  const p = Object.fromEntries(JST.formatToParts(new Date(sec * 1000)).map((x) => [x.type, x.value]));
+  const t = `${p.hour}:${p.minute}:${p.second}`;
+  return withDate ? `${p.month}/${p.day} ${t}` : t;
+};
+const day = (sec) => tm(sec, true).slice(0, 11);  // "10/12 18:00"
+const duration = (sec) => {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h ? `${h}時間${m}分` : `${m}分`;
+};
+// カード内の数値用。単位を小さくして狭い枠にも収める
+const durationHtml = (sec) => duration(sec).replace(/(時間|分)/g, "<small>$1</small>");
+const roomUrl = (key) => `https://www.showroom-live.com/r/${encodeURIComponent(key)}`;
+
+function toast(msg) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json", "X-Showroom-Keeper": "1" }, body: JSON.stringify(body),
+  };
+  const res = await fetch(path, opts);
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 本文なし */ }
+  if (!res.ok) throw new Error((data && data.message) || `HTTP ${res.status}`);
+  return data;
+}
+
+/* ------------------------------------------------------------ タブ */
+function showTab() {
+  const tab = (location.hash || "#dashboard").slice(1).split("?")[0];
+  const known = $$("section[data-tab]").map((s) => s.dataset.tab);
+  const name = known.includes(tab) ? tab : "dashboard";
+  $$("section[data-tab]").forEach((s) => s.classList.toggle("active", s.dataset.tab === name));
+  $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
+  if (name === "logs") loadLogs();
+  if (name === "comment") setTimeout(() => $("#c-text").focus(), 0);
+}
+window.addEventListener("hashchange", showTab);
+
+/* ------------------------------------------------------------ ダッシュボード */
+let overview = null;
+
+function stateBadge(r) {
+  const w = r.watcher;
+  if (r.error) return `<span class="pill warn">取得できません</span>`;
+  if (!w) return `<span class="pill">準備中</span>`;
+  return {
+    watching: `<span class="pill live">配信中・視聴中</span>`,
+    opening: `<span class="pill warn">配信中・ページを開いています</span>`,
+    waiting: `<span class="pill">配信待ち</span>`,
+    blocked: `<span class="pill warn">視聴できません</span>`,
+    starting: `<span class="pill">確認中</span>`,
+  }[w.state] || `<span class="pill">${esc(w.state)}</span>`;
+}
+
+function roomCard(r) {
+  const s = r.live_stat || {}, w = r.watcher || {}, now = overview.now;
+  const fresh = (at) => at && now - at <= 180;
+  let viewers = "—", viewersLabel = "視聴者数";
+  if (s.broadcast_style === "classic") {
+    viewersLabel = "推定アクティブ";
+    viewers = fresh(s.active_at) && s.active_users != null ? `${num(s.active_users)}+` : "—";
+  } else if (s.viewer_count != null && fresh(s.viewer_count_at)) {
+    viewers = num(s.viewer_count);
+  } else if (fresh(s.active_at) && s.active_users != null) {
+    viewersLabel = "推定アクティブ";
+    viewers = `${num(s.active_users)}+`;
+  }
+  const live = r.is_live;
+  const metrics = live ? `
+    <div class="metrics">
+      <div class="metric"><div class="v">${viewers}</div><div class="l">${viewersLabel}</div></div>
+      <div class="metric"><div class="v">${num(r.excitement)}</div><div class="l">盛り上がり度</div></div>
+      <div class="metric"><div class="v">${r.commenters == null ? "—" : num(r.commenters) + (r.commenters_capped ? "+" : "")}</div><div class="l">10分のコメント人数</div></div>
+      <div class="metric"><div class="v">${r.started_at ? durationHtml(now - r.started_at) : "—"}</div><div class="l">配信の経過</div></div>
+      <div class="metric"><div class="v">${w.watched_minutes != null ? durationHtml(w.watched_minutes * 60) : "—"}</div><div class="l">今回の視聴</div></div>
+      <div class="metric"><div class="v">${num(w.reloads)}</div><div class="l">再読み込み</div></div>
+    </div>` : `<div class="hint" style="margin:12px 0">${r.error ? esc(r.error) : "配信が始まると自動で視聴を始めます。"}</div>`;
+  return `
+  <div class="card ${live ? "live" : ""}">
+    <div class="card-head">
+      <div style="min-width:0">
+        <div class="card-title">${esc(r.name || r.key)}</div>
+        <div class="card-key"><a href="${roomUrl(r.key)}" target="_blank" rel="noopener noreferrer">${esc(r.key)} ↗</a></div>
+      </div>
+      ${stateBadge(r)}
+    </div>
+    ${metrics}
+    <div class="card-foot">
+      ${r.started_at && live ? `<span>${tm(r.started_at, true)} 開始</span>` : ""}
+      <span class="spacer"></span>
+      <button class="btn small" data-act="comment" data-room="${esc(r.key)}" ${w.can_comment ? "" : "disabled"} title="${w.can_comment ? "" : "配信中のページが開いている時に使えます"}">コメント</button>
+      <button class="btn small" data-act="gifts" data-room="${esc(r.key)}">ギフト</button>
+    </div>
+  </div>`;
+}
+
+function renderOverview() {
+  const o = overview;
+  const login = o.login || {};
+  const loginPill = login.checked_at == null ? `<span class="pill">ログイン確認待ち</span>`
+    : login.logged_in === true ? `<span class="pill ok">ログイン中</span>`
+    : login.logged_in === false ? `<span class="pill warn" title="ルーム設定ではなく、login コマンドか ID・パスワードの設定でログインしてください">未ログイン</span>`
+    : `<span class="pill">ログイン状態不明</span>`;
+  const liveCount = o.rooms.filter((r) => r.is_live).length;
+  const browserCls = o.browser === "動作中" ? "ok" : o.browser.startsWith("障害") ? "warn" : "";
+  $("#badges").innerHTML = `
+    ${loginPill}
+    <span class="pill ${liveCount ? "live" : ""}">配信中 ${liveCount} / ${o.rooms.length}</span>
+    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>
+    <span class="pill" title="${tm(o.started_at, true)} 起動">稼働 ${duration(o.now - o.started_at)}</span>`;
+
+  $("#rooms").innerHTML = o.rooms.length ? o.rooms.map(roomCard).join("") : `
+    <div class="empty" style="grid-column:1/-1">視聴するルームがありません。<br>
+      <a class="btn primary" href="#settings">ルームを追加する</a></div>`;
+
+  $("#rec-count").textContent = o.recording.length;
+  const targets = o.settings.record_rooms.length + o.settings.events.length;
+  $("#recording").innerHTML = o.recording.length
+    ? `<div class="chips">${o.recording.map((r) => `<span class="chip" title="${esc(r.source)}">${esc(r.name)}</span>`).join("")}</div>`
+    : `<div class="hint">${targets ? "設定したルーム・イベントで配信が始まると、ここに表示されます (2 分ごとに確認)。" : "ギフトだけ記録するルーム・イベントは設定されていません。"}</div>`;
+
+  // コメント・ギフトの選択肢
+  const sel = $("#c-room"), cur = sel.value;
+  const live = o.rooms.filter((r) => r.watcher && r.watcher.can_comment);
+  sel.innerHTML = live.length ? live.map((r) => `<option value="${esc(r.key)}">${esc(r.name || r.key)}</option>`).join("")
+    : `<option value="">配信中のルームがありません</option>`;
+  if (live.some((r) => r.key === cur)) sel.value = cur;
+  $("#c-send").disabled = !live.length;
+  $("#c-hint").textContent = live.length ? "" : "視聴中のルームで配信が始まると投稿できます。";
+  const keys = [...new Set([...o.settings.rooms, ...o.settings.record_rooms, ...o.recording.map((r) => r.room)])];
+  $("#g-room-list").innerHTML = keys.map((k) => `<option value="${esc(k)}">`).join("");
+  $("#g-event-list").innerHTML = o.settings.events.map((k) => `<option value="${esc(k)}">`).join("");
+  if (!settingsDirty) loadSettings(o.settings);
+}
+
+async function refresh() {
+  try {
+    overview = await api("/api/overview");
+    renderOverview();
+  } catch (e) {
+    $("#badges").innerHTML = `<span class="pill warn">keeper に接続できません (${esc(e.message)})</span>`;
+  }
+}
+
+$("#rooms").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  if (b.dataset.act === "comment") { location.hash = "#comment"; $("#c-room").value = b.dataset.room; }
+  if (b.dataset.act === "gifts") { setGiftMode("room"); $("#g-room").value = b.dataset.room; location.hash = "#gifts"; loadGifts(); }
+});
+
+/* ------------------------------------------------------------ コメント */
+const MAX = 50;
+function countText() {
+  const len = [...$("#c-text").value.trim().replace(/\s+/g, " ")].length;
+  const c = $("#c-count");
+  c.textContent = `${len}/${MAX}`;
+  c.classList.toggle("over", len > MAX);
+  return len;
+}
+$("#c-text").addEventListener("input", countText);
+$("#c-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const input = $("#c-text"), text = input.value.trim();
+  const len = countText();
+  if (!text) return;
+  if (len > MAX) { toast(`コメントは ${MAX} 文字以内にしてください`); return; }
+  const room = $("#c-room").value;
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="t">${tm(Date.now() / 1000)}</span><span>${esc(text)}</span><span class="m">投稿中…</span>`;
+  $("#c-history").prepend(li);
+  input.value = ""; countText();
+  $("#c-send").disabled = true;
+  try {
+    const r = await api("/api/comment", { text, room });
+    li.querySelector(".m").innerHTML = `<span class="${r.ok ? "ok" : "ng"}">${r.ok ? "✓" : "✕"} ${esc(r.message)}</span>`;
+    if (!r.ok) input.value = input.value || text;
+  } catch (e) {
+    li.querySelector(".m").innerHTML = `<span class="ng">✕ ${esc(e.message)}</span>`;
+    input.value = input.value || text;
+  } finally {
+    $("#c-send").disabled = false; countText(); input.focus();
+  }
+});
+
+/* ------------------------------------------------------------ ギフト */
+let giftMode = "room";
+function setGiftMode(mode) {
+  giftMode = mode;
+  $$("#g-mode button").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  $("#g-room-wrap").hidden = mode !== "room";
+  $("#g-event-wrap").hidden = mode !== "event";
+}
+$("#g-mode").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) setGiftMode(b.dataset.mode); });
+$("#g-form").addEventListener("submit", (ev) => { ev.preventDefault(); loadGifts(); });
+$("#g-result").addEventListener("click", (ev) => {
+  const more = ev.target.closest("[data-more-btn]");
+  if (more) { $$("#g-result tr[data-more]").forEach((tr) => { tr.hidden = false; }); more.remove(); return; }
+  const b = ev.target.closest("[data-user]");
+  if (!b) return;
+  $("#g-user").value = b.dataset.user;
+  loadGifts();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+
+const splitBar = (u) => {
+  const t = u.points || 0;
+  if (!t) return "";
+  return `<div class="splitbar" title="有料 ${num(u.paid_points)} / 無料 ${num(u.free_points)}"><div class="p" style="width:${(u.paid_points / t) * 100}%"></div><div class="f" style="width:${(u.free_points / t) * 100}%"></div></div>`;
+};
+const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span></td>`;
+const legend = `<div class="legend"><span><i style="background:var(--accent)"></i>有料</span><span><i style="background:var(--info)"></i>無料 (星・種など)</span></div>`;
+
+function rankingTable(rows, opts = {}) {
+  if (!rows.length) return `<div class="empty">ギフトはありません</div>`;
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">個数</th><th class="num">回数</th><th>${opts.rooms ? "ルーム" : "内訳"}</th></tr></thead>
+    <tbody>${rows.map((u, i) => `<tr>
+      <td class="rank">${i + 1}</td>${userCell(u)}
+      <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num">${num(u.paid_points)}</td><td class="num">${num(u.free_points)}</td>
+      <td class="num">${num(u.count)}</td><td class="num">${num(u.times)}</td>
+      <td>${opts.rooms ? esc(roomsText(u.rooms)) : esc((u.items || []).slice(0, 3).map(([k, v]) => `${k}×${v}`).join("、"))}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+const roomsText = (rooms) => (rooms || []).slice(0, 3).join("、") + ((rooms || []).length > 3 ? ` ほか ${rooms.length - 3}` : "");
+
+function userBlock(users, official) {
+  let html = "";
+  if (!users.length && !(official && official.length)) return `<div class="empty">当てはまるリスナーのギフトはありません</div>`;
+  for (const u of users) {
+    const t = u.total;
+    html += `<div class="card" style="margin-top:14px">
+      <div class="card-head"><div><div class="card-title">${esc(u.names.join(" / "))}</div><div class="card-key">ユーザー ID ${esc(u.user_id)}</div></div></div>
+      <div class="summary">
+        <div class="stat"><div class="v">${num(t.points)} pt</div><div class="l">合計 (有料 ${num(t.paid_points)} / 無料 ${num(t.free_points)})</div></div>
+        <div class="stat"><div class="v">${num(t.count)}</div><div class="l">個数</div></div>
+        <div class="stat"><div class="v">${num(t.times)}</div><div class="l">回数</div></div>
+      </div>
+      <h3>日別</h3>
+      <div class="chips">${u.days.map((d) => `<span class="chip">${esc(d.day)}　${num(d.points)} pt</span>`).join("")}</div>
+      <h3>履歴</h3>
+      <div class="table-wrap"><table><thead><tr><th>日時</th><th>ギフト</th><th class="num">個数</th><th class="num">pt</th>${u.history.some((h) => h.room) ? "<th>ルーム</th>" : ""}</tr></thead>
+      <tbody>${u.history.slice().reverse().map((h) => `<tr><td>${tm(h.at, true)}</td><td>${esc(h.gift)}</td><td class="num">${num(h.num)}</td><td class="num">${num(h.points)}</td>${h.room ? `<td>${esc(h.room)}</td>` : (u.history.some((x) => x.room) ? "<td></td>" : "")}</tr>`).join("")}</tbody></table></div>
+    </div>`;
+  }
+  if (official) {
+    html += `<h3>公式の貢献ランキング (SHOWROOM 発表・各ルーム上位 100 人)</h3>`;
+    html += official.length ? official.map((u) => `<div class="card" style="margin-bottom:10px">
+      <div class="card-title">${esc(u.name)} <span class="uid" style="color:var(--muted);font-weight:400">ID ${esc(u.user_id)}</span></div>
+      <div class="summary"><div class="stat"><div class="v">${num(u.points)} pt</div><div class="l">イベント全体の合計</div></div></div>
+      <div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">順位</th></tr></thead>
+      <tbody>${u.rooms.map(([room, pt, rank]) => `<tr><td>${esc(room)}</td><td class="num">${num(pt)}</td><td class="num">${rank ?? "—"} 位</td></tr>`).join("")}</tbody></table></div></div>`).join("")
+      : `<div class="empty">公式の貢献ランキングには見つかりません (どのルームでも上位 100 人に入っていない可能性)</div>`;
+  }
+  return html;
+}
+
+async function loadGifts() {
+  const user = $("#g-user").value.trim();
+  const out = $("#g-result");
+  let path, waitMsg = "読み込み中…";
+  if (giftMode === "room") {
+    const room = $("#g-room").value.trim();
+    if (!room) { toast("ルームを入力してください"); return; }
+    path = `/api/gifts/room?room=${encodeURIComponent(room)}&hours=${encodeURIComponent($("#g-hours").value)}&user=${encodeURIComponent(user)}`;
+  } else {
+    const event = $("#g-event").value.trim();
+    if (!event) { toast("イベントを入力してください"); return; }
+    const official = $("#g-official").checked;
+    path = `/api/gifts/event?event=${encodeURIComponent(event)}&official=${official ? 1 : 0}&user=${encodeURIComponent(user)}`;
+    if (official) waitMsg = "公式の貢献ランキングを集めています。初回は参加ルーム数に応じて 30 秒ほどかかります…";
+  }
+  out.innerHTML = `<div class="loading"><span class="spinner"></span>${esc(waitMsg)}</div>`;
+  try {
+    const r = await api(path);
+    out.innerHTML = giftMode === "room" ? renderRoomGifts(r) : renderEventGifts(r);
+  } catch (e) {
+    out.innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderRoomGifts(r) {
+  let html = `<div class="summary">
+    <div class="stat"><div class="v">${esc(r.name)}</div><div class="l">${esc(r.period)}${r.is_live ? "・配信中" : ""}</div></div>
+    <div class="stat"><div class="v">${num(r.total)}</div><div class="l">ギフト (記録 ${num(r.recorded)} + API ${num(r.api)}、重複除外後)</div></div>
+    <div class="stat"><div class="v">${num(r.ranking.length)}</div><div class="l">リスナー</div></div>
+  </div>`;
+  if (r.user) return html + `<h3>「${esc(r.user.query)}」の履歴</h3>` + userBlock(r.user.users);
+  html += `<div class="row"><h3 style="flex:1">リスナー別ランキング</h3>${legend}</div>` + rankingTable(r.ranking.slice(0, 100));
+  const rows = r.recent.map((g, i) => `<tr ${i >= 20 ? "hidden data-more" : ""}><td>${tm(g.at, true)}</td>${userCell(g)}<td>${esc(g.gift)}</td><td class="num">${num(g.num)}</td></tr>`).join("");
+  html += `<h3>最近のギフト</h3>` + (r.recent.length ? `<div class="table-wrap"><table><thead><tr><th>日時</th><th>リスナー</th><th>ギフト</th><th class="num">個数</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>` + (r.recent.length > 20 ? `<div class="row" style="margin-top:8px"><button class="btn small" data-more-btn>さらに表示 (${num(r.recent.length - 20)} 件)</button></div>` : "")
+    : `<div class="empty">ギフトはありません</div>`);
+  return html;
+}
+
+function renderEventGifts(r) {
+  let html = `<div class="summary">
+    <div class="stat"><div class="v">${esc(r.title)}</div><div class="l">${day(r.start)} 〜 ${day(r.end)}</div></div>
+    <div class="stat"><div class="v">${num(r.rooms)}</div><div class="l">参加ルーム</div></div>
+    <div class="stat"><div class="v">${num(r.recorded)}</div><div class="l">記録したギフト</div></div>
+    ${r.official_enabled ? `<div class="stat"><div class="v">${num(r.official_ranking.length)}</div><div class="l">公式の貢献者</div></div>` : ""}
+  </div>`;
+  if (r.failed) html += `<div class="hint">⚠ ${num(r.failed)} ルームの貢献ランキングを取得できませんでした (その分は含まれていません)</div>`;
+  if (r.user) return html + `<h3>「${esc(r.user.query)}」の履歴</h3>` + userBlock(r.user.users, r.official_enabled ? r.user.official : null);
+  const c = r.coverage;
+  if (c && c.official) {
+    const pct = Math.min(100, (c.recorded / c.official) * 100);
+    html += `<div class="card coverage"><b>記録の取りこぼしの目安</b>
+      <div class="bar"><div style="width:${pct}%"></div></div>
+      <div class="hint" style="margin:0">記録のある ${num(c.rooms)} ルームで、記録 ${num(c.recorded)} pt / 公式 ${num(c.official)} pt (${pct.toFixed(pct < 10 ? 1 : 0)}%)。差は記録を始める前の分・停止中の分などです。</div></div>`;
+  }
+  if (r.official_enabled) {
+    html += `<h3>公式の貢献ランキング (イベント全体)</h3><div class="hint" style="margin:-6px 0 8px">SHOWROOM 発表の各ルーム上位 100 人の合計です。記録を始める前の分も含みます。</div>`;
+    html += `<div class="table-wrap"><table><thead><tr><th>#</th><th>リスナー</th><th class="num">公式 pt</th><th class="num">うち記録</th><th>ルーム</th></tr></thead>
+      <tbody>${r.official_ranking.slice(0, 100).map((u, i) => `<tr><td class="rank">${i + 1}</td>${userCell(u)}<td class="num"><b>${num(u.points)}</b></td><td class="num">${u.recorded == null ? "—" : num(u.recorded)}</td><td>${esc(roomsText(u.rooms))}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  if (r.recorded) {
+    html += `<div class="row"><h3 style="flex:1">ルーム別 (記録)</h3>${legend}</div><div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>ルーム</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">リスナー</th></tr></thead>
+      <tbody>${r.room_ranking.slice(0, 100).map((x, i) => `<tr><td class="rank">${i + 1}</td><td class="name">${esc(x.room)}</td><td class="num"><b>${num(x.points)}</b>${splitBar(x)}</td><td class="num">${num(x.paid_points)}</td><td class="num">${num(x.free_points)}</td><td class="num">${num(x.listeners)}</td></tr>`).join("")}</tbody></table></div>`;
+    html += `<h3>リスナー別 (記録・イベント全体)</h3>` + rankingTable(r.listener_ranking.slice(0, 100), { rooms: true });
+  } else if (!r.official_enabled) {
+    html += `<div class="empty">記録されたギフトはまだありません (記録は設定後に配信したルームから始まります)</div>`;
+  }
+  return html;
+}
+
+/* ------------------------------------------------------------ 設定 */
+let saved = { rooms: [], record_rooms: [], events: [] }, draft = null, settingsDirty = false;
+const KEY_RE = { rooms: /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/, record_rooms: /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/, events: /showroom-live\.com\/event\/([A-Za-z0-9_\-]+)/ };
+function normalize(kind, value) {
+  value = value.trim();
+  const m = value.match(KEY_RE[kind]);
+  if (m) return m[1];
+  return /^[A-Za-z0-9_\-]+$/.test(value) ? value : null;
+}
+function loadSettings(s) {
+  saved = JSON.parse(JSON.stringify(s));
+  draft = JSON.parse(JSON.stringify(s));
+  renderSettings();
+}
+function renderSettings() {
+  for (const card of $$("[data-list]")) {
+    const kind = card.dataset.list, items = draft[kind];
+    card.querySelector(".list").innerHTML = items.length
+      ? items.map((k, i) => `<li><span>${esc(k)}${kind === "record_rooms" && draft.rooms.includes(k) ? "<br><small>視聴中のルームなので、ギフトはブラウザ側で記録します (二重には記録しません)</small>" : ""}</span>${kind === "events" ? "" : `<a href="${roomUrl(k)}" target="_blank" rel="noopener noreferrer" title="SHOWROOM で開く">↗</a>`}<button class="x" data-i="${i}" title="削除" aria-label="${esc(k)} を削除">×</button></li>`).join("")
+      : `<li class="none">まだありません</li>`;
+  }
+  settingsDirty = JSON.stringify(saved) !== JSON.stringify(draft);
+  $("#s-note").innerHTML = settingsDirty
+    ? `<span class="dirty">未保存の変更があります。</span>「保存して反映」で視聴とギフト記録をやり直します (視聴が数十秒途切れます)。`
+    : "変更はまだありません。";
+  $("#s-save").disabled = !settingsDirty;
+  $("#s-reset").disabled = !settingsDirty;
+}
+for (const card of $$("[data-list]")) {
+  const kind = card.dataset.list;
+  card.querySelector("form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const input = card.querySelector("input");
+    const values = input.value.split(/[\s,、]+/).filter(Boolean);
+    const bad = [];
+    for (const v of values) {
+      const key = normalize(kind, v);
+      if (!key) { bad.push(v); continue; }
+      if (!draft[kind].includes(key)) draft[kind].push(key);
+    }
+    input.value = bad.join(" ");
+    if (bad.length) toast(kind === "events" ? "イベントの URL を入力してください" : "ルームの URL か room_url_key を入力してください");
+    renderSettings();
+  });
+  card.querySelector(".list").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button.x");
+    if (!b) return;
+    draft[kind].splice(Number(b.dataset.i), 1);
+    renderSettings();
+  });
+}
+$("#s-reset").addEventListener("click", () => { draft = JSON.parse(JSON.stringify(saved)); renderSettings(); });
+$("#s-save").addEventListener("click", async () => {
+  $("#s-save").disabled = true;
+  try {
+    const r = await api("/api/settings", draft);
+    loadSettings(r.settings);
+    toast("保存しました。視聴とギフト記録をやり直しています…");
+    setTimeout(refresh, 1500);
+  } catch (e) {
+    toast(`保存できませんでした: ${e.message}`);
+    renderSettings();
+  }
+});
+window.addEventListener("beforeunload", (ev) => { if (settingsDirty) { ev.preventDefault(); ev.returnValue = ""; } });
+
+/* ------------------------------------------------------------ ログ */
+let logSeq = 0;
+const logBox = $("#logs");
+async function loadLogs() {
+  try {
+    const r = await api(`/api/logs?after=${logSeq}`);
+    if (!r.logs.length) return;
+    const atBottom = logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight < 40;
+    const frag = document.createDocumentFragment();
+    for (const l of r.logs) {
+      logSeq = Math.max(logSeq, l.seq);
+      const d = document.createElement("div");
+      d.className = l.level;
+      d.dataset.level = l.level;
+      d.innerHTML = `<span class="t">${tm(l.at, true)}</span> <span class="n">${esc(l.name)}</span> ${esc(l.message)}`;
+      frag.append(d);
+    }
+    logBox.append(frag);
+    while (logBox.childElementCount > 500) logBox.firstElementChild.remove();
+    applyLogFilter();
+    if ($("#l-follow").checked && (atBottom || r.logs.length === logBox.childElementCount)) logBox.scrollTop = logBox.scrollHeight;
+  } catch (e) { /* 次の更新で再試行 */ }
+}
+function applyLogFilter() {
+  const only = $("#l-warn").checked;
+  for (const d of logBox.children) d.hidden = only && !["WARNING", "ERROR", "CRITICAL"].includes(d.dataset.level);
+}
+$("#l-warn").addEventListener("change", applyLogFilter);
+
+/* ------------------------------------------------------------ 起動 */
+showTab();
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+setInterval(() => { if (!document.hidden && $("section[data-tab=logs]").classList.contains("active")) loadLogs(); }, 3000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>

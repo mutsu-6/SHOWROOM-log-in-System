@@ -11,6 +11,9 @@ showroom-keeper = "showroom_keeper.cli:main"
 [tool.setuptools]
 packages = ["showroom_keeper"]
 
+[tool.setuptools.package-data]
+showroom_keeper = ["admin.html"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

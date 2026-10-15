@@ -112,6 +112,11 @@ class Config:
     # 障害時の再試行待ち (秒) の上限
     max_backoff: float = 300.0
     log_level: str = "INFO"
+    # 管理画面 (ブラウザで開く操作画面)。web_port: 0 で無効。既定では自分の PC からだけ開ける
+    web_port: int = 8080
+    web_host: str = "127.0.0.1"
+    # 管理画面のパスワード。設定すると、localhost 以外からの接続にも使える (ユーザー名は何でもよい)
+    web_password: str | None = None
 
     @classmethod
     def load(cls, path: str | os.PathLike | None, env: dict[str, str] | None = None) -> "Config":
@@ -161,7 +166,15 @@ class Config:
         cfg.record_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.record_rooms or []))
         cfg.events = list(dict.fromkeys(normalize_event_key(str(e)) for e in cfg.events or []))
 
+        if env.get("SHOWROOM_WEB_PORT"):
+            cfg.web_port = int(env["SHOWROOM_WEB_PORT"])
+        if env.get("SHOWROOM_WEB_HOST"):
+            cfg.web_host = env["SHOWROOM_WEB_HOST"]
+        if env.get("SHOWROOM_WEB_PASSWORD"):
+            cfg.web_password = env["SHOWROOM_WEB_PASSWORD"]
+
         cfg.rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in rooms))
+        apply_settings(cfg)
         cfg.validate()
         return cfg
 
@@ -171,3 +184,56 @@ class Config:
                 raise ValueError(f"{name} は正の数である必要があります")
         if self.stall_threshold < 1:
             raise ValueError("stall_threshold は 1 以上である必要があります")
+
+
+SETTINGS_KEYS = ("rooms", "record_rooms", "events")
+
+
+def settings_path(cfg: Config) -> Path:
+    """管理画面で変更したルーム設定の保存先。設定ファイル・環境変数より優先する。"""
+    return Path(cfg.state_file).parent / "settings.json"
+
+
+def normalize_settings(data: dict[str, Any]) -> dict[str, list[str]]:
+    """管理画面から受け取ったルーム設定を検証・正規化する (URL でも room_url_key でもよい)。"""
+    out: dict[str, list[str]] = {}
+    for key in SETTINGS_KEYS:
+        values = data.get(key) or []
+        if isinstance(values, str):
+            values = values.split(",")
+        if not isinstance(values, list):
+            raise ValueError(f"{key} の形式が不正です")
+        norm = normalize_event_key if key == "events" else normalize_room_key
+        out[key] = list(dict.fromkeys(norm(str(v)) for v in values if str(v).strip()))
+    return out
+
+
+def apply_settings(cfg: Config) -> bool:
+    """管理画面で保存したルーム設定があれば反映する。反映したら True。"""
+    import json
+
+    try:
+        data = json.loads(settings_path(cfg).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    try:
+        values = normalize_settings(data)
+    except ValueError:
+        return False
+    cfg.rooms, cfg.record_rooms, cfg.events = values["rooms"], values["record_rooms"], values["events"]
+    return True
+
+
+def save_settings(cfg: Config, data: dict[str, Any]) -> dict[str, list[str]]:
+    import json
+    import os
+
+    values = normalize_settings(data)
+    path = settings_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(values, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return values

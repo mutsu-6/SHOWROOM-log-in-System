@@ -127,70 +127,117 @@ def match_user(gifts: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     return [g for g in gifts if g["user_id"] in ids]
 
 
-def show_user(gifts: list[dict[str, Any]], catalog: dict[int, dict[str, Any]], query: str) -> None:
-    hits = match_user(gifts, query)
-    if not hits:
-        print(f"   「{query}」に当てはまるリスナーのギフトはありません")
-        return
+def gift_label(catalog: dict[int, dict[str, Any]], gift_id: Any) -> str:
+    return (catalog.get(gift_id) or {}).get("gift_name") or f"ギフト{gift_id}"
+
+
+def _rank_row(u: dict[str, Any]) -> dict[str, Any]:
+    """summarize の 1 人分を、画面表示・JSON 用の形にする (内訳は多い順)。"""
+    items = sorted(u["items"].items(), key=lambda kv: -kv[1])
+    return {k: u[k] for k in ("user_id", "name", "points", "paid_points", "free_points", "count", "times")} | {
+        "items": [[k, v] for k, v in items]}
+
+
+def user_history(gifts: list[dict[str, Any]], catalog: dict[int, dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """特定リスナーの履歴 (合計・日別・一覧)。名前で探した場合も、見つかった ID の改名前後をまとめる。"""
     by_user: dict[Any, list[dict[str, Any]]] = defaultdict(list)
-    for g in hits:
+    for g in match_user(gifts, query):
         by_user[g["user_id"]].append(g)
+    out = []
     for user_id, items in by_user.items():
-        names = list(dict.fromkeys(g["name"] for g in items if g.get("name")))
-        total = summarize(items, catalog)[0]
-        print(f"\n👤 {' / '.join(names)} (ユーザー ID {user_id})")
-        print(f"   合計 {total['points']:,} pt ({split_points(total)}) / {total['count']:,} 個 / {total['times']} 回")
         days: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for g in items:
             days[datetime.fromtimestamp(g["at"], JST).strftime("%m/%d")].append(g)
-        print("   【日別】")
-        for day, day_items in days.items():
-            d = summarize(day_items, catalog)[0]
-            print(f"     {day}  {d['points']:,} pt / {d['count']:,} 個 ({d['times']} 回)")
-        print("   【履歴】")
-        for g in items:
-            info = catalog.get(g["gift_id"], {})
-            gname = info.get("gift_name") or f"ギフト{g['gift_id']}"
-            pt = int(info.get("point") or 0) * g["num"]
-            where = f"  @{g['room']}" if g.get("room") else ""
-            print(f"     {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {gname}×{g['num']}  ({pt:,} pt){where}")
+        out.append({
+            "user_id": user_id,
+            "names": list(dict.fromkeys(g["name"] for g in items if g.get("name"))),
+            "total": _rank_row(summarize(items, catalog)[0]),
+            "days": [{"day": day, **_rank_row(summarize(d, catalog)[0])} for day, d in days.items()],
+            "history": [{"at": g["at"], "gift": gift_label(catalog, g["gift_id"]), "num": g["num"],
+                         "points": int((catalog.get(g["gift_id"]) or {}).get("point") or 0) * g["num"],
+                         "room": g.get("room")} for g in items],
+        })
+    return out
 
 
-def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_lines: int,
-         user: str | None = None) -> int:
+def show_user(gifts: list[dict[str, Any]], catalog: dict[int, dict[str, Any]], query: str) -> None:
+    users = user_history(gifts, catalog, query)
+    if not users:
+        print(f"   「{query}」に当てはまるリスナーのギフトはありません")
+        return
+    for u in users:
+        _print_user(u)
+
+
+def _print_user(u: dict[str, Any]) -> None:
+    total = u["total"]
+    print(f"\n👤 {' / '.join(u['names'])} (ユーザー ID {u['user_id']})")
+    print(f"   合計 {total['points']:,} pt ({split_points(total)}) / {total['count']:,} 個 / {total['times']} 回")
+    print("   【日別】")
+    for d in u["days"]:
+        print(f"     {d['day']}  {d['points']:,} pt / {d['count']:,} 個 ({d['times']} 回)")
+    print("   【履歴】")
+    for h in u["history"]:
+        where = f"  @{h['room']}" if h.get("room") else ""
+        print(f"     {datetime.fromtimestamp(h['at'], JST):%m/%d %H:%M:%S}  {h['gift']}×{h['num']}  ({h['points']:,} pt){where}")
+
+
+def room_report(state_dir: Path, room_key: str, hours: float | None = None, user: str | None = None) -> dict[str, Any]:
+    """1 ルームのギフト履歴の集計 (CLI と管理画面で共通)。hours が None なら今回の配信、1e8 以上なら記録のすべて。"""
     status = _get(f"/api/room/status?room_url_key={room_key}")
     room_id = status.get("room_id")
     name = status.get("room_name") or room_key
     if not room_id:
-        print(f"❌ {room_key}: ルームが見つかりません")
-        return 1
-    since = time.time() - hours * 3600 if hours else (status.get("started_at") if status.get("is_live") else None)
+        raise LookupError(f"{room_key}: ルームが見つかりません")
+    all_records = bool(hours and hours >= 1e8)
+    since = (None if all_records else time.time() - hours * 3600 if hours
+             else status.get("started_at") if status.get("is_live") else None)
     recorded = [g for g in load_recorded(state_dir, room_key) if not since or g["at"] >= since]
     api = [g for g in from_api_log(_get(f"/api/live/gift_log?room_id={room_id}").get("gift_log") or [])
            if not since or g["at"] >= since]
     gifts = merge(recorded, api)
     catalog = fetch_catalog(room_id)
-    period = ("記録のすべて" if hours and hours >= 1e8 else f"直近 {hours:g} 時間" if hours else
+    period = ("記録のすべて" if all_records else f"直近 {hours:g} 時間" if hours else
               f"今回の配信 ({datetime.fromtimestamp(since, JST):%m/%d %H:%M} 開始)" if since else "記録のすべて")
+    report: dict[str, Any] = {
+        "room": room_key, "name": name, "is_live": bool(status.get("is_live")), "period": period,
+        "recorded": len(recorded), "api": len(api), "total": len(gifts),
+        "ranking": [_rank_row(u) for u in summarize(gifts, catalog)],
+        "recent": [{"at": g["at"], "user_id": g["user_id"], "name": g["name"], "gift": gift_label(catalog, g["gift_id"]),
+                    "num": g["num"]} for g in reversed(gifts[-200:])],
+    }
     if user:
-        print(f"🎁 {name} — 「{user}」のギフト履歴 ({period})")
-        show_user(gifts, catalog, user)
+        report["user"] = {"query": user, "users": user_history(gifts, catalog, user)}
+    return report
+
+
+def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_lines: int,
+         user: str | None = None) -> int:
+    try:
+        r = room_report(state_dir, room_key, hours, user)
+    except LookupError as e:
+        print(f"❌ {e}")
+        return 1
+    if user:
+        print(f"🎁 {r['name']} — 「{user}」のギフト履歴 ({r['period']})")
+        if not r["user"]["users"]:
+            print(f"   「{user}」に当てはまるリスナーのギフトはありません")
+        for u in r["user"]["users"]:
+            _print_user(u)
         return 0
-    print(f"🎁 {name} のギフト履歴 — {period}")
-    print(f"   記録 {len(recorded)} 件 + API {len(api)} 件 (重複除外後 {len(gifts)} 件)")
-    if not gifts:
+    print(f"🎁 {r['name']} のギフト履歴 — {r['period']}")
+    print(f"   記録 {r['recorded']} 件 + API {r['api']} 件 (重複除外後 {r['total']} 件)")
+    if not r["total"]:
         print("   ギフトはありません")
         return 0
     print(f"\n【リスナー別ランキング】 上位 {top} 人")
-    for i, u in enumerate(summarize(gifts, catalog)[:top], 1):
-        items = "、".join(f"{k}×{v}" for k, v in sorted(u["items"].items(), key=lambda kv: -kv[1])[:3])
+    for i, u in enumerate(r["ranking"][:top], 1):
+        items = "、".join(f"{k}×{v}" for k, v in u["items"][:3])
         print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt ({split_points(u)}) / {u['count']:,} 個 ({u['times']} 回)  {items}")
     if log_lines:
         print(f"\n【最近のギフト】 {log_lines} 件")
-        for g in gifts[-log_lines:]:
-            info = catalog.get(g["gift_id"], {})
-            gname = info.get("gift_name") or f"ギフト{g['gift_id']}"
-            print(f"  {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {g['name']}  {gname}×{g['num']}")
+        for g in reversed(r["recent"][:log_lines]):
+            print(f"  {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {g['name']}  {g['gift']}×{g['num']}")
     return 0
 
 
@@ -266,25 +313,24 @@ def _rooms_text(rooms: list[str]) -> str:
     return "、".join(rooms[:3]) + (f" ほか {len(rooms) - 3}" if len(rooms) > 3 else "")
 
 
-def show_official_user(rows: list[dict[str, Any]], query: str) -> None:
+def official_user(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """公式の貢献ランキングから特定リスナーを探す (数字はユーザー ID、それ以外は名前の部分一致)。"""
     query = query.strip()
     hits = [r for r in rows if (str(r["user_id"]) == query if query.isdigit()
                                 else query.lower() in str(r.get("name") or "").lower())]
-    print("\n【公式の貢献ランキング】 SHOWROOM 発表 (各ルーム上位 100 人)")
-    if not hits:
-        print(f"   「{query}」は公式の貢献ランキングに見つかりません (どのルームでも上位 100 人に入っていない可能性)")
-        return
+    out = []
     for u in summarize_official(hits):
-        print(f"   👤 {u['name']} (ユーザー ID {u['user_id']})  合計 {u['points']:,} pt")
-        for room, pt in u["rooms"]:
-            rank = next((r["rank"] for r in hits if r["user_id"] == u["user_id"] and r["room"] == room), None)
-            print(f"     {room}  {pt:,} pt ({rank} 位)")
+        ranks = {r["room"]: r["rank"] for r in hits if r["user_id"] == u["user_id"]}
+        out.append(dict(u, rooms=[[room, pt, ranks.get(room)] for room, pt in u["rooms"]]))
+    return out
 
 
-def show_event(state_dir: Path, event_key: str, top: int, user: str | None = None, official: bool = True) -> int:
-    """イベント参加ルーム全体の記録を集計する (イベント期間のギフトのみ)。
+def event_report(state_dir: Path, event_key: str, user: str | None = None, official: bool = True,
+                 progress: Any = None) -> dict[str, Any]:
+    """イベント参加ルーム全体の集計 (CLI と管理画面で共通)。
 
-    official なら SHOWROOM 公式の貢献ランキングも合わせて表示し、記録の取りこぼしを確認できるようにする。
+    official なら SHOWROOM 公式の貢献ランキングも集め、記録の取りこぼしを確認できるようにする。
+    progress は公式ランキングを取得し直す時に呼ばれる (時間がかかることを知らせる用)。
     """
     info = _get(f"/api/event/{event_key}/abstraction")
     start, end = info.get("event_start_at") or 0, info.get("event_end_at") or time.time()
@@ -307,61 +353,101 @@ def show_event(state_dir: Path, event_key: str, top: int, user: str | None = Non
             catalog.update(fetch_catalog(r["room_id"]))
         except Exception:  # noqa: BLE001
             continue
-    title = info.get("title") or event_key
-    print(f"🏆 {title}")
-    print(f"   期間 {datetime.fromtimestamp(start, JST):%m/%d %H:%M} 〜 {datetime.fromtimestamp(end, JST):%m/%d %H:%M}"
-          f" / 参加 {len(rooms)} ルーム / 記録 {len(gifts)} 件")
 
     rows: list[dict[str, Any]] = []
+    failed = 0
     if official and info.get("event_id"):
         final = time.time() > end + 86400  # 終了から 1 日たてば確定値として保存し続ける
-        if cached_contributions(state_dir, info["event_id"]) is None:
-            print(f"   公式の貢献ランキングを取得しています ({len(rooms)} ルーム。数十秒かかることがあります)…", flush=True)
+        if progress and cached_contributions(state_dir, info["event_id"]) is None:
+            progress(len(rooms))
         rows, failed = fetch_contributions(state_dir, info["event_id"], rooms, final)
-        if failed:
-            print(f"   ⚠️ {failed} ルームの貢献ランキングを取得できませんでした (その分は含まれていません)")
 
-    if user:
-        if gifts:
-            show_user(sorted(gifts, key=lambda g: g["at"]), catalog, user)
-        if rows:
-            show_official_user(rows, user)
-        if not gifts and not rows:
-            print("   記録されたギフトはまだありません")
-        return 0
-
-    if gifts:
-        print(f"\n【ルーム別 (記録)】 上位 {top}")
-        room_rank = sorted(((name, summarize(items, catalog)) for name, items in per_room if items),
-                           key=lambda x: sum(u["points"] for u in x[1]), reverse=True)
-        for i, (name, users) in enumerate(room_rank[:top], 1):
+    listeners = summarize(gifts, catalog)
+    room_rank = []
+    for name, items in per_room:
+        if items:
+            users = summarize(items, catalog)
             pts = sum(u["points"] for u in users)
             paid = sum(u["paid_points"] for u in users)
-            print(f"{i:>3}. {name}  {pts:,} pt (有料 {paid:,} / 無料 {pts - paid:,}、リスナー {len(users)} 人)")
-        print(f"\n【リスナー別 (記録・イベント全体)】 上位 {top} 人")
-        for i, u in enumerate(summarize(gifts, catalog)[:top], 1):
-            rooms_of = sorted({g["room"] for g in gifts if g["user_id"] == u["user_id"]})
-            print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt ({split_points(u)}) / {u['count']:,} 個"
-                  f"  ({_rooms_text(rooms_of)})")
-    elif not rows:
-        print("   記録されたギフトはまだありません (記録は設定後に配信したルームから始まります)")
-
+            room_rank.append({"room": name, "points": pts, "paid_points": paid, "free_points": pts - paid,
+                              "listeners": len(users)})
+    room_rank.sort(key=lambda r: r["points"], reverse=True)
+    report: dict[str, Any] = {
+        "event": event_key, "title": info.get("title") or event_key, "start": start, "end": end,
+        "rooms": len(rooms), "recorded": len(gifts), "failed": failed, "official_enabled": bool(rows),
+        "room_ranking": room_rank,
+        "listener_ranking": [dict(_rank_row(u), rooms=sorted({g["room"] for g in gifts if g["user_id"] == u["user_id"]}))
+                             for u in listeners],
+        "official_ranking": [],
+    }
     if rows:
-        recorded_pts = {u["user_id"]: u["points"] for u in summarize(gifts, catalog)} if gifts else {}
-        ranking = summarize_official(rows)
-        print(f"\n【公式の貢献ランキング (イベント全体)】 上位 {top} 人"
-              f"  ※ SHOWROOM 発表の各ルーム上位 100 人の合計。記録を始める前の分も含む")
-        for i, u in enumerate(ranking[:top], 1):
-            mine = f" / 記録 {recorded_pts[u['user_id']]:,} pt" if u["user_id"] in recorded_pts else ""
-            print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt{mine}"
-                  f"  ({_rooms_text([room for room, _ in u['rooms']])})")
-        print(f"   公式の貢献者 {len(ranking):,} 人 / 計 {sum(r['point'] for r in rows):,} pt")
+        recorded_pts = {u["user_id"]: u["points"] for u in listeners}
+        report["official_ranking"] = [dict(u, recorded=recorded_pts.get(u["user_id"]), rooms=[room for room, _ in u["rooms"]])
+                                      for u in summarize_official(rows)]
+        report["official_total"] = sum(r["point"] for r in rows)
         if gifts:
             # 記録のあるルームについて、公式の合計と比べて取りこぼしの目安を出す
             recorded_rooms = {g["room"] for g in gifts}
-            official_pts = sum(r["point"] for r in rows if r["room"] in recorded_rooms)
-            mine_pts = sum(u["points"] for u in summarize(gifts, catalog))
-            if official_pts:
-                print(f"   記録のある {len(recorded_rooms)} ルームでは、記録 {mine_pts:,} pt / 公式 {official_pts:,} pt"
-                      f" ({mine_pts / official_pts:.0%})。差は記録を始める前の分・停止中の分など")
+            report["coverage"] = {"rooms": len(recorded_rooms), "recorded": sum(u["points"] for u in listeners),
+                                  "official": sum(r["point"] for r in rows if r["room"] in recorded_rooms)}
+    if user:
+        report["user"] = {"query": user, "users": user_history(sorted(gifts, key=lambda g: g["at"]), catalog, user),
+                          "official": official_user(rows, user) if rows else []}
+    return report
+
+
+def show_event(state_dir: Path, event_key: str, top: int, user: str | None = None, official: bool = True) -> int:
+    """イベント参加ルーム全体の記録を表示する (イベント期間のギフトのみ)。"""
+    def progress(n: int) -> None:
+        print(f"   公式の貢献ランキングを取得しています ({n} ルーム。数十秒かかることがあります)…", flush=True)
+
+    r = event_report(state_dir, event_key, user, official, progress)
+    print(f"🏆 {r['title']}")
+    print(f"   期間 {datetime.fromtimestamp(r['start'], JST):%m/%d %H:%M} 〜 {datetime.fromtimestamp(r['end'], JST):%m/%d %H:%M}"
+          f" / 参加 {r['rooms']} ルーム / 記録 {r['recorded']} 件")
+    if r["failed"]:
+        print(f"   ⚠️ {r['failed']} ルームの貢献ランキングを取得できませんでした (その分は含まれていません)")
+
+    if user:
+        u = r["user"]
+        if r["recorded"]:
+            if not u["users"]:
+                print(f"   「{user}」に当てはまるリスナーのギフトはありません")
+            for one in u["users"]:
+                _print_user(one)
+        if r["official_enabled"]:
+            print("\n【公式の貢献ランキング】 SHOWROOM 発表 (各ルーム上位 100 人)")
+            if not u["official"]:
+                print(f"   「{user}」は公式の貢献ランキングに見つかりません (どのルームでも上位 100 人に入っていない可能性)")
+            for one in u["official"]:
+                print(f"   👤 {one['name']} (ユーザー ID {one['user_id']})  合計 {one['points']:,} pt")
+                for room, pt, rank in one["rooms"]:
+                    print(f"     {room}  {pt:,} pt ({rank} 位)")
+        if not r["recorded"] and not r["official_enabled"]:
+            print("   記録されたギフトはまだありません")
+        return 0
+
+    if r["recorded"]:
+        print(f"\n【ルーム別 (記録)】 上位 {top}")
+        for i, room in enumerate(r["room_ranking"][:top], 1):
+            print(f"{i:>3}. {room['room']}  {room['points']:,} pt (有料 {room['paid_points']:,} / 無料 {room['free_points']:,}、"
+                  f"リスナー {room['listeners']} 人)")
+        print(f"\n【リスナー別 (記録・イベント全体)】 上位 {top} 人")
+        for i, u in enumerate(r["listener_ranking"][:top], 1):
+            print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt ({split_points(u)}) / {u['count']:,} 個"
+                  f"  ({_rooms_text(u['rooms'])})")
+    elif not r["official_enabled"]:
+        print("   記録されたギフトはまだありません (記録は設定後に配信したルームから始まります)")
+
+    if r["official_enabled"]:
+        print(f"\n【公式の貢献ランキング (イベント全体)】 上位 {top} 人"
+              f"  ※ SHOWROOM 発表の各ルーム上位 100 人の合計。記録を始める前の分も含む")
+        for i, u in enumerate(r["official_ranking"][:top], 1):
+            mine = f" / 記録 {u['recorded']:,} pt" if u["recorded"] is not None else ""
+            print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt{mine}  ({_rooms_text(u['rooms'])})")
+        print(f"   公式の貢献者 {len(r['official_ranking']):,} 人 / 計 {r['official_total']:,} pt")
+        c = r.get("coverage")
+        if c and c["official"]:
+            print(f"   記録のある {c['rooms']} ルームでは、記録 {c['recorded']:,} pt / 公式 {c['official']:,} pt"
+                  f" ({c['recorded'] / c['official']:.0%})。差は記録を始める前の分・停止中の分など")
     return 0

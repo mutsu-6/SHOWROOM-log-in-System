@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="視聴状態の維持を開始する (既定)")
     run.add_argument("rooms", nargs="*", help="ルームの URL または room_url_key (設定ファイルより優先)")
     run.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
+    run.add_argument("--no-web", action="store_true", help="管理画面 (既定 http://localhost:8080/) を起動しない")
 
     sub.add_parser("login", help="ブラウザを開いて手動ログインし、セッションを保存する")
 
@@ -200,7 +201,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from .keeper import Keeper
 
-    if not (cfg.rooms or cfg.record_rooms or cfg.events):
+    if getattr(args, "no_web", False):
+        cfg.web_port = 0
+    if not (cfg.rooms or cfg.record_rooms or cfg.events or cfg.web_port):
         logging.error("監視するルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS。"
                       "ギフト記録だけなら SHOWROOM_RECORD_ROOMS / SHOWROOM_EVENTS)")
         return 2

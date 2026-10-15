@@ -3,6 +3,11 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      # 管理画面。コンテナ内では全アドレスで待ち受け、サーバーの外には公開しない (下の ports で 127.0.0.1 に限定)
+      SHOWROOM_WEB_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/data          # ログイン状態 (storage_state.json) の保存先
     shm_size: "1gb"

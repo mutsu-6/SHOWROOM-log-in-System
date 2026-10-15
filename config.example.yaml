@@ -41,3 +41,8 @@ record_gifts: true            # 視聴中のルームのギフト (無料の星�
 mute: true
 max_backoff: 300              # 障害時の再試行待ちの上限 (秒)
 log_level: INFO
+
+# 管理画面 (http://localhost:8080/)。web_port: 0 で無効
+web_port: 8080
+web_host: 127.0.0.1           # 既定では自分の PC からだけ開ける
+# web_password: ""            # 設定すると localhost 以外からも開ける (環境変数 SHOWROOM_WEB_PASSWORD 推奨)

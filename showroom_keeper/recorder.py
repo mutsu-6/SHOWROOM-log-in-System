@@ -150,6 +150,9 @@ class GiftRecorder:
         self._incomplete = False
         self._events: dict[str, dict[str, Any]] = {}
         self._ended_logged: set[str] = set()
+        # 管理画面に表示する、記録中ルームの名前と記録している理由 (ルーム指定・イベント名)
+        self._names: dict[str, str] = {}
+        self._sources: dict[str, str] = {}
         self._fetch_slots: asyncio.Semaphore | None = None
         self._connect_slots: asyncio.Semaphore | None = None
 
@@ -267,10 +270,17 @@ class GiftRecorder:
                 log.info("%s の配信が切り替わったため接続し直します", key)
                 self._stop_task(key)
             self._live_ids[key] = target.get("live_id")
+            self._sources[key] = target.get("source") or ""
             self._tasks[key] = asyncio.ensure_future(self._record_room(key, target["room_id"]))
         for key in [k for k, task in self._tasks.items() if task.done()]:
             del self._tasks[key]
             self._live_ids.pop(key, None)
+
+    def active(self) -> list[dict[str, Any]]:
+        """記録中のルーム (管理画面用)。"""
+        return [{"room": key, "name": self._names.get(key, key), "source": self._sources.get(key, ""),
+                 "live_id": self._live_ids.get(key)}
+                for key, task in list(self._tasks.items()) if not task.done()]
 
     def _stop_task(self, key: str) -> None:
         task = self._tasks.pop(key, None)
@@ -288,6 +298,7 @@ class GiftRecorder:
                 return
             live_id = info.get("live_id")
             self._live_ids[key] = live_id
+            self._names[key] = info.get("room_name") or key
             log.info("記録開始: %s", info.get("room_name") or key)
             count = 0
             connect_kwargs: dict[str, Any] = {"open_timeout": 20, "ping_interval": None}

@@ -14,7 +14,7 @@ from pathlib import Path
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from .api import BASE_URL, ShowroomAPI, summarize_login
-from .config import Config
+from .config import Config, apply_settings, settings_path
 from .comments import CommentDispatcher, queue_dir
 from .status import LOGIN_KEY, write_live_stat
 from .watcher import RoomWatcher
@@ -155,45 +155,109 @@ async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_
 
 class Keeper:
     def __init__(self, cfg: Config):
-        if not (cfg.rooms or cfg.record_rooms or cfg.events):
+        if not (cfg.rooms or cfg.record_rooms or cfg.events or cfg.web_port):
             raise ValueError("監視するルームが指定されていません (rooms / record_rooms / events)")
         self.cfg = cfg
         # Python 3.9 の asyncio.Event は生成時のイベントループに結び付くため、run() 内で生成する
         self._stop: asyncio.Event | None = None
+        # 停止か設定の反映を求められたら立つ。待っている処理はこれで起きて、どちらかを確かめる
+        self._wake: asyncio.Event | None = None
         self._stop_requested = False
+        self._reload_requested = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        # 管理画面が読む現在の状態
+        self.watchers: list[RoomWatcher] = []
+        self.recorder = None
+        self.started_at = time.time()
+        self.browser_state = "停止中"
 
     def stop(self) -> None:
         self._stop_requested = True
         if self._stop is not None:
             self._stop.set()
+            self._wake.set()
+
+    def request_reload(self) -> None:
+        """保存されたルーム設定を読み直し、ブラウザとギフト記録をやり直す (管理画面のスレッドからも呼べる)。"""
+        def apply() -> None:
+            self._reload_requested = True
+            if self._wake is not None:
+                self._wake.set()
+
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(apply)
+        else:
+            apply()
+
+    def _interrupted(self) -> bool:
+        return self._stop.is_set() or self._reload_requested
+
+    async def _sleep_or_wake(self, seconds: float) -> None:
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._wake.wait(), timeout=seconds)
 
     async def run(self) -> None:
+        self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
+        self._wake = asyncio.Event()
         if self._stop_requested:
-            self._stop.set()
+            self.stop()
+        if settings_path(self.cfg).exists():
+            log.info("管理画面で保存したルーム設定を使います (%s。.env / config.yaml のルーム指定より優先)",
+                     settings_path(self.cfg))
+        admin = None
+        if self.cfg.web_port:
+            from .web import start_admin
+
+            admin = start_admin(self)
+        try:
+            while not self._stop.is_set():
+                if self._reload_requested:
+                    self._reload_requested = False
+                    apply_settings(self.cfg)
+                    log.info("ルーム設定を反映しました (視聴 %d / ギフト記録 %d / イベント %d)",
+                             len(self.cfg.rooms), len(self.cfg.record_rooms), len(self.cfg.events))
+                if not self._stop.is_set():
+                    self._wake.clear()
+                await self._run_targets()
+        finally:
+            if admin is not None:
+                admin.shutdown()
+
+    async def _run_targets(self) -> None:
+        """今の設定で視聴とギフト記録を動かす。停止か設定の反映を求められたら戻る。"""
         recorder = None
+        self.recorder = None
         if self.cfg.record_rooms or self.cfg.events:
             from .recorder import GiftRecorder
 
-            recorder = asyncio.ensure_future(GiftRecorder(self.cfg).run())
+            self.recorder = GiftRecorder(self.cfg)
+            recorder = asyncio.ensure_future(self.recorder.run())
         try:
             if self.cfg.rooms:
                 await self._run_loop()
             else:
                 # 視聴ルームが無くギフト記録だけの場合はブラウザを起動しない
-                log.info("視聴するルームが無いため、ブラウザを開かずギフトの記録だけを行います")
-                await self._stop.wait()
+                if self.cfg.record_rooms or self.cfg.events:
+                    log.info("視聴するルームが無いため、ブラウザを開かずギフトの記録だけを行います")
+                else:
+                    log.info("ルームが設定されていません。管理画面から追加してください")
+                self.browser_state = "使用しない"
+                await self._wake.wait()
         finally:
+            self.watchers = []
             if recorder is not None:
                 recorder.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await recorder
+            self.recorder = None
 
     async def _run_loop(self) -> None:
         failures = 0
         async with async_playwright() as pw:
-            while not self._stop.is_set():
+            while not self._interrupted():
                 try:
+                    self.browser_state = "起動中"
                     await self._run_session(pw)
                     failures = 0
                 except asyncio.CancelledError:
@@ -201,9 +265,10 @@ class Keeper:
                 except Exception as e:  # noqa: BLE001
                     failures += 1
                     delay = min(self.cfg.max_backoff, 10 * 2 ** (failures - 1))
+                    self.browser_state = f"障害 ({delay:.0f} 秒後に再起動)"
                     log.error("ブラウザで障害が発生しました: %s / %.0f 秒後に再起動します", e, delay)
-                    with suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                    await self._sleep_or_wake(delay)
+        self.browser_state = "停止中"
 
     async def _run_session(self, pw) -> None:
         browser = await launch_browser(pw, self.cfg)
@@ -224,27 +289,29 @@ class Keeper:
             watchers = [
                 RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
             ]
+            self.watchers = watchers
+            self.browser_state = "動作中"
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
             tasks.append(asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments"))
             saver = asyncio.create_task(self._periodic_save(ctx, api, watchers))
-            stop_wait = asyncio.create_task(self._stop.wait())
+            wake_wait = asyncio.create_task(self._wake.wait())
             disc_wait = asyncio.create_task(disconnected.wait())
             try:
-                await asyncio.wait([stop_wait, disc_wait, saver], return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait([wake_wait, disc_wait, saver], return_when=asyncio.FIRST_COMPLETED)
             finally:
                 for w in watchers:
                     w.stop()
                 tasks[-1].cancel()  # コメント受付
                 await asyncio.gather(*tasks, return_exceptions=True)
-                for t in (saver, stop_wait, disc_wait):
+                for t in (saver, wake_wait, disc_wait):
                     t.cancel()
-            if disconnected.is_set() and not self._stop.is_set():
+            if disconnected.is_set() and not self._interrupted():
                 raise RuntimeError("ブラウザが切断されました")
             if saver.done() and not saver.cancelled() and saver.exception():
                 raise saver.exception()
-            if not self._stop.is_set():
+            if not self._interrupted():
                 # 想定外の終了。即座に再起動を繰り返さないよう障害として扱う (バックオフさせる)
-                reason = stop_wait.exception() if stop_wait.done() and not stop_wait.cancelled() else None
+                reason = wake_wait.exception() if wake_wait.done() and not wake_wait.cancelled() else None
                 raise RuntimeError(f"監視が予期せず終了しました: {reason!r}")
         finally:
             if browser.is_connected():
