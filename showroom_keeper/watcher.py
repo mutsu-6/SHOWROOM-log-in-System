@@ -265,9 +265,20 @@ class RoomWatcher:
         self.last_status_at = self._clock()
         self._became_live = bool(prev is not None and not prev.is_live and self.status.is_live)
         self._went_offline = bool(prev is not None and prev.is_live and not self.status.is_live)
+        if prev is None or (prev.room_name, prev.room_id) != (self.status.room_name, self.status.room_id):
+            self._remember_name()
         if prev is None or prev.is_live != self.status.is_live:
             state = "配信中" if self.status.is_live else "配信していません"
             self.log.info("%s: %s", self.status.room_name, state)
+
+    def _remember_name(self) -> None:
+        """管理画面の一覧に名前で出せるよう、ルーム名を覚えておく。"""
+        from .listing import remember_rooms
+
+        try:
+            remember_rooms(self._state_dir, {self.key: (self.status.room_name, self.status.room_id)})
+        except Exception as e:  # noqa: BLE001 - 名前を覚えられなくても視聴は続ける
+            self.log.debug("ルーム名を保存できません: %s", e)
 
     def _page_alive(self) -> bool:
         return self.page is not None and not self.page.is_closed()

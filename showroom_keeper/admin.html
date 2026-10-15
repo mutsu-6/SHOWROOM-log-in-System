@@ -146,6 +146,32 @@ td.name { max-width: 280px; word-break: break-word; }
 .logs .WARNING { background: var(--warn-soft); } .logs .ERROR, .logs .CRITICAL { background: var(--accent-soft); }
 .logs .n { color: var(--info); }
 
+/* 一覧から選ぶ (ルーム・イベント) */
+.modal { position: fixed; inset: 0; z-index: 20; background: rgba(15, 18, 25, .45); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 40px rgba(0,0,0,.25);
+  width: min(760px, 100%); max-height: 86vh; display: flex; flex-direction: column; }
+.modal-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.modal-title { display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 16px; }
+.modal-body { overflow-y: auto; padding: 6px 8px 10px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.fchip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--muted); }
+.fchip.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.fchip .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.pick { display: flex; gap: 12px; align-items: center; width: 100%; text-align: left; border: 0; background: transparent; padding: 10px; border-radius: 10px; cursor: pointer; }
+.pick:hover, .pick:focus-visible { background: var(--panel2); }
+.pick .main { flex: 1; min-width: 0; }
+.pick .t { font-weight: 600; word-break: break-word; }
+.pick .s { color: var(--muted); font-size: 12px; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pick .side { color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pick img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
+.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: var(--panel2); color: var(--muted); }
+.tag.live { background: var(--accent-soft); color: var(--accent); } .tag.ok { background: var(--ok-soft); color: var(--ok); }
+.tag.info { background: var(--info-soft); color: var(--info); } .tag.warn { background: var(--warn-soft); color: var(--warn); }
+.listing-note { color: var(--muted); font-size: 12px; padding: 8px 10px; }
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--panel2); }
+tr.selected td { background: var(--info-soft); }
+#l-detail { scroll-margin-top: 110px; }  /* 上に固定したヘッダーに隠れないように */
+
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: calc(100% - 32px); z-index: 10; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
@@ -166,6 +192,7 @@ td.name { max-width: 280px; word-break: break-word; }
     <a href="#dashboard" data-tab="dashboard">ダッシュボード</a>
     <a href="#comment" data-tab="comment">コメント</a>
     <a href="#gifts" data-tab="gifts">ギフト</a>
+    <a href="#listeners" data-tab="listeners">リスナー</a>
     <a href="#settings" data-tab="settings">ルーム設定</a>
     <a href="#logs" data-tab="logs">ログ</a>
   </nav>
@@ -215,6 +242,7 @@ td.name { max-width: 280px; word-break: break-word; }
         <span id="g-room-wrap" class="row grow">
           <input type="text" id="g-room" class="grow" list="g-room-list" placeholder="ルーム (URL または room_url_key)">
           <datalist id="g-room-list"></datalist>
+          <button type="button" class="btn" data-pick="room">一覧から選ぶ</button>
           <select id="g-hours">
             <option value="">今回の配信</option>
             <option value="24">直近 24 時間</option>
@@ -225,6 +253,7 @@ td.name { max-width: 280px; word-break: break-word; }
         <span id="g-event-wrap" class="row grow" hidden>
           <input type="text" id="g-event" class="grow" list="g-event-list" placeholder="イベント (URL または event_url_key)">
           <datalist id="g-event-list"></datalist>
+          <button type="button" class="btn" data-pick="event">一覧から選ぶ</button>
           <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="g-official" checked> 公式の貢献ランキング</label>
         </span>
         <input type="search" id="g-user" placeholder="リスナー (名前の一部かユーザー ID)" style="flex:0 1 230px">
@@ -232,6 +261,40 @@ td.name { max-width: 280px; word-break: break-word; }
       </form>
     </div>
     <div id="g-result"></div>
+  </section>
+
+  <!-- リスナー -->
+  <section data-tab="listeners">
+    <h2>リスナー</h2>
+    <p class="sub">記録したギフトのリスナー一覧です。行をクリックすると、記録したすべてのルームでの履歴を表示します。</p>
+    <div class="card">
+      <div class="row">
+        <input type="search" id="l-q" class="grow" placeholder="名前の一部かユーザー ID で絞り込む">
+        <select id="l-days" title="期間">
+          <option value="1">直近 24 時間</option>
+          <option value="7">直近 7 日</option>
+          <option value="30" selected>直近 30 日</option>
+          <option value="0">記録のすべて</option>
+        </select>
+        <select id="l-room" title="ルーム" style="max-width:240px"><option value="">すべてのルーム</option></select>
+        <select id="l-sort" title="並び順">
+          <option value="points">ポイントの多い順</option>
+          <option value="paid">有料ポイントの多い順</option>
+          <option value="times">回数の多い順</option>
+          <option value="last">最近ギフトを送った順</option>
+          <option value="rooms">送ったルームの多い順</option>
+        </select>
+        <label class="row" style="gap:4px;color:var(--muted)">最低 <input type="number" id="l-min" min="0" step="100" value="0" style="width:90px"> pt</label>
+      </div>
+      <div class="filters" id="l-filters" style="margin-top:10px">
+        <button type="button" class="fchip active" data-f="all">すべて</button>
+        <button type="button" class="fchip" data-f="paid">有料ギフトあり</button>
+        <button type="button" class="fchip" data-f="multi">複数のルームに送っている</button>
+        <button type="button" class="fchip" data-f="today">今日送った</button>
+      </div>
+    </div>
+    <div id="l-detail"></div>
+    <div id="l-list"></div>
   </section>
 
   <!-- 設定 -->
@@ -278,6 +341,19 @@ td.name { max-width: 280px; word-break: break-word; }
   </section>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
+<div class="modal" id="picker" hidden role="dialog" aria-modal="true" aria-labelledby="pk-title">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="modal-title"><span id="pk-title">一覧から選ぶ</span><button type="button" class="btn small" id="pk-close">閉じる (Esc)</button></div>
+      <div class="row">
+        <input type="search" id="pk-q" class="grow" placeholder="名前や URL の一部で検索" autocomplete="off">
+        <select id="pk-sort" title="並び順"></select>
+      </div>
+      <div class="filters" id="pk-filters"></div>
+    </div>
+    <div class="modal-body" id="pk-list"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -331,6 +407,7 @@ function showTab() {
   $$("section[data-tab]").forEach((s) => s.classList.toggle("active", s.dataset.tab === name));
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
   if (name === "logs") loadLogs();
+  if (name === "listeners") { fillListenerRooms(); loadListeners(); }
   if (name === "comment") setTimeout(() => $("#c-text").focus(), 0);
 }
 window.addEventListener("hashchange", showTab);
@@ -495,6 +572,8 @@ $("#g-form").addEventListener("submit", (ev) => { ev.preventDefault(); loadGifts
 $("#g-result").addEventListener("click", (ev) => {
   const more = ev.target.closest("[data-more-btn]");
   if (more) { $$("#g-result tr[data-more]").forEach((tr) => { tr.hidden = false; }); more.remove(); return; }
+  const all = ev.target.closest("[data-listener]");
+  if (all) { openListener(all.dataset.listener); return; }
   const b = ev.target.closest("[data-user]");
   if (!b) return;
   $("#g-user").value = b.dataset.user;
@@ -507,7 +586,7 @@ const splitBar = (u) => {
   if (!t) return "";
   return `<div class="splitbar" title="有料 ${num(u.paid_points)} / 無料 ${num(u.free_points)}"><div class="p" style="width:${(u.paid_points / t) * 100}%"></div><div class="f" style="width:${(u.free_points / t) * 100}%"></div></div>`;
 };
-const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span></td>`;
+const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="記録したすべてのルームでの履歴">全ルーム ›</button></td>`;
 const legend = `<div class="legend"><span><i style="background:var(--accent)"></i>有料</span><span><i style="background:var(--info)"></i>無料 (星・種など)</span></div>`;
 
 function rankingTable(rows, opts = {}) {
@@ -624,6 +703,188 @@ function renderEventGifts(r) {
   }
   return html;
 }
+
+/* ------------------------------------------------------------ 一覧から選ぶ (ルーム・イベント) */
+const lists = { room: null, event: null };  // [取得時刻, 一覧]
+async function getList(kind, force = false) {
+  const cached = lists[kind];
+  if (!force && cached && Date.now() - cached[0] < 60000) return cached[1];
+  const r = await api(kind === "room" ? "/api/lists/rooms" : "/api/lists/events");
+  lists[kind] = [Date.now(), kind === "room" ? r.rooms : r.events];
+  return lists[kind][1];
+}
+const PICKERS = {
+  room: {
+    title: "ルームを選ぶ",
+    filters: [["all", "すべて"], ["live", "配信中"], ["watch", "視聴中"], ["record", "ギフト記録"], ["enter", "入室"], ["has_records", "記録あり"]],
+    sorts: [["recent", "最近ギフトがあった順"], ["records", "記録の多い順"], ["name", "名前順"]],
+    match: (r, f) => f === "all" || (f === "live" ? r.is_live : r.tags.includes(f)),
+    text: (r) => `${r.name} ${r.key}`,
+    sort: (a, b, s) => s === "name" ? a.name.localeCompare(b.name, "ja") : s === "records" ? b.records - a.records : (b.last_at || 0) - (a.last_at || 0),
+    row: (r) => `<button type="button" class="pick" data-key="${esc(r.key)}">
+      <div class="main"><div class="t">${esc(r.name)}</div>
+        <div class="s"><span>${esc(r.key)}</span>${r.is_live ? '<span class="tag live">配信中</span>' : ""}${r.tags.includes("watch") ? '<span class="tag ok">視聴中</span>' : ""}${r.tags.includes("record") ? '<span class="tag info">ギフト記録</span>' : ""}${r.tags.includes("enter") ? '<span class="tag">入室</span>' : ""}</div></div>
+      <div class="side">${r.records ? `記録 ${num(r.records)} 件<br>最終 ${tm(r.last_at, true).slice(0, 11)}` : "記録なし"}</div></button>`,
+    choose: (key) => { setGiftMode("room"); $("#g-room").value = key; },
+  },
+  event: {
+    title: "イベントを選ぶ",
+    filters: [["all", "すべて"], ["ongoing", "開催中"], ["upcoming", "開催前"], ["ended", "終了"], ["recording", "ギフト記録中"], ["official_cached", "公式ランキング取得済み"]],
+    sorts: [["end", "終わりが近い順"], ["start", "新しく始まった順"], ["name", "名前順"]],
+    match: (e, f) => f === "all" || (["ongoing", "upcoming", "ended"].includes(f) ? e.state === f : e[f]),
+    text: (e) => `${e.title} ${e.key}`,
+    sort: (a, b, s) => s === "name" ? a.title.localeCompare(b.title, "ja") : s === "start" ? (b.start || 0) - (a.start || 0) : (a.end || 9e12) - (b.end || 9e12),
+    row: (e) => `<button type="button" class="pick" data-key="${esc(e.key)}">
+      ${e.image ? `<img src="${esc(e.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
+      <div class="main"><div class="t">${esc(e.title)}</div>
+        <div class="s"><span>${esc(e.key)}</span>${{ ongoing: '<span class="tag live">開催中</span>', upcoming: '<span class="tag warn">開催前</span>', ended: '<span class="tag">終了</span>' }[e.state]}${e.recording ? '<span class="tag info">ギフト記録中</span>' : ""}${e.official_cached ? '<span class="tag ok">公式ランキング取得済み</span>' : ""}</div></div>
+      <div class="side">${e.start ? day(e.start) : ""}<br>〜 ${e.end ? day(e.end) : ""}</div></button>`,
+    choose: (key) => { setGiftMode("event"); $("#g-event").value = key; },
+  },
+};
+const picker = { kind: "room", filter: "all", items: [] };
+async function openPicker(kind) {
+  const P = PICKERS[kind];
+  Object.assign(picker, { kind, filter: "all" });
+  $("#pk-title").textContent = P.title;
+  $("#pk-q").value = "";
+  $("#pk-sort").innerHTML = P.sorts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  $("#picker").hidden = false;
+  $("#pk-q").focus();
+  $("#pk-list").innerHTML = `<div class="loading"><span class="spinner"></span>読み込み中…</div>`;
+  try {
+    picker.items = await getList(kind);
+    renderPicker();
+  } catch (e) {
+    $("#pk-list").innerHTML = `<div class="empty">一覧を取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+function pickerFiltered() {
+  const P = PICKERS[picker.kind], q = $("#pk-q").value.trim().toLowerCase();
+  return picker.items.filter((x) => (!q || P.text(x).toLowerCase().includes(q)));
+}
+function renderPicker() {
+  const P = PICKERS[picker.kind], base = pickerFiltered(), s = $("#pk-sort").value;
+  $("#pk-filters").innerHTML = P.filters.map(([f, l]) => {
+    const n = base.filter((x) => P.match(x, f)).length;
+    return `<button type="button" class="fchip ${picker.filter === f ? "active" : ""}" data-f="${f}">${l}<span class="n">${n}</span></button>`;
+  }).join("");
+  const rows = base.filter((x) => P.match(x, picker.filter)).sort((a, b) => P.sort(a, b, s));
+  $("#pk-list").innerHTML = rows.length ? rows.slice(0, 300).map(P.row).join("") + (rows.length > 300 ? `<div class="listing-note">ほか ${num(rows.length - 300)} 件 (検索で絞り込んでください)</div>` : "")
+    : `<div class="empty">当てはまるものがありません</div>`;
+}
+function closePicker() { $("#picker").hidden = true; }
+$$("[data-pick]").forEach((b) => b.addEventListener("click", () => openPicker(b.dataset.pick)));
+$("#pk-close").addEventListener("click", closePicker);
+$("#picker").addEventListener("click", (ev) => {
+  if (ev.target === $("#picker")) return closePicker();
+  const f = ev.target.closest("[data-f]");
+  if (f) { picker.filter = f.dataset.f; return renderPicker(); }
+  const row = ev.target.closest(".pick");
+  if (row) { PICKERS[picker.kind].choose(row.dataset.key); closePicker(); loadGifts(); }
+});
+$("#pk-q").addEventListener("input", renderPicker);
+$("#pk-sort").addEventListener("change", renderPicker);
+$("#pk-q").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); const first = $("#pk-list .pick"); if (first) first.click(); }
+});
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#picker").hidden) closePicker(); });
+
+/* ------------------------------------------------------------ リスナー */
+const listeners = { key: null, rows: [], shown: 200, selected: null };
+async function loadListeners(force = false) {
+  const days = $("#l-days").value, room = $("#l-room").value, key = `${days}|${room}`;
+  if (!force && listeners.key === key) return renderListeners();
+  $("#l-list").innerHTML = `<div class="loading"><span class="spinner"></span>記録を集計しています…</div>`;
+  try {
+    const r = await api(`/api/listeners?days=${encodeURIComponent(days)}&room=${encodeURIComponent(room)}`);
+    Object.assign(listeners, { key, rows: r.listeners, shown: 200, catalog: r.catalog });
+    renderListeners();
+  } catch (e) {
+    $("#l-list").innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+async function fillListenerRooms() {
+  try {
+    const rooms = (await getList("room")).filter((r) => r.records).sort((a, b) => a.name.localeCompare(b.name, "ja"));
+    const sel = $("#l-room"), cur = sel.value;
+    sel.innerHTML = `<option value="">すべてのルーム</option>` + rooms.map((r) => `<option value="${esc(r.key)}">${esc(r.name)} (${num(r.records)})</option>`).join("");
+    sel.value = rooms.some((r) => r.key === cur) ? cur : "";
+  } catch (e) { /* 一覧が取れなくても「すべて」で使える */ }
+}
+function listenerRows() {
+  const q = $("#l-q").value.trim().toLowerCase(), min = Number($("#l-min").value) || 0;
+  const f = $("#l-filters .active").dataset.f, todayStart = new Date().setHours(0, 0, 0, 0) / 1000;
+  const sorts = { points: (u) => u.points, paid: (u) => u.paid_points, times: (u) => u.times, last: (u) => u.last_at, rooms: (u) => u.room_count };
+  const key = sorts[$("#l-sort").value];
+  return listeners.rows.filter((u) => (!q || String(u.user_id) === q || u.names.some((n) => n.toLowerCase().includes(q)))
+    && u.points >= min
+    && (f === "all" || (f === "paid" && u.paid_points > 0) || (f === "multi" && u.room_count > 1) || (f === "today" && u.last_at >= todayStart)))
+    .sort((a, b) => key(b) - key(a));
+}
+function renderListeners() {
+  const rows = listenerRows();
+  const head = `<div class="summary"><div class="stat"><div class="v">${num(rows.length)}</div><div class="l">人 (全 ${num(listeners.rows.length)} 人中)</div></div>
+    <div class="stat"><div class="v">${num(rows.reduce((t, u) => t + u.points, 0))} pt</div><div class="l">合計 (有料 ${num(rows.reduce((t, u) => t + u.paid_points, 0))})</div></div></div>
+    ${listeners.catalog ? "" : `<div class="hint">ギフトのポイント表をまだ取得できていないため、ポイントが 0 になっています (視聴かギフト記録を始めると取得します)。</div>`}`;
+  if (!rows.length) { $("#l-list").innerHTML = head + `<div class="empty">当てはまるリスナーはいません</div>`; return; }
+  $("#l-list").innerHTML = head + `<div class="row"><h3 style="flex:1">一覧</h3>${legend}</div><div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">回数</th><th>送ったルーム</th><th class="num">最後</th></tr></thead>
+    <tbody>${rows.slice(0, listeners.shown).map((u, i) => `<tr class="clickable ${listeners.selected == u.user_id ? "selected" : ""}" data-uid="${esc(u.user_id)}">
+      <td class="rank">${i + 1}</td><td class="name"><b>${esc(u.name || "(名前なし)")}</b> <span class="uid">ID ${esc(u.user_id)}</span>${u.names.length > 1 ? `<div class="uid">旧名: ${esc(u.names.slice(1, 3).join("、"))}</div>` : ""}</td>
+      <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num">${num(u.paid_points)}</td><td class="num">${num(u.free_points)}</td><td class="num">${num(u.times)}</td>
+      <td>${esc(u.rooms.slice(0, 2).map((r) => r.name).join("、"))}${u.room_count > 2 ? ` ほか ${u.room_count - 2}` : ""}</td><td class="num">${tm(u.last_at, true).slice(0, 11)}</td></tr>`).join("")}</tbody></table></div>`
+    + (rows.length > listeners.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="l-more">さらに表示 (${num(rows.length - listeners.shown)} 人)</button></div>` : "");
+}
+async function openListener(uid) {
+  location.hash = "#listeners";
+  listeners.selected = uid;
+  const box = $("#l-detail");
+  box.innerHTML = `<div class="loading"><span class="spinner"></span>履歴を読み込み中…</div>`;
+  try {
+    const d = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=${encodeURIComponent($("#l-days").value)}`);
+    if (!d.found) { box.innerHTML = `<div class="empty">この期間の記録はありません (ID ${esc(uid)})</div>`; return; }
+    const t = d.total;
+    box.innerHTML = `<div class="card" style="margin:14px 0">
+      <div class="card-head"><div><div class="card-title">${esc(d.names.join(" / "))}</div><div class="card-key">ユーザー ID ${esc(d.user_id)} ・ ${tm(d.first_at, true).slice(0, 11)} 〜 ${tm(d.last_at, true).slice(0, 11)}</div></div>
+        <button class="btn small" id="l-close">閉じる</button></div>
+      <div class="summary">
+        <div class="stat"><div class="v">${num(t.points)} pt</div><div class="l">合計 (有料 ${num(t.paid_points)} / 無料 ${num(t.free_points)})</div></div>
+        <div class="stat"><div class="v">${num(t.times)}</div><div class="l">回数 (${num(t.count)} 個)</div></div>
+        <div class="stat"><div class="v">${num(d.rooms.length)}</div><div class="l">ルーム</div></div>
+      </div>
+      <h3>ルーム別</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">有料</th><th class="num">回数</th><th class="num">最後</th><th></th></tr></thead>
+      <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}</td><td class="num"><b>${num(r.points)}</b></td><td class="num">${num(r.paid_points)}</td><td class="num">${num(r.times)}</td><td class="num">${tm(r.last_at, true).slice(0, 11)}</td>
+        <td><button class="linkish" data-room-gifts="${esc(r.key)}">ギフト画面で見る ›</button></td></tr>`).join("")}</tbody></table></div>
+      <h3>日別</h3><div class="chips">${d.days.map((x) => `<span class="chip">${esc(x.day)}　${num(x.points)} pt</span>`).join("")}</div>
+      <h3>履歴 (新しい順)</h3><div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>日時</th><th>ルーム</th><th>ギフト</th><th class="num">個数</th><th class="num">pt</th></tr></thead>
+      <tbody>${d.history.map((h) => `<tr><td>${tm(h.at, true)}</td><td>${esc(h.room_name)}</td><td>${esc(h.gift)}</td><td class="num">${num(h.num)}</td><td class="num">${num(h.points)}</td></tr>`).join("")}</tbody></table></div>
+    </div>`;
+    renderListeners();
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    box.innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+$("#l-list").addEventListener("click", (ev) => {
+  if (ev.target.id === "l-more") { listeners.shown += 200; return renderListeners(); }
+  const tr = ev.target.closest("tr[data-uid]");
+  if (tr) openListener(tr.dataset.uid);
+});
+$("#l-detail").addEventListener("click", (ev) => {
+  if (ev.target.id === "l-close") { $("#l-detail").innerHTML = ""; listeners.selected = null; return renderListeners(); }
+  const b = ev.target.closest("[data-room-gifts]");
+  if (b) { setGiftMode("room"); $("#g-room").value = b.dataset.roomGifts; $("#g-hours").value = "100000000"; $("#g-user").value = String(listeners.selected || ""); location.hash = "#gifts"; loadGifts(); }
+});
+$("#l-filters").addEventListener("click", (ev) => {
+  const f = ev.target.closest("[data-f]");
+  if (!f) return;
+  $$("#l-filters .fchip").forEach((x) => x.classList.toggle("active", x === f));
+  listeners.shown = 200; renderListeners();
+});
+["#l-q", "#l-min"].forEach((id) => $(id).addEventListener("input", () => { listeners.shown = 200; renderListeners(); }));
+$("#l-sort").addEventListener("change", renderListeners);
+["#l-days", "#l-room"].forEach((id) => $(id).addEventListener("change", () => { loadListeners(); if (listeners.selected) openListener(listeners.selected); }));
 
 /* ------------------------------------------------------------ 設定 */
 let saved = { rooms: [], record_rooms: [], events: [] }, draft = null, settingsDirty = false;

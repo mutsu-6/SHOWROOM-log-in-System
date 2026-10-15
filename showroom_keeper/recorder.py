@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import time
@@ -299,6 +300,10 @@ class GiftRecorder:
             live_id = info.get("live_id")
             self._live_ids[key] = live_id
             self._names[key] = info.get("room_name") or key
+            with suppress(Exception):  # 管理画面の一覧に名前で出すため
+                from .listing import remember_rooms
+
+                remember_rooms(self.state_dir, {key: (info.get("room_name"), room_id)})
             log.info("記録開始: %s", info.get("room_name") or key)
             count = 0
             connect_kwargs: dict[str, Any] = {"open_timeout": 20, "ping_interval": None}
