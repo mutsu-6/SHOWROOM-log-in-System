@@ -13,7 +13,8 @@ from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
-from .api import BASE_URL, ShowroomAPI, summarize_login
+from .api import BASE_URL, ShowroomAPI, account_logged_in, combine_login, summarize_login
+from .directory import collect_platform_rooms
 from .config import Config
 from .comments import CommentDispatcher, queue_dir
 from .status import LOGIN_KEY, write_live_stat
@@ -122,9 +123,22 @@ def record_login(cfg: Config, state: bool | None) -> None:
         write_live_stat(Path(cfg.state_file).parent, LOGIN_KEY, logged_in=state, checked_at=time.time())
 
 
+async def login_states(api: ShowroomAPI, room_ids: list[int], concurrency: int = 8) -> list[bool | None]:
+    """ルームごとのログイン状態。同時に問い合わせる数だけを抑える。"""
+    if not room_ids:
+        return []
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(room_id: int) -> bool | None:
+        async with sem:
+            return await api.is_logged_in(room_id)
+
+    return list(await asyncio.gather(*[one(room_id) for room_id in room_ids]))
+
+
 async def probe_login(api: ShowroomAPI, room_ids: list[int]) -> bool | None:
-    """指定した全ルームのログイン状態を確認する。"""
-    return summarize_login([await api.is_logged_in(room_id) for room_id in room_ids])
+    """視聴ルームは 1 件でも未ログインなら未ログインとする。"""
+    return summarize_login(await login_states(api, room_ids))
 
 
 async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_ids: list[int]) -> tuple[bool | None, bool]:
@@ -151,9 +165,9 @@ async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_
 
 class Keeper:
     def __init__(self, cfg: Config):
-        if not cfg.rooms:
-            raise ValueError("監視するルームが指定されていません (rooms / SHOWROOM_ROOMS)")
         self.cfg = cfg
+        self._platform_count: int | None = None
+        self._platform_unconfirmed = -1
         # Python 3.9 の asyncio.Event は生成時のイベントループに結び付くため、run() 内で生成する
         self._stop: asyncio.Event | None = None
         self._stop_requested = False
@@ -203,8 +217,11 @@ class Keeper:
         ctx = await new_context(browser, self.cfg)
         api = ShowroomAPI(ctx.request)
         try:
-            room_ids = await self._room_ids(api, required=True)
-            await ensure_login(ctx, self.cfg, api, room_ids)
+            if self.cfg.rooms:
+                room_ids = await self._room_ids(api, required=True)
+                # ルーム ID が取れていないときは、未確認のままパスワードログインしない
+                if room_ids:
+                    await ensure_login(ctx, self.cfg, api, room_ids)
 
             watchers = [
                 RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
@@ -251,36 +268,75 @@ class Keeper:
                 continue
             if status.room_id is not None:
                 ids.append(status.room_id)
-        if required and failures == len(self.cfg.rooms):
+        if required and self.cfg.rooms and failures == len(self.cfg.rooms):
             raise RuntimeError("すべてのルームの状態を取得できません")
         return ids
 
+    async def _login_snapshot(self, api: ShowroomAPI) -> bool | None:
+        """視聴ルームと、SHOWROOM が公開している全部屋のログイン状態をまとめる。"""
+        watch_ids = await self._room_ids(api) if self.cfg.rooms else []
+        try:
+            platform_ids = await collect_platform_rooms(api.get_path)
+        except Exception as e:  # noqa: BLE001
+            log.warning("SHOWROOM 全体のルーム一覧を取得できません: %s", e)
+            platform_ids = []
+        if len(platform_ids) != self._platform_count:
+            log.info("SHOWROOM の公開ルーム %d 件をログイン確認の対象にします", len(platform_ids))
+            self._platform_count = len(platform_ids)
+        # 視聴ルームと公開ルームが重なる分は 1 回だけ問い合わせる
+        ordered = list(dict.fromkeys([*watch_ids, *platform_ids]))
+        states = {room_id: state for room_id, state in zip(ordered, await login_states(api, ordered))}
+        watch = summarize_login([states[room_id] for room_id in watch_ids]) if watch_ids else None
+        platform_states = [states[room_id] for room_id in platform_ids]
+        unconfirmed = sum(state is False for state in platform_states)
+        if unconfirmed != self._platform_unconfirmed:
+            confirmed = sum(state is True for state in platform_states)
+            if unconfirmed and confirmed:
+                log.warning("ログインを確認できない公開ルームが %d 件あります", unconfirmed)
+            self._platform_unconfirmed = unconfirmed
+        platform = account_logged_in(platform_states) if platform_ids else None
+        return combine_login(watch, platform)
+
     async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, watchers: list[RoomWatcher]) -> None:
-        """全ルームのログイン状態を定期的に確認し (コメント等は送らず API で問い合わせるだけ)、セッションを保存する。"""
+        """ログイン状態を定期的に確認し (コメント等は送らず API で問い合わせるだけ)、セッションを保存する。"""
         save_interval = max(60.0, self.cfg.save_state_minutes * 60)
         check_interval = max(60.0, min(self.cfg.login_check_interval, save_interval))
         last_save = time.monotonic()
         last_state: bool | None = True
         while True:
-            await asyncio.sleep(check_interval)
-            room_ids = await self._room_ids(api)
-            state = await probe_login(api, room_ids)
-            record_login(self.cfg, state)
-            if state is False and last_state is not False:
-                log.warning("セッションが切れています%s", "。再ログインします" if self.cfg.credentials.available else
-                            " (`showroom-keeper login` でログインし直してください)")
-            if state is False and self.cfg.credentials.available:
-                state, did_login = await ensure_login(ctx, self.cfg, api, room_ids)
-                # 確認のやり直しだけでログインしていない時は、配信中のページを再読み込みしない
-                if did_login:
-                    for watcher in watchers:
-                        watcher.reload_reason = "再ログイン"
-            elif state is True and last_state is False:
-                log.info("ログイン状態に戻りました")
-            last_state = state
+            try:
+                state = await self._login_snapshot(api)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - 一覧取得の失敗で視聴中のブラウザまで落とさない
+                log.warning("ログイン確認に失敗しました: %s", e)
+            else:
+                record_login(self.cfg, state)
+                if state is False and last_state is not False:
+                    log.warning("セッションが切れています%s", "。再ログインします" if self.cfg.credentials.available else
+                                " (`showroom-keeper login` でログインし直してください)")
+                if state is False and self.cfg.credentials.available:
+                    watch_ids = await self._room_ids(api) if self.cfg.rooms else []
+                    state, did_login = await ensure_login(ctx, self.cfg, api, watch_ids)
+                    # 確認のやり直しだけでログインしていない時は、配信中のページを再読み込みしない
+                    if did_login:
+                        for watcher in watchers:
+                            watcher.reload_reason = "再ログイン"
+                        try:
+                            state = await self._login_snapshot(api)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("再ログイン後の確認に失敗しました: %s", e)
+                        else:
+                            record_login(self.cfg, state)
+                elif state is True and last_state is False:
+                    log.info("ログイン状態に戻りました")
+                last_state = state
             if time.monotonic() - last_save >= save_interval:
                 await save_state(ctx, self.cfg)
                 last_save = time.monotonic()
+            await asyncio.sleep(check_interval)
 
 
 async def interactive_login(cfg: Config) -> None:

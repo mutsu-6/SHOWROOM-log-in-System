@@ -49,11 +49,37 @@ def parse_room_status(room_url_key: str, data: dict[str, Any]) -> RoomStatus:
 
 
 def summarize_login(states: list[bool | None]) -> bool | None:
-    """全ルームのログイン確認をまとめる。1 ルームでも未ログインなら False。判定できなければ None。"""
+    """視聴中ルームのログイン確認。1 ルームでも未ログインなら False。判定できなければ None。"""
     known = [state for state in states if state is not None]
     if not known:
         return None
     return all(known)
+
+
+def account_logged_in(states: list[bool | None]) -> bool | None:
+    """SHOWROOM 全体の確認。ログイン中が 1 件でもあれば True。
+
+    未ログインと出た件数が確認全体の半分に満たないときは、一部の失敗で再ログインしない。
+    """
+    known = [state for state in states if state is not None]
+    if not known:
+        return None
+    if any(known):
+        return True
+    if len(known) * 2 < len(states):
+        return None
+    return False
+
+
+def combine_login(watch: bool | None, platform: bool | None) -> bool | None:
+    """視聴ルームが未ログインなら未ログイン。視聴ルームがログイン中ならその結果を優先する。"""
+    if watch is False:
+        return False
+    if platform is False and watch is not True:
+        return False
+    if watch is True or platform is True:
+        return True
+    return None
 
 
 def parse_login_state(data: Any) -> bool | None:
@@ -79,6 +105,9 @@ class ShowroomAPI:
         if not resp.ok:
             raise RuntimeError(f"GET {path} が失敗しました: HTTP {resp.status}")
         return await resp.json()
+
+    async def get_path(self, path: str) -> Any:
+        return await self._get_json(path)
 
     async def room_status(self, room_url_key: str) -> RoomStatus:
         data = await self._get_json("/api/room/status", {"room_url_key": room_url_key})

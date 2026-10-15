@@ -56,6 +56,7 @@ def env():
 
 async def test_keeps_every_room_open_while_offline_and_reloads_when_live_starts(env):
     w, live, pages, clock = env
+    w.cfg.keep_open_when_offline = True
     live["v"] = False
     assert await w.step() == 60
     assert len(pages) == 1 and not pages[0].closed
@@ -71,6 +72,7 @@ async def test_keeps_every_room_open_while_offline_and_reloads_when_live_starts(
 
 async def test_stays_open_and_reloads_once_when_live_ends(env):
     w, live, pages, clock = env
+    w.cfg.keep_open_when_offline = True
     await w.step()
     live["v"] = False
     clock.t = 60
@@ -83,6 +85,7 @@ async def test_stays_open_and_reloads_once_when_live_ends(env):
 
 async def test_offline_page_reloads_on_the_usual_interval(env):
     w, live, pages, clock = env
+    w.cfg.keep_open_when_offline = True
     live["v"] = False
     await w.step()
     clock.t = 601

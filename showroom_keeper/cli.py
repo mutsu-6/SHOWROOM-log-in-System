@@ -198,8 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     from .keeper import Keeper
 
     if not cfg.rooms:
-        logging.error("監視するルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS)")
-        return 2
+        logging.info("視聴ルームは未指定です。SHOWROOM が公開している全部屋のログイン維持を行います")
     keeper = Keeper(cfg)
 
     async def _main() -> None:

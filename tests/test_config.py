@@ -84,4 +84,4 @@ def test_record_targets_have_no_count_limit():
         "SHOWROOM_EVENTS": ",".join(f"e{i}" for i in range(5)),
     })
     assert len(many.record_rooms) == 40 and len(many.events) == 5
-    assert many.keep_open_when_offline is True
+    assert many.keep_open_when_offline is False

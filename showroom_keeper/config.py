@@ -94,8 +94,8 @@ class Config:
     login_check_interval: float = 180.0
     # セッション(Cookie)を保存する間隔 (分)
     save_state_minutes: float = 10.0
-    # 配信していない時も全ルームのページを開いたままにし、ログイン状態を維持する
-    keep_open_when_offline: bool = True
+    # 配信していない時もページを開いたままにするか
+    keep_open_when_offline: bool = False
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)

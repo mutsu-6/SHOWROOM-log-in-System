@@ -1,4 +1,11 @@
-from showroom_keeper.api import ShowroomAPI, parse_login_state, parse_room_status, summarize_login
+from showroom_keeper.api import (
+    ShowroomAPI,
+    account_logged_in,
+    combine_login,
+    parse_login_state,
+    parse_room_status,
+    summarize_login,
+)
 
 
 def test_parse_room_status_is_live():
@@ -20,6 +27,15 @@ def test_summarize_login_requires_every_room():
     assert summarize_login([True, True]) is True
     assert summarize_login([True, False]) is False
     assert summarize_login([False]) is False
+    assert account_logged_in([False, True, None]) is True
+    assert account_logged_in([False, False]) is False
+    assert account_logged_in([False]) is False
+    assert account_logged_in([False, None, None, None, None]) is None
+    assert account_logged_in([]) is None
+    assert combine_login(False, True) is False
+    assert combine_login(True, False) is True
+    assert combine_login(None, False) is False
+    assert combine_login(None, True) is True
 
 
 def test_parse_login_state():
