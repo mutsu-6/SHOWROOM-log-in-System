@@ -31,3 +31,16 @@ def test_summarize_ranks_by_points():
     assert [(u["name"], u["points"], u["count"], u["times"]) for u in ranking] == [
         ("B", 100, 1, 1), ("A", 60, 60, 2), ("C", 0, 1, 1)]
     assert ranking[2]["items"] == {"ギフト999": 1}
+
+
+def test_match_user_by_id_and_name_including_renames():
+    from showroom_keeper.gifts import match_user
+
+    gifts = [
+        {"at": 1, "user_id": 7, "name": "たろう", "gift_id": 1, "num": 1},
+        {"at": 2, "user_id": 7, "name": "タロウ改", "gift_id": 1, "num": 1},  # 名前を変えた
+        {"at": 3, "user_id": 8, "name": "はなこ", "gift_id": 1, "num": 1},
+    ]
+    assert [g["at"] for g in match_user(gifts, "7")] == [1, 2]
+    assert [g["at"] for g in match_user(gifts, "たろう")] == [1, 2]  # 名前で見つけた人の改名後も含む
+    assert match_user(gifts, "いない人") == []

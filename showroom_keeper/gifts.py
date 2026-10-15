@@ -103,7 +103,49 @@ def fetch_catalog(room_id: int) -> dict[int, dict[str, Any]]:
     return catalog
 
 
-def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_lines: int) -> int:
+def match_user(gifts: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """ユーザー ID (数字) なら完全一致、それ以外は名前の部分一致で絞り込む。
+
+    名前で探した場合も、見つかったユーザーの ID で集め直すので、途中で名前を変えた分も含まれる。
+    """
+    query = query.strip()
+    if query.isdigit():
+        ids = {int(query)}
+    else:
+        ids = {g["user_id"] for g in gifts if query.lower() in str(g.get("name") or "").lower()}
+    return [g for g in gifts if g["user_id"] in ids]
+
+
+def show_user(gifts: list[dict[str, Any]], catalog: dict[int, dict[str, Any]], query: str) -> None:
+    hits = match_user(gifts, query)
+    if not hits:
+        print(f"   「{query}」に当てはまるリスナーのギフトはありません")
+        return
+    by_user: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+    for g in hits:
+        by_user[g["user_id"]].append(g)
+    for user_id, items in by_user.items():
+        names = list(dict.fromkeys(g["name"] for g in items if g.get("name")))
+        total = summarize(items, catalog)[0]
+        print(f"\n👤 {' / '.join(names)} (ユーザー ID {user_id})")
+        print(f"   合計 {total['points']:,} pt / {total['count']:,} 個 / {total['times']} 回")
+        days: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for g in items:
+            days[datetime.fromtimestamp(g["at"], JST).strftime("%m/%d")].append(g)
+        print("   【日別】")
+        for day, day_items in days.items():
+            d = summarize(day_items, catalog)[0]
+            print(f"     {day}  {d['points']:,} pt / {d['count']:,} 個 ({d['times']} 回)")
+        print("   【履歴】")
+        for g in items:
+            info = catalog.get(g["gift_id"], {})
+            gname = info.get("gift_name") or f"ギフト{g['gift_id']}"
+            pt = int(info.get("point") or 0) * g["num"]
+            print(f"     {datetime.fromtimestamp(g['at'], JST):%m/%d %H:%M:%S}  {gname}×{g['num']}  ({pt:,} pt)")
+
+
+def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_lines: int,
+         user: str | None = None) -> int:
     status = _get(f"/api/room/status?room_url_key={room_key}")
     room_id = status.get("room_id")
     name = status.get("room_name") or room_key
@@ -116,8 +158,12 @@ def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_line
            if not since or g["at"] >= since]
     gifts = merge(recorded, api)
     catalog = fetch_catalog(room_id)
-    period = (f"直近 {hours:g} 時間" if hours else
+    period = ("記録のすべて" if hours and hours >= 1e8 else f"直近 {hours:g} 時間" if hours else
               f"今回の配信 ({datetime.fromtimestamp(since, JST):%m/%d %H:%M} 開始)" if since else "記録のすべて")
+    if user:
+        print(f"🎁 {name} — 「{user}」のギフト履歴 ({period})")
+        show_user(gifts, catalog, user)
+        return 0
     print(f"🎁 {name} のギフト履歴 — {period}")
     print(f"   記録 {len(recorded)} 件 + API {len(api)} 件 (重複除外後 {len(gifts)} 件)")
     if not gifts:
@@ -126,7 +172,7 @@ def show(state_dir: Path, room_key: str, hours: float | None, top: int, log_line
     print(f"\n【リスナー別ランキング】 上位 {top} 人")
     for i, u in enumerate(summarize(gifts, catalog)[:top], 1):
         items = "、".join(f"{k}×{v}" for k, v in sorted(u["items"].items(), key=lambda kv: -kv[1])[:3])
-        print(f"{i:>3}. {u['name']}  {u['points']:,} pt / {u['count']:,} 個 ({u['times']} 回)  {items}")
+        print(f"{i:>3}. {u['name']} [ID {u['user_id']}]  {u['points']:,} pt / {u['count']:,} 個 ({u['times']} 回)  {items}")
     if log_lines:
         print(f"\n【最近のギフト】 {log_lines} 件")
         for g in gifts[-log_lines:]:

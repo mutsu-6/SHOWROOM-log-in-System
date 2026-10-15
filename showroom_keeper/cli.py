@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     gf.add_argument("--hours", type=float, help="直近の時間で絞り込む (省略時は今回の配信)")
     gf.add_argument("--top", type=int, default=20, help="ランキングの表示人数 (既定 20)")
     gf.add_argument("--log", type=int, default=10, metavar="件数", help="最近のギフトの表示件数 (既定 10、0 で非表示)")
+    gf.add_argument("--user", metavar="名前かID", help="特定のリスナーの履歴だけを表示 (名前は部分一致、数字はユーザー ID)")
+    gf.add_argument("--all", action="store_true", help="期間で絞り込まず、記録のすべてを対象にする")
 
     diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
@@ -163,7 +165,8 @@ def main(argv: list[str] | None = None) -> int:
             if i:
                 print()
             try:
-                code |= show(Path(cfg.state_file).parent, key, args.hours, args.top, args.log)
+                hours = 1e9 if args.all else args.hours
+                code |= show(Path(cfg.state_file).parent, key, hours, args.top, args.log, args.user)
             except Exception as e:  # noqa: BLE001
                 print(f"❌ {key}: 取得できませんでした ({e})")
                 code = 1
