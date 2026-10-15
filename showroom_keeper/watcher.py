@@ -30,6 +30,8 @@ PROBE_JS = """
 
 STATUS_RETRY = 30  # 配信状況の確認に失敗した時、確認し直すまでの秒数
 COMMENT_FILL_TIMEOUT = 30000  # コメント欄への入力を待つ上限 (ミリ秒)。サーバーが重い時は時間がかかる
+COMMENT_ECHO_WAIT = 6.0  # 配信ページが受信するコメント (自分の分も届く) で反映を確かめる待ち時間 (秒)
+COMMENT_LOG_WAIT = 15.0  # 届かなかった時にコメント履歴で確かめる上限 (秒)。履歴 API は 7〜10 秒ほど遅れて載る
 COMMENT_INPUT = 'input[placeholder="コメントを投稿"]'
 COMMENT_SUBMIT = "button.st-comment__button"
 
@@ -116,6 +118,10 @@ class RoomWatcher:
         self._viewer_count_error: str | None = None
         self._failures = 0
         self._status_failures = 0
+        # 投稿したコメントの反映待ち (本文, 待っている Future)。配信ページが受信するコメントで解決する
+        self._comment_waiters: list[tuple[str, asyncio.Future]] = []
+        self._my_user_id: int | None = None
+        self.comment_echo_wait = COMMENT_ECHO_WAIT
         self._became_live = False
         self._went_offline = False
         self.reload_reason: str | None = None
@@ -209,19 +215,39 @@ class RoomWatcher:
         page = self.page
         assert page is not None
         since = int(time.time()) - 5
+        started = time.monotonic()
+        await self._ensure_my_user_id(page)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        waiter = (text, fut)
+        self._comment_waiters.append(waiter)
         try:
-            await page.fill(COMMENT_INPUT, text, timeout=COMMENT_FILL_TIMEOUT)
-            # ボタンのクリックはお知らせ等の重なりで阻まれることがあるため、入力欄で Enter を押して送信する
-            await page.press(COMMENT_INPUT, "Enter", timeout=COMMENT_FILL_TIMEOUT)
-        except Exception as e:  # noqa: BLE001
-            if "Timeout" not in type(e).__name__ + str(e):
-                raise
-            return False, ("配信ページの反応が遅く、コメント欄に入力できませんでした。サーバーのメモリや CPU が足りていない可能性があります "
-                           "(見張るルームを減らすか、keep_open_when_offline: false にしてください)")
-        for _ in range(8):
-            await self._sleep(1)
-            if await page.evaluate(COMMENT_LOG_JS, [self.status.room_id, text, since]):
+            try:
+                await page.fill(COMMENT_INPUT, text, timeout=COMMENT_FILL_TIMEOUT)
+                # ボタンのクリックはお知らせ等の重なりで阻まれることがあるため、入力欄で Enter を押して送信する
+                await page.press(COMMENT_INPUT, "Enter", timeout=COMMENT_FILL_TIMEOUT)
+            except Exception as e:  # noqa: BLE001
+                if "Timeout" not in type(e).__name__ + str(e):
+                    raise
+                return False, ("配信ページの反応が遅く、コメント欄に入力できませんでした。サーバーのメモリや CPU が足りていない可能性があります "
+                               "(見張るルームを減らすか、keep_open_when_offline: false にしてください)")
+            sent = time.monotonic()
+            # 配信ページが受信するコメントで確かめる (ほぼすぐ届く)
+            try:
+                await asyncio.wait_for(asyncio.shield(fut), timeout=self.comment_echo_wait)
+                self.log.info("コメントの反映を確認しました (入力・送信 %.1f 秒 / 反映 %.1f 秒)", sent - started, time.monotonic() - sent)
                 return True, "投稿しました"
+            except asyncio.TimeoutError:
+                pass
+            # 届かなければコメント履歴で確かめる (履歴は 7〜10 秒ほど遅れて載る)
+            for _ in range(int(COMMENT_LOG_WAIT // 2)):
+                if fut.done() or await page.evaluate(COMMENT_LOG_JS, [self.status.room_id, text, since]):
+                    self.log.info("コメントの反映を確認しました (入力・送信 %.1f 秒 / 反映 %.1f 秒、履歴で確認)",
+                                  sent - started, time.monotonic() - sent)
+                    return True, "投稿しました"
+                await self._sleep(2)
+        finally:
+            if waiter in self._comment_waiters:
+                self._comment_waiters.remove(waiter)
         return False, "投稿を確認できませんでした (NGワード、未ログイン、コメント制限、または同じ内容の連投の可能性)"
 
     # ------------------------------------------------------------------ 内部処理
@@ -284,11 +310,35 @@ class RoomWatcher:
         now = time.time()
         self.activity.feed(payload, now)
         data = parse_message(payload)
+        if data and data.get("t") == 1 and self._comment_waiters:  # コメント (自分の投稿も同じように届く)
+            self._resolve_comment(data)
         if data and data.get("t") == 2 and self.cfg.record_gifts:  # ギフト
             try:
                 record_gift(self._state_dir, self.key, self.status.live_id if self.status else None, data)
             except Exception as e:  # noqa: BLE001
                 self.log.debug("ギフトの記録に失敗: %s", e)
+
+    def _resolve_comment(self, data: dict[str, Any]) -> None:
+        text = str(data.get("cm") or "")
+        try:
+            sender = int(data.get("u"))
+        except (TypeError, ValueError):
+            sender = None
+        for want, fut in list(self._comment_waiters):
+            if want == text and (self._my_user_id is None or sender == self._my_user_id) and not fut.done():
+                fut.set_result(True)
+
+    async def _ensure_my_user_id(self, page: Page) -> None:
+        if self._my_user_id is not None or not self.status:
+            return
+        try:
+            me = await page.evaluate(
+                "async (roomId) => (await fetch('/api/live/current_user?room_id=' + roomId, { credentials: 'include' })).json()",
+                self.status.room_id)
+            uid = me.get("user_id") if isinstance(me, dict) else None
+            self._my_user_id = int(uid) if uid else None
+        except Exception as e:  # noqa: BLE001 - 分からなければ本文だけで確かめる
+            self.log.debug("ユーザー ID を取得できません: %s", e)
 
     def _save_activity(self) -> None:
         now = time.time()

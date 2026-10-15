@@ -235,8 +235,74 @@ async def test_post_comment_fills_submits_and_confirms(env):
 
     page.fill, page.press, page.evaluate = fill, press, evaluate
     w._sleep = no_sleep
+    w.comment_echo_wait = 0.01  # リアルタイム通信では届かず、コメント履歴で確かめる場合
     ok, msg = await w.post_comment("こんにちは")
     assert ok and actions == [("fill", "こんにちは"), ("press", "Enter")]
+
+
+def _comment_frame(text, user):
+    import json as _json
+    return "MSG\tk\t" + _json.dumps({"t": 1, "cm": text, "u": user, "ac": "名前"}, ensure_ascii=False)
+
+
+async def test_post_comment_is_confirmed_by_the_live_feed_right_away(env):
+    import asyncio
+    import time as _time
+
+    w, live, pages, clock = env
+    await w.step()
+    page = pages[0]
+    history_checks = []
+
+    async def fill(sel, value, **kw):
+        pass
+
+    async def press(sel, key, **kw):
+        # 送信すると、配信ページのリアルタイム通信に自分のコメントが届く (他の人の同じ文面も混ざる)
+        loop = asyncio.get_running_loop()
+        loop.call_soon(w._on_frame, _comment_frame("こんにちは", 99))
+        loop.call_soon(w._on_frame, _comment_frame("こんにちは", 42))
+
+    async def evaluate(js, arg=None):
+        if "current_user" in js and "comment_log" not in js:
+            return {"user_id": 42}
+        history_checks.append(arg)
+        return False
+
+    page.fill, page.press, page.evaluate = fill, press, evaluate
+    started = _time.monotonic()
+    ok, msg = await w.post_comment("こんにちは")
+    assert ok and msg == "投稿しました"
+    assert _time.monotonic() - started < 1  # 遅れて載るコメント履歴を待たない
+    assert history_checks == [] and w._comment_waiters == []
+
+
+async def test_someone_elses_same_comment_does_not_count(env):
+    import asyncio
+
+    w, live, pages, clock = env
+    await w.step()
+    page = pages[0]
+
+    async def fill(sel, value, **kw):
+        pass
+
+    async def press(sel, key, **kw):
+        asyncio.get_running_loop().call_soon(w._on_frame, _comment_frame("こんにちは", 99))
+
+    async def evaluate(js, arg=None):
+        if "current_user" in js and "comment_log" not in js:
+            return {"user_id": 42}
+        return False
+
+    async def no_sleep(s):
+        pass
+
+    page.fill, page.press, page.evaluate = fill, press, evaluate
+    w._sleep = no_sleep
+    w.comment_echo_wait = 0.05
+    ok, msg = await w.post_comment("こんにちは")
+    assert not ok and "確認できませんでした" in msg
 
 
 async def test_post_comment_requires_open_live_page(env):
