@@ -245,3 +245,25 @@ async def test_classic_room_does_not_send_presence(tmp_path):
     stat = read_live_stats(tmp_path)["k"]
     assert stat["broadcast_style"] == "classic" and stat["viewer_count"] is None
     assert "active_users" in stat
+
+
+async def test_websocket_gifts_are_recorded(tmp_path):
+    import json as _json
+
+    from showroom_keeper.gifts import load_recorded
+
+    cfg = Config(rooms=["k"], state_file=tmp_path / "s.json")
+
+    async def fetch(key):
+        return RoomStatus(key, 1, "Room", True, live_id=99)
+
+    async def new_page():
+        return FakePage()
+
+    w = RoomWatcher("k", cfg, fetch, new_page)
+    await w.step()
+    w._on_frame("MSG\tk\t" + _json.dumps({"t": 2, "u": 7, "ac": "A", "g": 1, "n": 3, "created_at": 5}))
+    w._on_frame("MSG\tk\t" + _json.dumps({"t": 1, "u": 8, "cm": "hi"}))  # コメントは記録しない
+    got = load_recorded(tmp_path, "k")
+    assert len(got) == 1 and got[0]["num"] == 3 and got[0]["live_id"] == 99
+    assert w.activity.count(10) == 2  # 推定アクティブ人数には両方入る

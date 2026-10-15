@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("rooms", nargs="*", help="ルーム (省略時は設定の rooms)")
     st.add_argument("-w", "--watch", type=int, metavar="秒", help="指定秒ごとに更新し続ける (Ctrl+C で終了)")
 
+    gf = sub.add_parser("gifts", help="ルームのギフト履歴 (リスナー別ランキングと最近のギフト) を表示する")
+    gf.add_argument("rooms", nargs="*", help="ルーム (省略時は設定の rooms)")
+    gf.add_argument("--hours", type=float, help="直近の時間で絞り込む (省略時は今回の配信)")
+    gf.add_argument("--top", type=int, default=20, help="ランキングの表示人数 (既定 20)")
+    gf.add_argument("--log", type=int, default=10, metavar="件数", help="最近のギフトの表示件数 (既定 10、0 で非表示)")
+
     diag = sub.add_parser("diagnose", help="ページの読み込み速度を計測し、遅い通信を表示する")
     diag.add_argument("url", nargs="?", default="https://www.showroom-live.com/", help="計測する URL")
     diag.add_argument("--headed", action="store_true", help="ブラウザ画面を表示する")
@@ -141,6 +147,27 @@ def main(argv: list[str] | None = None) -> int:
                 print()
         except KeyboardInterrupt:
             return 0
+
+    if args.command == "gifts":
+        from pathlib import Path
+
+        from .config import normalize_room_key
+        from .gifts import show
+
+        rooms = [normalize_room_key(r) for r in args.rooms] or cfg.rooms
+        if not rooms:
+            print("ルームを指定してください")
+            return 2
+        code = 0
+        for i, key in enumerate(rooms):
+            if i:
+                print()
+            try:
+                code |= show(Path(cfg.state_file).parent, key, args.hours, args.top, args.log)
+            except Exception as e:  # noqa: BLE001
+                print(f"❌ {key}: 取得できませんでした ({e})")
+                code = 1
+        return code
 
     if args.command == "diagnose":
         from .keeper import diagnose

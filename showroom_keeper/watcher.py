@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from .api import RoomStatus
-from .activity import ActivityTracker
+from .activity import ActivityTracker, parse_message
+from .gifts import record_gift
 from .config import Config
 from .status import write_live_stat
 
@@ -224,8 +225,18 @@ class RoomWatcher:
         self.stall_count = 0
 
     def _on_websocket(self, ws: Any) -> None:
-        # ページが受信するコメント・ギフト・入室のお知らせから推定アクティブ人数を数える (受信を読むだけ)
-        ws.on("framereceived", lambda payload: self.activity.feed(payload, time.time()))
+        # ページが受信するコメント・ギフト・入室のお知らせを読む (受信を読むだけで送信はしない)
+        ws.on("framereceived", self._on_frame)
+
+    def _on_frame(self, payload: Any) -> None:
+        now = time.time()
+        self.activity.feed(payload, now)
+        data = parse_message(payload)
+        if data and data.get("t") == 2 and self.cfg.record_gifts:  # ギフト
+            try:
+                record_gift(self._state_dir, self.key, self.status.live_id if self.status else None, data)
+            except Exception as e:  # noqa: BLE001
+                self.log.debug("ギフトの記録に失敗: %s", e)
 
     def _save_activity(self) -> None:
         now = time.time()

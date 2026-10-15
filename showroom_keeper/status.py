@@ -48,7 +48,7 @@ def read_live_stats(state_dir: Path) -> dict:
 
 
 def _get(path: str) -> dict:
-    req = urllib.request.Request(f"{BASE_URL}{path}", headers={"User-Agent": "showroom-keeper"})
+    req = urllib.request.Request(f"{BASE_URL}{path}", headers={"User-Agent": "showroom-keeper", "Accept-Language": "ja"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.load(resp)
 

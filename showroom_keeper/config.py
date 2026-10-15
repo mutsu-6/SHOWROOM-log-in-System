@@ -82,6 +82,8 @@ class Config:
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
+    # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
+    record_gifts: bool = True
     viewer_count: bool = True
     viewer_count_interval: float = 60.0
     # アバター等の 3D 描画 (WebGL) を止めて CPU 負荷を約 1/10 にする。

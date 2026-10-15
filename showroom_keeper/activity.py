@@ -15,19 +15,28 @@ ACTIVITY_TYPES = {1, 2, 18}
 WINDOW = 600  # 数える期間 (秒)
 
 
-def parse_event(payload: str | bytes) -> tuple[int, int] | None:
-    """`MSG\t<key>\t<json>` 形式のメッセージから (種類, ユーザー ID) を取り出す。"""
+def parse_message(payload: str | bytes) -> dict | None:
+    """`MSG\t<key>\t<json>` 形式のメッセージを辞書にする。"""
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8", errors="replace")
-    if not payload.startswith("MSG\t"):
+    if not isinstance(payload, str) or not payload.startswith("MSG\t"):
         return None
     parts = payload.split("\t", 2)
     if len(parts) < 3:
         return None
     try:
         data = json.loads(parts[2])
-        return int(data["t"]), int(data["u"])
-    except (ValueError, KeyError, TypeError):
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def parse_event(payload: str | bytes) -> tuple[int, int] | None:
+    """メッセージから (種類, ユーザー ID) を取り出す。"""
+    data = parse_message(payload)
+    try:
+        return (int(data["t"]), int(data["u"])) if data else None
+    except (KeyError, TypeError, ValueError):
         return None
 
 
