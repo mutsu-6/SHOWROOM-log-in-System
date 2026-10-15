@@ -54,6 +54,73 @@ def env():
     return w, live, pages, clock
 
 
+async def test_keeps_every_room_open_while_offline_and_reloads_when_live_starts(env):
+    w, live, pages, clock = env
+    live["v"] = False
+    assert await w.step() == 60
+    assert len(pages) == 1 and not pages[0].closed
+    for i in range(1, 4):
+        clock.t = i * 60
+        await w.step()
+    assert pages[0].reloads == 0 and w.page is pages[0]
+    live["v"] = True
+    clock.t = 240
+    await w.step()
+    assert pages[0].reloads == 1 and not pages[0].closed
+
+
+async def test_stays_open_and_reloads_once_when_live_ends(env):
+    w, live, pages, clock = env
+    await w.step()
+    live["v"] = False
+    clock.t = 60
+    await w.step()
+    assert pages[0].reloads == 1 and not pages[0].closed and w.page is pages[0]
+    clock.t = 120
+    await w.step()
+    assert pages[0].reloads == 1
+
+
+async def test_offline_page_reloads_on_the_usual_interval(env):
+    w, live, pages, clock = env
+    live["v"] = False
+    await w.step()
+    clock.t = 601
+    await w.step()
+    assert pages[0].reloads == 1 and not pages[0].closed
+
+
+async def test_activity_restarts_when_the_next_live_begins(env):
+    w, live, pages, clock = env
+    live_id = {"v": 11}
+
+    async def fetch(key):
+        return RoomStatus(key, 1, "Room", live["v"], live_id=live_id["v"] if live["v"] else None)
+
+    w._fetch_status = fetch
+    await w.step()
+    w.activity.feed('MSG\tk\t{"t": 1, "u": 9}', 1000.0)
+    assert w.activity.count(1000.0) == 1
+    live["v"] = False
+    clock.t = 60
+    await w.step()
+    live["v"] = True
+    live_id["v"] = 22
+    clock.t = 120
+    await w.step()
+    assert w._activity_live_id == 22
+    assert w.activity.count(1000.0) == 0
+
+
+async def test_reloads_open_room_after_relogin(env):
+    w, live, pages, clock = env
+    await w.step()
+    w.reload_reason = "再ログイン"
+    clock.t = 30
+    await w.step()
+    assert pages[0].reloads == 1 and not pages[0].closed
+
+
 async def test_opens_page_when_live(env):
     w, live, pages, clock = env
     delay = await w.step()
@@ -63,6 +130,7 @@ async def test_opens_page_when_live(env):
 
 async def test_waits_when_offline_and_closes_page_after_live_ends(env):
     w, live, pages, clock = env
+    w.cfg.keep_open_when_offline = False
     live["v"] = False
     assert await w.step() == 60 and not pages
     live["v"] = True

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
-from .api import BASE_URL, ShowroomAPI
+from .api import BASE_URL, ShowroomAPI, summarize_login
 from .config import Config
 from .comments import CommentDispatcher, queue_dir
 from .status import LOGIN_KEY, write_live_stat
@@ -122,21 +122,31 @@ def record_login(cfg: Config, state: bool | None) -> None:
         write_live_stat(Path(cfg.state_file).parent, LOGIN_KEY, logged_in=state, checked_at=time.time())
 
 
-async def ensure_login(ctx: BrowserContext, cfg: Config, room_id: int | None) -> None:
-    api = ShowroomAPI(ctx.request)
-    state = await api.is_logged_in(room_id)
+async def probe_login(api: ShowroomAPI, room_ids: list[int]) -> bool | None:
+    """指定した全ルームのログイン状態を確認する。"""
+    return summarize_login([await api.is_logged_in(room_id) for room_id in room_ids])
+
+
+async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_ids: list[int]) -> tuple[bool | None, bool]:
+    """全ルームがログイン中でなければ再ログインする。戻り値は (状態, 今ログインしたか)。"""
+    state = await probe_login(api, room_ids)
     record_login(cfg, state)
     if state is True:
-        log.info("ログイン済みです")
-        return
+        log.info("ログイン済みです (確認したルーム %d 件)", len(room_ids))
+        return True, False
     if not cfg.credentials.available:
         if state is False:
             log.warning("未ログインです。視聴は匿名で継続します (`showroom-keeper login` でログインできます)")
-        return
+        return state, False
     log.info("ログインします (account_id=%s)", cfg.credentials.account_id)
-    if await api.login(cfg.credentials.account_id, cfg.credentials.password):
-        log.info("ログインに成功しました")
-        await save_state(ctx, cfg)
+    if not await api.login(cfg.credentials.account_id, cfg.credentials.password):
+        return False, False
+    log.info("ログインに成功しました")
+    await save_state(ctx, cfg)
+    state = await probe_login(api, room_ids)
+    confirmed = True if state is None else state
+    record_login(cfg, confirmed)
+    return confirmed, True
 
 
 class Keeper:
@@ -193,15 +203,15 @@ class Keeper:
         ctx = await new_context(browser, self.cfg)
         api = ShowroomAPI(ctx.request)
         try:
-            first = await api.room_status(self.cfg.rooms[0])
-            await ensure_login(ctx, self.cfg, first.room_id)
+            room_ids = await self._room_ids(api, required=True)
+            await ensure_login(ctx, self.cfg, api, room_ids)
 
             watchers = [
                 RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
             ]
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
             tasks.append(asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments"))
-            saver = asyncio.create_task(self._periodic_save(ctx, api, first.room_id))
+            saver = asyncio.create_task(self._periodic_save(ctx, api, watchers))
             stop_wait = asyncio.create_task(self._stop.wait())
             disc_wait = asyncio.create_task(disconnected.wait())
             try:
@@ -228,21 +238,43 @@ class Keeper:
                 with suppress(Exception):
                     await browser.close()
 
-    async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, room_id: int | None) -> None:
-        """ログイン状態を定期的に確認し (コメント等は送らず API で問い合わせるだけ)、セッションを保存する。"""
+    async def _room_ids(self, api: ShowroomAPI, required: bool = False) -> list[int]:
+        """監視中の全ルームの room_id。起動時は 1 件も取れなければセッションをやり直す。"""
+        ids: list[int] = []
+        failures = 0
+        for key in self.cfg.rooms:
+            try:
+                status = await api.room_status(key)
+            except Exception as e:  # noqa: BLE001
+                failures += 1
+                log.warning("%s の状態を取得できません: %s", key, e)
+                continue
+            if status.room_id is not None:
+                ids.append(status.room_id)
+        if required and failures == len(self.cfg.rooms):
+            raise RuntimeError("すべてのルームの状態を取得できません")
+        return ids
+
+    async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, watchers: list[RoomWatcher]) -> None:
+        """全ルームのログイン状態を定期的に確認し (コメント等は送らず API で問い合わせるだけ)、セッションを保存する。"""
         save_interval = max(60.0, self.cfg.save_state_minutes * 60)
         check_interval = max(60.0, min(self.cfg.login_check_interval, save_interval))
         last_save = time.monotonic()
         last_state: bool | None = True
         while True:
             await asyncio.sleep(check_interval)
-            state = await api.is_logged_in(room_id)
+            room_ids = await self._room_ids(api)
+            state = await probe_login(api, room_ids)
             record_login(self.cfg, state)
             if state is False and last_state is not False:
                 log.warning("セッションが切れています%s", "。再ログインします" if self.cfg.credentials.available else
                             " (`showroom-keeper login` でログインし直してください)")
             if state is False and self.cfg.credentials.available:
-                await ensure_login(ctx, self.cfg, room_id)
+                state, did_login = await ensure_login(ctx, self.cfg, api, room_ids)
+                # 確認のやり直しだけでログインしていない時は、配信中のページを再読み込みしない
+                if did_login:
+                    for watcher in watchers:
+                        watcher.reload_reason = "再ログイン"
             elif state is True and last_state is False:
                 log.info("ログイン状態に戻りました")
             last_state = state

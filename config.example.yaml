@@ -5,7 +5,7 @@
 rooms:
   - https://www.showroom-live.com/r/ROOM_URL_KEY
 
-# 視聴はせずギフトだけ記録するルーム (最大 30) とイベント (参加ルームすべて、最大 3)
+# 視聴はせずギフトだけ記録するルームとイベント (参加ルームすべて)。件数の上限はない
 record_rooms: []
 events: []
 #  - https://www.showroom-live.com/event/イベント名
@@ -29,7 +29,7 @@ health_check_interval: 30     # 再生状況の確認間隔 (秒)
 stall_threshold: 3            # 連続何回の再生停止でリロードするか
 periodic_reload_minutes: 60   # 定期リロード間隔 (分)。0 で無効
 save_state_minutes: 10        # セッション保存・ログイン確認の間隔 (分)
-keep_open_when_offline: false # 配信していない時もページを開いておく
+keep_open_when_offline: true  # 配信していない時も全ルームのページを開いたままログインを維持する。false で配信中だけ開く
 # disable_3d: true             # アバター等の 3D 描画を止めて CPU 負荷を下げる (既定: 画面非表示時のみ)
 block_trackers: true          # 広告・アクセス解析の読み込みを遮断 (読み込みが速くなる)
 block_media: false

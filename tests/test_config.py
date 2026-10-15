@@ -72,14 +72,16 @@ def test_load_dotenv(tmp_path):
     assert env == {"EXISTING": "old", "SHOWROOM_ACCOUNT_ID": "me", "SHOWROOM_PASSWORD": "p=w"}
 
 
-def test_record_targets_and_limits(tmp_path):
+def test_record_targets_have_no_count_limit():
     from showroom_keeper.config import normalize_event_key
 
     assert normalize_event_key("https://www.showroom-live.com/event/healyourselfweek_9?block_id=1") == "healyourselfweek_9"
     cfg = Config.load(None, env={"SHOWROOM_RECORD_ROOMS": "a,https://www.showroom-live.com/r/b",
                                  "SHOWROOM_EVENTS": "https://www.showroom-live.com/event/ev1"})
     assert cfg.record_rooms == ["a", "b"] and cfg.events == ["ev1"]
-    with pytest.raises(ValueError):
-        Config.load(None, env={"SHOWROOM_RECORD_ROOMS": ",".join(f"r{i}" for i in range(31))})
-    with pytest.raises(ValueError):
-        Config.load(None, env={"SHOWROOM_EVENTS": "a,b,c,d"})
+    many = Config.load(None, env={
+        "SHOWROOM_RECORD_ROOMS": ",".join(f"r{i}" for i in range(40)),
+        "SHOWROOM_EVENTS": ",".join(f"e{i}" for i in range(5)),
+    })
+    assert len(many.record_rooms) == 40 and len(many.events) == 5
+    assert many.keep_open_when_offline is True

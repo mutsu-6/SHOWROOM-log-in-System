@@ -48,6 +48,14 @@ def parse_room_status(room_url_key: str, data: dict[str, Any]) -> RoomStatus:
     )
 
 
+def summarize_login(states: list[bool | None]) -> bool | None:
+    """全ルームのログイン確認をまとめる。1 ルームでも未ログインなら False。判定できなければ None。"""
+    known = [state for state in states if state is not None]
+    if not known:
+        return None
+    return all(known)
+
+
 def parse_login_state(data: Any) -> bool | None:
     """ログイン状態 API のレスポンスを解釈する。判定できなければ None。"""
     if not isinstance(data, dict):

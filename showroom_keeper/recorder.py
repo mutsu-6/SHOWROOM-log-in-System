@@ -1,6 +1,7 @@
 """ブラウザを開かずにギフトを記録する (指定ルーム・イベント参加ルーム)。
 
-- 設定の record_rooms (最大 30) と events (最大 3、参加ルームすべて) が対象。
+- 設定の record_rooms と events (参加ルームすべて) が対象。件数の上限はない。
+- 保存済みのログインセッションがあれば、問い合わせとリアルタイム通信に使う。
 - 2 分ごとに配信状況を確認し、配信中のルームだけリアルタイム通信 (WebSocket) を購読してギフト (t=2) を記録する。
   受信するだけで、こちらからはコメント等を送らない (接続維持の PING のみ)。
 - イベントは終了日時を過ぎると自動で対象外になる。
@@ -30,27 +31,111 @@ WS_URL = "wss://online.showroom-live.com/"
 REFRESH_INTERVAL = 120  # 配信状況の確認間隔 (秒)
 PING_INTERVAL = 60
 EVENT_GRACE = 600  # イベント終了後もこの秒数は記録を続ける (終了直前の配信の取りこぼし防止)
+# 件数の上限はない。同時に投げる通信だけを抑え、API と接続の集中を避ける
+FETCH_CONCURRENCY = 8
+CONNECT_CONCURRENCY = 8
 
 
-def get_json(path: str) -> Any:
-    req = urllib.request.Request(f"{BASE_URL}{path}", headers={"User-Agent": "showroom-keeper", "Accept-Language": "ja"})
+def _showroom_domain(domain: str) -> bool:
+    host = domain.lstrip(".").lower()
+    return host == "showroom-live.com" or host.endswith(".showroom-live.com")
+
+
+def _cookie_expired(cookie: dict[str, Any], now: float | None = None) -> bool:
+    expires = cookie.get("expires", -1)
+    try:
+        exp = float(expires)
+    except (TypeError, ValueError):
+        return False
+    # -1 と 0 はセッション Cookie (期限なし)
+    return exp > 0 and exp < (time.time() if now is None else now)
+
+
+def _cookie_pair(name: Any, value: Any) -> str | None:
+    if not name or value is None:
+        return None
+    pair = f"{name}={value}"
+    if any(ch in pair for ch in "\r\n"):
+        return None
+    try:
+        pair.encode("latin-1")
+    except UnicodeEncodeError:
+        return None
+    return pair
+
+
+def session_cookie(state_file: Path, now: float | None = None) -> str | None:
+    """保存済みログインセッションから SHOWROOM 向けの Cookie ヘッダを作る。"""
+    try:
+        data = json.loads(Path(state_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pairs = []
+    for cookie in data.get("cookies") or []:
+        if not isinstance(cookie, dict) or not _showroom_domain(str(cookie.get("domain") or "")):
+            continue
+        if _cookie_expired(cookie, now):
+            continue
+        pair = _cookie_pair(cookie.get("name"), cookie.get("value"))
+        if pair:
+            pairs.append(pair)
+    return "; ".join(pairs) or None
+
+
+def get_json(path: str, cookie: str | None = None) -> Any:
+    headers = {"User-Agent": "showroom-keeper", "Accept-Language": "ja"}
+    if cookie:
+        headers["Cookie"] = cookie
+    req = urllib.request.Request(f"{BASE_URL}{path}", headers=headers)
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.load(resp)
 
 
-async def aget(path: str) -> Any:
-    return await asyncio.get_running_loop().run_in_executor(None, get_json, path)
+async def aget(path: str, cookie: str | None = None) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(None, get_json, path, cookie)
 
 
-async def event_rooms(event_key: str) -> list[dict[str, Any]]:
+def ws_header_param(connect: Any) -> str:
+    """websockets の版によって接続時のヘッダ引数名が違う。"""
+    import inspect
+
+    params = inspect.signature(connect).parameters
+    return "additional_headers" if "additional_headers" in params else "extra_headers"
+
+
+def next_page_number(current: int, nxt: Any) -> int | None:
+    """次ページ番号。進まない値や循環では None (無限リクエストを止める)。"""
+    if isinstance(nxt, str) and nxt.isdigit():
+        nxt = int(nxt)
+    if isinstance(nxt, bool) or not isinstance(nxt, (int, float)):
+        return None
+    page = int(nxt)
+    if page <= current:
+        return None
+    return page
+
+
+async def event_rooms(event_key: str, cookie: str | None = None, fetch: Any = None) -> list[dict[str, Any]]:
     """イベントの参加ルーム一覧 (全ページ)。"""
-    rooms, page = [], 1
-    while page:
-        data = await aget(f"/api/event/{event_key}/rooms?page={page}")
-        rooms.extend(data.get("rooms") or [])
-        page = data.get("next_page") if data.get("next_page") and data.get("next_page") != page else None
-        if page and page > 50:  # 念のための上限
+    get = fetch or aget
+    rooms: list[dict[str, Any]] = []
+    page = 1
+    seen: set[int] = set()
+    while page not in seen:
+        seen.add(page)
+        data = await get(f"/api/event/{event_key}/rooms?page={page}", cookie)
+        if not isinstance(data, dict):
             break
+        batch = data.get("rooms") or []
+        if not isinstance(batch, list) or not batch:
+            break
+        rooms.extend(room for room in batch if isinstance(room, dict))
+        nxt = next_page_number(page, data.get("next_page"))
+        if nxt is None:
+            break
+        page = nxt
     return rooms
 
 
@@ -58,9 +143,11 @@ class GiftRecorder:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.state_dir = Path(cfg.state_file).parent
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, tuple[Any, asyncio.Task]] = {}
         self._events: dict[str, dict[str, Any]] = {}
         self._ended_logged: set[str] = set()
+        self._fetch_slots: asyncio.Semaphore | None = None
+        self._connect_slots: asyncio.Semaphore | None = None
 
     async def run(self) -> None:
         log.info("ギフト記録を開始します (ルーム %d 件、イベント %d 件)", len(self.cfg.record_rooms), len(self.cfg.events))
@@ -72,60 +159,106 @@ class GiftRecorder:
                     log.warning("配信状況の確認に失敗: %s", e)
                 await asyncio.sleep(REFRESH_INTERVAL)
         finally:
-            for t in self._tasks.values():
-                t.cancel()
+            for _, task in self._tasks.values():
+                task.cancel()
+
+    def _limits(self) -> None:
+        # ループの中で作る (Python 3.9 の Semaphore は実行中のループに結び付く)
+        if self._fetch_slots is None:
+            self._fetch_slots = asyncio.Semaphore(FETCH_CONCURRENCY)
+        if self._connect_slots is None:
+            self._connect_slots = asyncio.Semaphore(CONNECT_CONCURRENCY)
+
+    async def _fetch(self, path: str, cookie: str | None = None) -> Any:
+        self._limits()
+        assert self._fetch_slots is not None
+        async with self._fetch_slots:
+            return await aget(path, cookie)
+
+    def _cookie(self) -> str | None:
+        return session_cookie(Path(self.cfg.state_file))
 
     async def _targets(self) -> dict[str, dict[str, Any]]:
         """配信中の記録対象ルーム {room_url_key: {room_id, source}}。"""
+        cookie = self._cookie()
         watched = set(self.cfg.rooms)
         live: dict[str, dict[str, Any]] = {}
-        for key in self.cfg.record_rooms:
-            if key in watched:
-                continue
-            st = await aget(f"/api/room/status?room_url_key={key}")
-            if st.get("is_live"):
-                live[key] = {"room_id": st["room_id"], "source": "ルーム指定"}
+
+        async def room_status(key: str) -> tuple[str, Any]:
+            try:
+                return key, await self._fetch(f"/api/room/status?room_url_key={key}", cookie)
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s の配信状況を確認できません: %s", key, e)
+                return key, None
+
+        keys = [key for key in self.cfg.record_rooms if key not in watched]
+        for key, st in await asyncio.gather(*[room_status(key) for key in keys]):
+            room_id = st.get("room_id") if isinstance(st, dict) else None
+            if room_id and st.get("is_live"):
+                live[key] = {"room_id": room_id, "source": "ルーム指定"}
         now = time.time()
         for ev in self.cfg.events:
-            info = self._events.get(ev)
-            if info is None:
-                info = await aget(f"/api/event/{ev}/abstraction")
-                self._events[ev] = info
-                end = datetime.fromtimestamp(info.get("event_end_at") or 0, JST)
-                log.info("イベント「%s」を記録対象にします (%s 終了)", info.get("title") or ev, f"{end:%m/%d %H:%M}")
-            if info.get("event_end_at") and now > info["event_end_at"] + EVENT_GRACE:
-                if ev not in self._ended_logged:
-                    log.info("イベント「%s」は終了したため記録をやめます", info.get("title") or ev)
-                    self._ended_logged.add(ev)
-                continue
-            if info.get("event_start_at") and now < info["event_start_at"] - 3600:
-                continue
-            for r in await event_rooms(ev):
-                key = r.get("room_url_key")
-                if key and r.get("is_on_live") and key not in watched:
-                    live.setdefault(key, {"room_id": r["room_id"], "source": info.get("title") or ev})
+            try:
+                await self._add_event(ev, cookie, watched, live, now)
+            except Exception as e:  # noqa: BLE001 - 1 件の失敗で他のイベントまで止めない
+                log.warning("イベント %s の確認に失敗: %s", ev, e)
         return live
+
+    async def _add_event(self, ev: str, cookie: str | None, watched: set[str], live: dict[str, dict[str, Any]], now: float) -> None:
+        info = self._events.get(ev)
+        if info is None:
+            info = await self._fetch(f"/api/event/{ev}/abstraction", cookie)
+            if not isinstance(info, dict):
+                raise RuntimeError("イベント情報の形式が不正です")
+            self._events[ev] = info
+            end = datetime.fromtimestamp(info.get("event_end_at") or 0, JST)
+            log.info("イベント「%s」を記録対象にします (%s 終了)", info.get("title") or ev, f"{end:%m/%d %H:%M}")
+        if info.get("event_end_at") and now > info["event_end_at"] + EVENT_GRACE:
+            if ev not in self._ended_logged:
+                log.info("イベント「%s」は終了したため記録をやめます", info.get("title") or ev)
+                self._ended_logged.add(ev)
+            return
+        if info.get("event_start_at") and now < info["event_start_at"] - 3600:
+            return
+        for room in await event_rooms(ev, cookie, self._fetch):
+            key = room.get("room_url_key")
+            room_id = room.get("room_id")
+            if key and room_id and room.get("is_on_live") and key not in watched:
+                live.setdefault(key, {"room_id": room_id, "source": info.get("title") or ev})
 
     async def _refresh(self) -> None:
         targets = await self._targets()
-        for key, t in targets.items():
-            task = self._tasks.get(key)
-            if task is None or task.done():
-                self._tasks[key] = asyncio.ensure_future(self._record_room(key, t["room_id"]))
-        for key in [k for k, t in self._tasks.items() if t.done()]:
+        for key, target in targets.items():
+            current = self._tasks.get(key)
+            if current is not None and not current[1].done() and current[0] == target["room_id"]:
+                continue
+            if current is not None and not current[1].done():
+                current[1].cancel()
+            self._tasks[key] = (target["room_id"], asyncio.ensure_future(self._record_room(key, target["room_id"])))
+        for key in [k for k, (_, task) in self._tasks.items() if task.done()]:
             del self._tasks[key]
 
     async def _record_room(self, key: str, room_id: int) -> None:
         import websockets  # 記録機能を使う時だけ必要
 
         try:
-            info = await aget(f"/api/live/live_info?room_id={room_id}")
-            if info.get("live_status") != 2 or not info.get("bcsvr_key"):
+            cookie = self._cookie()
+            info = await self._fetch(f"/api/live/live_info?room_id={room_id}", cookie)
+            if not isinstance(info, dict) or info.get("live_status") != 2 or not info.get("bcsvr_key"):
                 return
             live_id = info.get("live_id")
             log.info("記録開始: %s", info.get("room_name") or key)
             count = 0
-            async with websockets.connect(WS_URL, open_timeout=20, ping_interval=None) as ws:
+            connect_kwargs: dict[str, Any] = {"open_timeout": 20, "ping_interval": None}
+            if cookie:
+                connect_kwargs[ws_header_param(websockets.connect)] = {"Cookie": cookie}
+            self._limits()
+            assert self._connect_slots is not None
+            connect_cm = websockets.connect(WS_URL, **connect_kwargs)
+            # 接続の確立だけ同時数を抑え、つながったあとは件数の上限なく受信を続ける
+            async with self._connect_slots:
+                ws = await connect_cm.__aenter__()
+            try:
                 await ws.send(f"SUB\t{info['bcsvr_key']}")
                 pinger = asyncio.ensure_future(self._ping(ws))
                 try:
@@ -140,6 +273,8 @@ class GiftRecorder:
                             break
                 finally:
                     pinger.cancel()
+            finally:
+                await connect_cm.__aexit__(None, None, None)
             log.info("記録終了: %s (ギフト %d 件)", info.get("room_name") or key, count)
         except asyncio.CancelledError:
             raise

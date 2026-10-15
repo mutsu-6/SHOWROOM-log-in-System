@@ -113,6 +113,9 @@ class RoomWatcher:
         self._viewer_count_at: float | None = None
         self._viewer_count_error: str | None = None
         self._failures = 0
+        self._became_live = False
+        self._went_offline = False
+        self.reload_reason: str | None = None
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ 公開 API
@@ -138,8 +141,22 @@ class RoomWatcher:
 
             should_open = bool(self.status and (self.status.is_live or self.cfg.keep_open_when_offline))
             if should_open:
+                became_live = self._became_live
+                went_offline = self._went_offline
+                self._became_live = False
+                self._went_offline = False
+                reason = self.reload_reason
+                self.reload_reason = None
                 if not self._page_alive():
                     await self._open_page()
+                elif became_live:
+                    self._sync_activity_live()
+                    await self._reload("配信開始")
+                elif reason:
+                    await self._reload(reason)
+                elif went_offline:
+                    # 終わった配信の再生を止め、ルームのページにはログインしたまま居る
+                    await self._reload("配信終了")
                 else:
                     await self._maintain_page()
             elif self.page is not None:
@@ -147,7 +164,9 @@ class RoomWatcher:
                 await self._close_page()
 
             self._failures = 0
-            return self.cfg.health_check_interval if self.page else self.cfg.status_poll_interval
+            if self._page_alive() and self.status and self.status.is_live:
+                return self.cfg.health_check_interval
+            return self.cfg.status_poll_interval
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - どんな障害でも監視は継続する
@@ -190,6 +209,8 @@ class RoomWatcher:
         prev = self.status
         self.status = await self._fetch_status(self.key)
         self.last_status_at = self._clock()
+        self._became_live = bool(prev is not None and not prev.is_live and self.status.is_live)
+        self._went_offline = bool(prev is not None and prev.is_live and not self.status.is_live)
         if prev is None or prev.is_live != self.status.is_live:
             state = "配信中" if self.status.is_live else "配信していません"
             self.log.info("%s: %s", self.status.room_name, state)
@@ -205,9 +226,7 @@ class RoomWatcher:
         self.page = page
         if hasattr(page, "on"):
             page.on("websocket", self._on_websocket)
-        if self.status.live_id != self._activity_live_id:  # 新しい配信なら数え直す
-            self._activity_live_id = self.status.live_id
-            self.activity.reset(time.time())
+        self._sync_activity_live()
         await page.goto(self.status.url, wait_until="commit", timeout=60000)
         self.opened_at = self.last_reload_at = self._clock()
         self._reset_health()
@@ -219,6 +238,13 @@ class RoomWatcher:
         self.last_reload_at = self._clock()
         self.reload_count += 1
         self._reset_health()
+
+    def _sync_activity_live(self) -> None:
+        """配信が変わったら推定アクティブ人数を最初から数え直す。"""
+        live_id = self.status.live_id if self.status else None
+        if live_id != self._activity_live_id:
+            self._activity_live_id = live_id
+            self.activity.reset(time.time())
 
     def _reset_health(self) -> None:
         self.last_video_time = None
@@ -276,17 +302,20 @@ class RoomWatcher:
 
     async def _maintain_page(self) -> None:
         assert self.page is not None
-        try:
-            self._save_activity()
-            await self._update_viewer_count()
-        except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
-            self.log.debug("視聴者数の取得に失敗: %s", e)
         now = self._clock()
         period = self.cfg.periodic_reload_minutes * 60
         if period > 0 and self.last_reload_at is not None and now - self.last_reload_at >= period:
             await self._reload("定期リロード")
             return
-
+        if not (self.status and self.status.is_live):
+            # 配信前でもページは開いたままにし、ログイン済みのルームに居続ける
+            await self.page.evaluate("() => document.readyState")
+            return
+        try:
+            self._save_activity()
+            await self._update_viewer_count()
+        except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
+            self.log.debug("視聴者数の取得に失敗: %s", e)
         if self.cfg.block_media:
             # 映像を受信しない設定では再生状況を判定できないため、ページの生存のみ確認
             await self.page.evaluate("() => document.readyState")

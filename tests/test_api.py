@@ -1,4 +1,4 @@
-from showroom_keeper.api import ShowroomAPI, parse_login_state, parse_room_status
+from showroom_keeper.api import ShowroomAPI, parse_login_state, parse_room_status, summarize_login
 
 
 def test_parse_room_status_is_live():
@@ -11,6 +11,15 @@ def test_parse_room_status_fallback_fields():
     assert parse_room_status("k", {"live_status": 2}).is_live
     assert not parse_room_status("k", {"live_status": 1}).is_live
     assert parse_room_status("k", {}).room_name == "k"
+
+
+def test_summarize_login_requires_every_room():
+    assert summarize_login([]) is None
+    assert summarize_login([None, None]) is None
+    assert summarize_login([True, None]) is True
+    assert summarize_login([True, True]) is True
+    assert summarize_login([True, False]) is False
+    assert summarize_login([False]) is False
 
 
 def test_parse_login_state():

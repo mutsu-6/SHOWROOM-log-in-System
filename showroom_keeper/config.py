@@ -44,8 +44,6 @@ def load_dotenv(path: str | os.PathLike = ".env", environ: dict[str, str] | None
 
 
 EVENT_URL_RE = re.compile(r"showroom-live\.com/event/([A-Za-z0-9_\-]+)")
-MAX_RECORD_ROOMS = 30
-MAX_EVENTS = 3
 
 
 def normalize_event_key(value: str) -> str:
@@ -72,7 +70,7 @@ class Credentials:
 @dataclass
 class Config:
     rooms: list[str] = field(default_factory=list)
-    # 視聴はせずギフトだけ記録するルーム (最大 30) と、参加ルームすべてを記録するイベント (最大 3)
+    # 視聴はせずギフトだけ記録するルームと、参加ルームすべてを記録するイベント (件数の上限なし)
     record_rooms: list[str] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
     credentials: Credentials = field(default_factory=Credentials)
@@ -96,8 +94,8 @@ class Config:
     login_check_interval: float = 180.0
     # セッション(Cookie)を保存する間隔 (分)
     save_state_minutes: float = 10.0
-    # 配信していない時もページを開いたままにするか
-    keep_open_when_offline: bool = False
+    # 配信していない時も全ルームのページを開いたままにし、ログイン状態を維持する
+    keep_open_when_offline: bool = True
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
@@ -171,9 +169,5 @@ class Config:
         for name in ("status_poll_interval", "health_check_interval", "max_backoff"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} は正の数である必要があります")
-        if len(self.record_rooms) > MAX_RECORD_ROOMS:
-            raise ValueError(f"record_rooms は {MAX_RECORD_ROOMS} ルームまでです ({len(self.record_rooms)} 件)")
-        if len(self.events) > MAX_EVENTS:
-            raise ValueError(f"events は {MAX_EVENTS} 件までです ({len(self.events)} 件)")
         if self.stall_threshold < 1:
             raise ValueError("stall_threshold は 1 以上である必要があります")
