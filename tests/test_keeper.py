@@ -121,3 +121,58 @@ def test_keep_open_is_decided_by_memory():
     # 明示した設定はそのまま使う
     assert kp.resolve_keep_open(Config(rooms=rooms, keep_open_when_offline=True), mem=1.9) is True
     assert kp.resolve_keep_open(Config(rooms=rooms, keep_open_when_offline=False), mem=64) is False
+
+
+def test_login_is_checked_with_a_single_room_preferring_a_live_one():
+    from showroom_keeper.api import RoomStatus
+
+    def w(room_id, live):
+        return type("W", (), {"status": RoomStatus(f"k{room_id}", room_id, "", live)})()
+
+    none = type("W", (), {"status": None})()
+    assert kp.login_room_ids([w(1, False), w(2, True), w(3, True), none]) == [2]
+    assert kp.login_room_ids([none, w(5, False)]) == [5]
+    assert kp.login_room_ids([none]) == []
+
+
+async def test_login_check_runs_on_its_own_interval_while_state_is_saved_often(monkeypatch, tmp_path):
+    from showroom_keeper.api import RoomStatus
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(kp.time, "monotonic", lambda: clock["t"])
+
+    async def fake_sleep(seconds):
+        clock["t"] += seconds
+        if clock["t"] > 4 * 3600 + 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(kp.asyncio, "sleep", fake_sleep)
+    saves, checks = [], []
+
+    async def fake_save(ctx, cfg):
+        saves.append(clock["t"])
+
+    monkeypatch.setattr(kp, "save_state", fake_save)
+
+    class API:
+        async def is_logged_in(self, room_id):
+            checks.append((clock["t"], room_id))
+            return True
+
+    cfg = Config(rooms=["a", "b"], state_file=tmp_path / "s.json")  # 既定: 確認 2 時間 / 保存 10 分
+    keeper = kp.Keeper(cfg)
+    watchers = [type("W", (), {"status": RoomStatus(k, i, "", True)})() for i, k in ((11, "a"), (12, "b"))]
+    with pytest.raises(asyncio.CancelledError):
+        await keeper._periodic_save(None, API(), watchers)
+    assert [t for t, _ in checks] == [7200, 14400]  # 2 時間ごと
+    assert {room for _, room in checks} == {11}  # 問い合わせるのは 1 ルームだけ
+    assert len(saves) == 24 and saves[0] == 600  # セッションの保存は 10 分ごとのまま
+
+
+def test_status_warns_only_when_checks_stop_for_twice_the_interval():
+    from showroom_keeper.status import format_login
+
+    stat = {"logged_in": True, "checked_at": 1000.0, "check_interval": 7200}
+    assert "途絶え" not in format_login(stat, now=1000 + 3 * 3600)
+    assert "途絶え" in format_login(stat, now=1000 + 5 * 3600)
+    assert "途絶え" in format_login({"logged_in": True, "checked_at": 1000.0}, now=1000 + 700)  # 以前の記録 (3 分間隔)

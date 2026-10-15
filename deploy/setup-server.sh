@@ -48,6 +48,12 @@ if [ ! -f .env ] || ! grep -qE "^SHOWROOM_(ROOMS|ENTER_ROOMS|RECORD_ROOMS|EVENTS
 fi
 chmod 600 .env
 
+# Docker では config.yaml を読まない。置いてあっても効かないことを知らせる
+if [ -f config.yaml ]; then
+  echo "注意: config.yaml はサーバー (Docker) では使われません。設定は .env に SHOWROOM_<項目名を大文字> で書いてください"
+  echo "      (例: login_check_interval: 7200 → SHOWROOM_LOGIN_CHECK_INTERVAL=7200)"
+fi
+
 echo "==> 起動します (初回はイメージ作成に数分かかります)"
 docker compose up -d --build
 

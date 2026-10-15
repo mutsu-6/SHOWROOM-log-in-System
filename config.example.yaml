@@ -1,5 +1,7 @@
 # config.example.yaml をコピーして config.yaml を作成してください。
 #   cp config.example.yaml config.yaml
+# ※ サーバー (Docker) では config.yaml は使われません。各項目は .env に SHOWROOM_<項目名を大文字> で書けます
+#   (例: login_check_interval: 7200 → SHOWROOM_LOGIN_CHECK_INTERVAL=7200)。環境変数は config.yaml より優先されます。
 
 # 視聴を維持するルーム (URL または room_url_key)。ギフト記録 (record_rooms / events) だけなら空でもよい
 rooms:
@@ -31,7 +33,7 @@ status_poll_interval: 60      # 配信状態の確認間隔 (秒)
 health_check_interval: 30     # 再生状況の確認間隔 (秒)
 stall_threshold: 3            # 連続何回の再生停止でリロードするか
 periodic_reload_minutes: 60   # 定期リロード間隔 (分)。0 で無効
-login_check_interval: 180     # ログイン状態の確認間隔 (秒)。API に問い合わせるだけでコメント等は送らない
+login_check_interval: 7200    # ログイン状態の確認間隔 (秒)。1 ルームで 1 回問い合わせるだけでコメント等は送らない
 save_state_minutes: 10        # セッション (Cookie) の保存間隔 (分)
 # keep_open_when_offline: true # 配信していない時も全ルームのページを開いておく。false で配信中だけ開く。
                               # 未指定ならメモリに余裕がある時だけ開いておく (1 ルームにつき約 0.5GB 使う。ログイン維持はどちらでも同じ)

@@ -90,6 +90,37 @@ def test_record_targets_have_no_count_limit():
     assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "auto"}).keep_open_when_offline is None
 
 
+def test_every_setting_can_be_set_from_env():
+    # Docker では config.yaml を読まないため、サーバーでは .env (環境変数) で設定を変える
+    cfg = Config.load(None, env={
+        "SHOWROOM_LOGIN_CHECK_INTERVAL": "3600",
+        "SHOWROOM_SAVE_STATE_MINUTES": "5",
+        "SHOWROOM_STALL_THRESHOLD": "4",
+        "SHOWROOM_BLOCK_MEDIA": "true",
+        "SHOWROOM_MUTE": "off",
+        "SHOWROOM_DISABLE_3D": "auto",
+        "SHOWROOM_LOG_LEVEL": "DEBUG",
+        "SHOWROOM_WEB_PORT": "9000",
+        "SHOWROOM_STATE_FILE": "/data/x.json",
+        "SHOWROOM_PERIODIC_RELOAD_MINUTES": "",  # 空の値は無視して既定のまま
+    })
+    assert cfg.login_check_interval == 3600 and cfg.save_state_minutes == 5 and cfg.stall_threshold == 4
+    assert cfg.block_media is True and cfg.mute is False and cfg.disable_3d is None
+    assert cfg.log_level == "DEBUG" and cfg.web_port == 9000 and str(cfg.state_file) == "/data/x.json"
+    assert cfg.periodic_reload_minutes == 60
+
+
+def test_env_overrides_config_file_and_rejects_bad_values(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("login_check_interval: 180\n", encoding="utf-8")
+    assert Config.load(p, env={}).login_check_interval == 180
+    assert Config.load(p, env={"SHOWROOM_LOGIN_CHECK_INTERVAL": "7200"}).login_check_interval == 7200
+    with pytest.raises(ValueError, match="SHOWROOM_HEADLESS"):
+        Config.load(None, env={"SHOWROOM_HEADLESS": "たぶん"})
+    with pytest.raises(ValueError, match="SHOWROOM_WEB_PORT"):
+        Config.load(None, env={"SHOWROOM_WEB_PORT": "abc"})
+
+
 def test_enter_rooms_from_env_survive_older_saved_settings(tmp_path):
     import json
 

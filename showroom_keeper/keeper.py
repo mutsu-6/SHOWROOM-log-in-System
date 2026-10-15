@@ -167,9 +167,24 @@ async def save_state(ctx: BrowserContext, cfg: Config) -> None:
 
 
 def record_login(cfg: Config, state: bool | None) -> None:
-    """ログイン状態の確認結果を status コマンド用に保存する。"""
+    """ログイン状態の確認結果を status コマンド用に保存する (確認の間隔も残し、途絶えたかの判定に使う)。"""
     with suppress(Exception):
-        write_live_stat(Path(cfg.state_file).parent, LOGIN_KEY, logged_in=state, checked_at=time.time())
+        write_live_stat(Path(cfg.state_file).parent, LOGIN_KEY, logged_in=state, checked_at=time.time(),
+                        check_interval=login_check_seconds(cfg))
+
+
+def login_check_seconds(cfg: Config) -> float:
+    return max(60.0, float(cfg.login_check_interval))
+
+
+def login_room_ids(watchers: list[RoomWatcher]) -> list[int]:
+    """ログイン確認に使うルーム。ログインはアカウント単位でどのルームで聞いても同じなので 1 つだけ使う。
+
+    配信中のルームがあればそれを優先する (配信していないルームでも確認はできる)。
+    """
+    known = [w.status for w in watchers if w.status and w.status.room_id is not None]
+    known.sort(key=lambda s: not s.is_live)
+    return [known[0].room_id] if known else []
 
 
 def login_available(cfg: Config) -> bool:
@@ -340,7 +355,8 @@ class Keeper:
         ctx = await new_context(browser, self.cfg)
         api = ShowroomAPI(ctx.request)
         try:
-            room_ids = await self._login_rooms(api, await self._room_ids(api, required=True))
+            # ログインはアカウント単位なので、確認は 1 ルームで足りる
+            room_ids = await self._login_rooms(api, (await self._room_ids(api, required=True))[:1])
             keep_open = resolve_keep_open(self.cfg)
             if room_ids:
                 await ensure_login(ctx, self.cfg, api, room_ids)
@@ -416,12 +432,34 @@ class Keeper:
             self._probe_room = await api.live_room_id()
         return [self._probe_room] if self._probe_room is not None else []
 
+    async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, watchers: list[RoomWatcher]) -> None:
+        """ログイン状態を定期的に確認し (コメント等は送らず API で 1 回問い合わせるだけ)、セッションを保存する。
+
+        確認 (既定 2 時間ごと) とセッションの保存 (既定 10 分ごと) は、それぞれの間隔で行う。
+        """
+        save_interval = max(60.0, self.cfg.save_state_minutes * 60)
+        check_interval = login_check_seconds(self.cfg)
+        next_check = time.monotonic() + check_interval
+        next_save = time.monotonic() + save_interval
+        last_state: bool | None = True
+        while True:
+            await asyncio.sleep(max(1.0, min(next_check, next_save) - time.monotonic()))
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + check_interval
+                try:
+                    last_state = await self._check_login(ctx, api, watchers, last_state)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - 確認の失敗で視聴中のブラウザまで落とさない
+                    log.warning("ログイン状態を確認できませんでした: %s", e)
+            if time.monotonic() >= next_save:
+                next_save = time.monotonic() + save_interval
+                await save_state(ctx, self.cfg)
+
     async def _check_login(self, ctx: BrowserContext, api: ShowroomAPI, watchers: list[RoomWatcher],
                            last_state: bool | None) -> bool | None:
-        # 各ルームの room_id はウォッチャーが配信状況の確認で取得済みなので、問い合わせ直さない
-        room_ids = [w.status.room_id for w in watchers if w.status and w.status.room_id is not None]
-        if not room_ids and self.cfg.rooms:
-            room_ids = await self._room_ids(api)
+        # ルームの room_id はウォッチャーが配信状況の確認で取得済みなので、問い合わせ直さない
+        room_ids = login_room_ids(watchers) or (await self._room_ids(api) if self.cfg.rooms else [])[:1]
         room_ids = await self._login_rooms(api, room_ids)
         state = await probe_login(api, room_ids)
         if state is None:
@@ -440,24 +478,6 @@ class Keeper:
         elif state is True and last_state is False:
             log.info("ログイン状態に戻りました")
         return state
-
-    async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, watchers: list[RoomWatcher]) -> None:
-        """ログイン状態を定期的に確認し (コメント等は送らず API で 1 回問い合わせるだけ)、セッションを保存する。"""
-        save_interval = max(60.0, self.cfg.save_state_minutes * 60)
-        check_interval = max(60.0, min(self.cfg.login_check_interval, save_interval))
-        last_save = time.monotonic()
-        last_state: bool | None = True
-        while True:
-            await asyncio.sleep(check_interval)
-            try:
-                last_state = await self._check_login(ctx, api, watchers, last_state)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001 - 確認の失敗で視聴中のブラウザまで落とさない
-                log.warning("ログイン状態を確認できませんでした: %s", e)
-            if time.monotonic() - last_save >= save_interval:
-                await save_state(ctx, self.cfg)
-                last_save = time.monotonic()
 
 
 async def interactive_login(cfg: Config) -> None:

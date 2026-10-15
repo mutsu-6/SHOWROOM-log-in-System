@@ -116,7 +116,8 @@ def format_login(stat: dict | None, now: float | None = None) -> str | None:
     at = datetime.fromtimestamp(stat["checked_at"], JST)
     state = {True: "✅ ログイン中", False: "❌ 未ログイン (login し直してください)"}.get(stat.get("logged_in"), "❔ 確認できませんでした")
     line = f"ログイン状態: {state} ({at:%H:%M:%S} 確認)"
-    if now - stat["checked_at"] > 600:
+    # 確認の間隔の 2 倍を過ぎても次の確認が無ければ、視聴が止まっている可能性がある
+    if now - stat["checked_at"] > max(600, 2 * float(stat.get("check_interval") or 180) + 120):
         line += " ※ 確認が途絶えています。視聴が止まっていないか確認してください"
     return line
 
