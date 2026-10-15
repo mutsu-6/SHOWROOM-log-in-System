@@ -154,6 +154,8 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 - ルームもイベントも件数の上限はありません。イベントは参加ルームすべてが対象で、終了日時を過ぎると自動で記録をやめます。
 - 保存したログインセッション (`state/storage_state.json`) があれば、記録時の問い合わせと受信にも使います。
 - 2 分ごとに配信状況を確認し、配信中のルームだけ接続します。受信のみで、こちらからは何も送りません。
+- `python -m showroom_keeper run` (サーバーでは `docker compose up -d`) の実行中に記録します。
+  視聴するルーム (`SHOWROOM_ROOMS`) が無くても動き、その場合はブラウザを起動しません。
 - 集計は `g ルーム名` (ルーム単位) と `g --event イベントURL` (イベント全体のルーム別・リスナー別ランキング)。
   `--user` で特定リスナーのイベント内の履歴 (どのルームに送ったか) も表示できます。
 - 記録できるのは設定してから先のギフトだけです。過去の配信のギフトは SHOWROOM から取得できません。
@@ -189,12 +191,18 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 
 ```
 showroom_keeper/
-  cli.py      コマンドライン (run / login)
-  config.py   設定ファイル・環境変数の読み込み
-  api.py      SHOWROOM API (配信状態・ログイン状態・ログイン)
-  watcher.py  1 ルーム分の監視ループ (配信待機・再生監視・リロード・バックオフ)
-  keeper.py   ブラウザ管理・セッション保存・全ウォッチャーの統括
-tests/        pytest によるテスト
+  cli.py       コマンドライン (run / login / comment / status / gifts / diagnose)
+  config.py    設定ファイル・環境変数の読み込み
+  api.py       SHOWROOM API (配信状態・ログイン状態・ログイン)
+  watcher.py   1 ルーム分の監視ループ (配信待機・再生監視・リロード・バックオフ・ギフト記録)
+  keeper.py    ブラウザ管理・セッション保存・全ウォッチャーの統括
+  comments.py  手動コメントの受け渡し (comment コマンド ⇔ 常駐中の keeper)
+  status.py    配信状況の取得と表示 (status コマンド)
+  activity.py  リアルタイム通信の読み取りと推定アクティブ人数
+  gifts.py     ギフト履歴の記録と集計 (gifts コマンド)
+  recorder.py  ブラウザを使わないギフト記録 (record_rooms / events)
+deploy/        サーバー用スクリプト (setup-server.sh / comment.sh / status.sh / gifts.sh) と systemd ユニット例
+tests/         pytest によるテスト
 ```
 
 ## 注意事項

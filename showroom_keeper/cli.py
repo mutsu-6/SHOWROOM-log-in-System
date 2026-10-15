@@ -197,8 +197,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from .keeper import Keeper
 
-    if not cfg.rooms:
-        logging.error("監視するルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS)")
+    if not (cfg.rooms or cfg.record_rooms or cfg.events):
+        logging.error("監視するルームを指定してください (引数 / config.yaml の rooms / 環境変数 SHOWROOM_ROOMS。"
+                      "ギフト記録だけなら SHOWROOM_RECORD_ROOMS / SHOWROOM_EVENTS)")
         return 2
     keeper = Keeper(cfg)
 

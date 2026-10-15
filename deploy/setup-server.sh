@@ -35,12 +35,15 @@ fi
 [ -f data/storage_state.json ] && chmod 600 data/storage_state.json || \
   echo "注意: ログイン状態 (data/storage_state.json) がありません。未ログインで視聴します"
 
-if [ ! -f .env ] || ! grep -q "^SHOWROOM_ROOMS=..*" .env; then
-  echo "==> 設定 (.env) を作成します"
+# 視聴ルーム・ギフト記録のルーム・イベントのどれも設定されていなければ尋ねる
+if [ ! -f .env ] || ! grep -qE "^SHOWROOM_(ROOMS|RECORD_ROOMS|EVENTS)=..*" .env; then
+  echo "==> 設定 (.env) に視聴するルームを追加します"
   read -r -p "視聴するルームの URL (複数はカンマ区切り): " ROOMS < /dev/tty
   umask 077
+  # ログイン情報など既存の設定は残し、空の SHOWROOM_ROOMS= の行だけ除いて追記する
+  if [ -f .env ]; then sed -i '/^SHOWROOM_ROOMS=$/d' .env; fi
   # 値に $ などが含まれても展開されないよう単一引用符で囲む
-  echo "SHOWROOM_ROOMS='$ROOMS'" > .env
+  echo "SHOWROOM_ROOMS='$ROOMS'" >> .env
 fi
 chmod 600 .env
 
@@ -52,5 +55,5 @@ cat <<MSG
 セットアップ完了。サーバーを再起動しても自動で再開します。
   ログを見る:  cd $DIR && sudo docker compose logs -f
   止める:      cd $DIR && sudo docker compose down
-  ルーム変更:  $DIR/.env の SHOWROOM_ROOMS を編集して sudo docker compose up -d
+  ルーム変更:  $DIR/.env の SHOWROOM_ROOMS (ギフト記録は SHOWROOM_RECORD_ROOMS / SHOWROOM_EVENTS) を編集して sudo docker compose up -d
 MSG

@@ -1,7 +1,7 @@
 # config.example.yaml をコピーして config.yaml を作成してください。
 #   cp config.example.yaml config.yaml
 
-# 視聴を維持するルーム (URL または room_url_key)
+# 視聴を維持するルーム (URL または room_url_key)。ギフト記録 (record_rooms / events) だけなら空でもよい
 rooms:
   - https://www.showroom-live.com/r/ROOM_URL_KEY
 
@@ -28,13 +28,15 @@ status_poll_interval: 60      # 配信状態の確認間隔 (秒)
 health_check_interval: 30     # 再生状況の確認間隔 (秒)
 stall_threshold: 3            # 連続何回の再生停止でリロードするか
 periodic_reload_minutes: 60   # 定期リロード間隔 (分)。0 で無効
-save_state_minutes: 10        # セッション保存・ログイン確認の間隔 (分)
+login_check_interval: 180     # ログイン状態の確認間隔 (秒)。API に問い合わせるだけでコメント等は送らない
+save_state_minutes: 10        # セッション (Cookie) の保存間隔 (分)
 keep_open_when_offline: true  # 配信していない時も全ルームのページを開いたままログインを維持する。false で配信中だけ開く
 # disable_3d: true             # アバター等の 3D 描画を止めて CPU 負荷を下げる (既定: 画面非表示時のみ)
 block_trackers: true          # 広告・アクセス解析の読み込みを遮断 (読み込みが速くなる)
-block_media: false
+block_media: false            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
 viewer_count: true            # リアルタイム視聴者数を取得 (要ログイン)
-viewer_count_interval: 60     # その間隔 (秒)            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
+viewer_count_interval: 60     # その間隔 (秒)
+record_gifts: true            # 視聴中のルームのギフト (無料の星を含む) を記録する
 mute: true
 max_backoff: 300              # 障害時の再試行待ちの上限 (秒)
 log_level: INFO

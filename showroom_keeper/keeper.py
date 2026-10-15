@@ -49,6 +49,8 @@ async def launch_browser(pw, cfg: Config) -> Browser:
         )
     options = dict(
         headless=cfg.headless,
+        # 端末の Ctrl+C でブラウザが先に終了するとセッションを保存できないため、終了は keeper 側で行う
+        handle_sigint=False,
         proxy={"server": cfg.proxy} if cfg.proxy else None,
         args=["--autoplay-policy=no-user-gesture-required"]
         + (["--mute-audio"] if cfg.mute else [])
@@ -151,8 +153,8 @@ async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_
 
 class Keeper:
     def __init__(self, cfg: Config):
-        if not cfg.rooms:
-            raise ValueError("監視するルームが指定されていません (rooms / SHOWROOM_ROOMS)")
+        if not (cfg.rooms or cfg.record_rooms or cfg.events):
+            raise ValueError("監視するルームが指定されていません (rooms / record_rooms / events)")
         self.cfg = cfg
         # Python 3.9 の asyncio.Event は生成時のイベントループに結び付くため、run() 内で生成する
         self._stop: asyncio.Event | None = None
@@ -173,7 +175,12 @@ class Keeper:
 
             recorder = asyncio.ensure_future(GiftRecorder(self.cfg).run())
         try:
-            await self._run_loop()
+            if self.cfg.rooms:
+                await self._run_loop()
+            else:
+                # 視聴ルームが無くギフト記録だけの場合はブラウザを起動しない
+                log.info("視聴するルームが無いため、ブラウザを開かずギフトの記録だけを行います")
+                await self._stop.wait()
         finally:
             if recorder is not None:
                 recorder.cancel()
