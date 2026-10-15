@@ -170,7 +170,15 @@ td.name { max-width: 280px; word-break: break-word; }
 .listing-note { color: var(--muted); font-size: 12px; padding: 8px 10px; }
 tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--panel2); }
 tr.selected td { background: var(--info-soft); }
-#l-detail { scroll-margin-top: 110px; }  /* 上に固定したヘッダーに隠れないように */
+#l-detail { scroll-margin-top: 110px; }
+/* 入力欄の下に出る候補 */
+.suggest { position: fixed; z-index: 15; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18);
+  max-height: min(460px, 60vh); display: flex; flex-direction: column; overflow: hidden; }
+.suggest .filters { padding: 8px 8px 6px; border-bottom: 1px solid var(--line); }
+.suggest .items { overflow-y: auto; padding: 4px; }
+.suggest .pick { padding: 8px 10px; }
+.suggest .pick.hl { background: var(--info-soft); }
+.suggest .foot { border-top: 1px solid var(--line); padding: 6px 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }  /* 上に固定したヘッダーに隠れないように */
 
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: calc(100% - 32px); z-index: 10; }
@@ -240,8 +248,7 @@ tr.selected td { background: var(--info-soft); }
       </div>
       <form id="g-form" class="row">
         <span id="g-room-wrap" class="row grow">
-          <input type="text" id="g-room" class="grow" list="g-room-list" placeholder="ルーム (URL または room_url_key)">
-          <datalist id="g-room-list"></datalist>
+          <input type="text" id="g-room" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名・URL で検索 (クリックで一覧)">
           <button type="button" class="btn" data-pick="room">一覧から選ぶ</button>
           <select id="g-hours">
             <option value="">今回の配信</option>
@@ -251,12 +258,11 @@ tr.selected td { background: var(--info-soft); }
           </select>
         </span>
         <span id="g-event-wrap" class="row grow" hidden>
-          <input type="text" id="g-event" class="grow" list="g-event-list" placeholder="イベント (URL または event_url_key)">
-          <datalist id="g-event-list"></datalist>
+          <input type="text" id="g-event" class="grow" autocomplete="off" data-suggest="event" placeholder="イベント名・URL で検索 (クリックで一覧)">
           <button type="button" class="btn" data-pick="event">一覧から選ぶ</button>
           <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="g-official" checked> 公式の貢献ランキング</label>
         </span>
-        <input type="search" id="g-user" placeholder="リスナー (名前の一部かユーザー ID)" style="flex:0 1 230px">
+        <input type="search" id="g-user" autocomplete="off" data-suggest="user" placeholder="リスナー名・ID で検索 (クリックで一覧)" style="flex:0 1 260px">
         <button class="btn primary" type="submit">表示</button>
       </form>
     </div>
@@ -341,6 +347,7 @@ tr.selected td { background: var(--info-soft); }
   </section>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
+<div class="suggest" id="sg" hidden role="listbox"></div>
 <div class="modal" id="picker" hidden role="dialog" aria-modal="true" aria-labelledby="pk-title">
   <div class="modal-box">
     <div class="modal-head">
@@ -504,8 +511,6 @@ function renderOverview() {
   $("#c-send").disabled = !live.length;
   $("#c-hint").textContent = live.length ? "" : "視聴中のルームで配信が始まると投稿できます。";
   const keys = [...new Set([...o.settings.rooms, ...o.settings.record_rooms, ...o.recording.map((r) => r.room)])];
-  $("#g-room-list").innerHTML = keys.map((k) => `<option value="${esc(k)}">`).join("");
-  $("#g-event-list").innerHTML = o.settings.events.map((k) => `<option value="${esc(k)}">`).join("");
   if (!settingsDirty) loadSettings(o.settings);
 }
 
@@ -522,7 +527,7 @@ $("#rooms").addEventListener("click", (ev) => {
   const b = ev.target.closest("button[data-act]");
   if (!b) return;
   if (b.dataset.act === "comment") { location.hash = "#comment"; $("#c-room").value = b.dataset.room; }
-  if (b.dataset.act === "gifts") { setGiftMode("room"); $("#g-room").value = b.dataset.room; location.hash = "#gifts"; loadGifts(); }
+  if (b.dataset.act === "gifts") { setGiftMode("room"); setPicked($("#g-room"), b.dataset.room, roomName(b.dataset.room)); location.hash = "#gifts"; loadGifts(); }
 });
 
 /* ------------------------------------------------------------ コメント */
@@ -576,7 +581,7 @@ $("#g-result").addEventListener("click", (ev) => {
   if (all) { openListener(all.dataset.listener); return; }
   const b = ev.target.closest("[data-user]");
   if (!b) return;
-  $("#g-user").value = b.dataset.user;
+  setPicked($("#g-user"), b.dataset.user, b.textContent.trim());
   loadGifts();
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -634,15 +639,15 @@ function userBlock(users, official) {
 }
 
 async function loadGifts() {
-  const user = $("#g-user").value.trim();
+  const user = pickedValue($("#g-user"));
   const out = $("#g-result");
   let path, waitMsg = "読み込み中…";
   if (giftMode === "room") {
-    const room = $("#g-room").value.trim();
+    const room = pickedValue($("#g-room"));
     if (!room) { toast("ルームを入力してください"); return; }
     path = `/api/gifts/room?room=${encodeURIComponent(room)}&hours=${encodeURIComponent($("#g-hours").value)}&user=${encodeURIComponent(user)}`;
   } else {
-    const event = $("#g-event").value.trim();
+    const event = pickedValue($("#g-event"));
     if (!event) { toast("イベントを入力してください"); return; }
     const official = $("#g-official").checked;
     path = `/api/gifts/event?event=${encodeURIComponent(event)}&official=${official ? 1 : 0}&user=${encodeURIComponent(user)}`;
@@ -725,7 +730,7 @@ const PICKERS = {
       <div class="main"><div class="t">${esc(r.name)}</div>
         <div class="s"><span>${esc(r.key)}</span>${r.is_live ? '<span class="tag live">配信中</span>' : ""}${r.tags.includes("watch") ? '<span class="tag ok">視聴中</span>' : ""}${r.tags.includes("record") ? '<span class="tag info">ギフト記録</span>' : ""}${r.tags.includes("enter") ? '<span class="tag">入室</span>' : ""}</div></div>
       <div class="side">${r.records ? `記録 ${num(r.records)} 件<br>最終 ${tm(r.last_at, true).slice(0, 11)}` : "記録なし"}</div></button>`,
-    choose: (key) => { setGiftMode("room"); $("#g-room").value = key; },
+    choose: (key) => { setGiftMode("room"); setPicked($("#g-room"), key, roomName(key)); },
   },
   event: {
     title: "イベントを選ぶ",
@@ -739,7 +744,7 @@ const PICKERS = {
       <div class="main"><div class="t">${esc(e.title)}</div>
         <div class="s"><span>${esc(e.key)}</span>${{ ongoing: '<span class="tag live">開催中</span>', upcoming: '<span class="tag warn">開催前</span>', ended: '<span class="tag">終了</span>' }[e.state]}${e.recording ? '<span class="tag info">ギフト記録中</span>' : ""}${e.official_cached ? '<span class="tag ok">公式ランキング取得済み</span>' : ""}</div></div>
       <div class="side">${e.start ? day(e.start) : ""}<br>〜 ${e.end ? day(e.end) : ""}</div></button>`,
-    choose: (key) => { setGiftMode("event"); $("#g-event").value = key; },
+    choose: (key) => { setGiftMode("event"); setPicked($("#g-event"), key, eventName(key)); },
   },
 };
 const picker = { kind: "room", filter: "all", items: [] };
@@ -789,6 +794,148 @@ $("#pk-q").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") { ev.preventDefault(); const first = $("#pk-list .pick"); if (first) first.click(); }
 });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#picker").hidden) closePicker(); });
+
+/* ------------------------------------------------------------ 入力欄の候補 (クリック・入力で名前の一覧を出す) */
+function setPicked(input, key, label) {
+  input.value = label || key || "";
+  input.dataset.key = key || "";
+  input.dataset.label = input.value;
+}
+function cachedItems(kind) { return (lists[kind] && lists[kind][1]) || []; }
+const roomName = (key) => (cachedItems("room").find((r) => r.key === key) || {}).name || key;
+const eventName = (key) => (cachedItems("event").find((e) => e.key === key) || {}).title || key;
+function pickedValue(input) {
+  const v = input.value.trim();
+  if (input.dataset.key && v === input.dataset.label) return input.dataset.key;
+  // 名前をそのまま打った時も、一覧に同じ名前があればその ID を使う
+  const kind = input.dataset.suggest;
+  if (kind === "room") { const r = cachedItems("room").find((x) => x.name === v); if (r) return r.key; }
+  if (kind === "event") { const e = cachedItems("event").find((x) => x.title === v); if (e) return e.key; }
+  if (kind === "user") { const u = (userCache.rows || []).find((x) => x.name === v); if (u) return String(u.user_id); }
+  return v;
+}
+const userCache = { key: null, at: 0, rows: [] };
+async function userItems() {
+  const room = $("#g-mode .active").dataset.mode === "room" ? pickedValue($("#g-room")) : "";
+  const key = room;
+  if (userCache.key !== key || Date.now() - userCache.at > 60000) {
+    const r = await api(`/api/listeners?days=0&room=${encodeURIComponent(room)}`);
+    Object.assign(userCache, { key, at: Date.now(), rows: r.listeners });
+  }
+  return userCache.rows;
+}
+const SUGGEST = {
+  room: {
+    load: () => getList("room"),
+    filters: [["all", "すべて"], ["live", "配信中"], ["watch", "視聴中"], ["record", "ギフト記録"], ["has_records", "記録あり"]],
+    match: (r, f) => PICKERS.room.match(r, f),
+    text: (r) => `${r.name} ${r.key}`,
+    order: (a, b) => (b.is_live - a.is_live) || ((b.last_at || 0) - (a.last_at || 0)),
+    row: (r) => PICKERS.room.row(r),
+    key: (r) => r.key, label: (r) => r.name,
+    more: "room",
+  },
+  event: {
+    load: () => getList("event"),
+    filters: [["all", "すべて"], ["ongoing", "開催中"], ["upcoming", "開催前"], ["recording", "ギフト記録中"]],
+    match: (e, f) => PICKERS.event.match(e, f),
+    text: (e) => `${e.title} ${e.key}`,
+    order: (a, b) => (b.recording - a.recording) || ((a.end || 9e12) - (b.end || 9e12)),
+    row: (e) => PICKERS.event.row(e),
+    key: (e) => e.key, label: (e) => e.title,
+    more: "event",
+  },
+  user: {
+    load: userItems,
+    filters: [["all", "すべて"], ["paid", "有料ギフトあり"], ["multi", "複数のルーム"]],
+    match: (u, f) => f === "all" || (f === "paid" ? u.paid_points > 0 : u.room_count > 1),
+    text: (u) => `${u.names.join(" ")} ${u.user_id}`,
+    order: (a, b) => b.points - a.points,
+    row: (u) => `<button type="button" class="pick" data-key="${esc(u.user_id)}"><div class="main"><div class="t">${esc(u.name || "(名前なし)")}</div>
+      <div class="s"><span>ID ${esc(u.user_id)}</span>${u.names.length > 1 ? `<span>旧名 ${esc(u.names.slice(1, 3).join("、"))}</span>` : ""}</div></div>
+      <div class="side">${num(u.points)} pt<br>${num(u.times)} 回</div></button>`,
+    key: (u) => String(u.user_id), label: (u) => u.name || String(u.user_id),
+    more: null,
+  },
+};
+const sg = { input: null, kind: null, items: [], shown: [], filter: "all", hl: -1 };
+async function openSuggest(input) {
+  const kind = input.dataset.suggest, S = SUGGEST[kind];
+  if (sg.input !== input) Object.assign(sg, { filter: "all" });
+  Object.assign(sg, { input, kind, hl: -1 });
+  placeSuggest();
+  $("#sg").hidden = false;
+  if (!sg.items.length || sg.kindLoaded !== kind) $("#sg").innerHTML = `<div class="loading" style="padding:14px"><span class="spinner"></span>読み込み中…</div>`;
+  try {
+    sg.items = await S.load(); sg.kindLoaded = kind;
+    if (sg.input === input) renderSuggest();
+  } catch (e) {
+    $("#sg").innerHTML = `<div class="empty" style="margin:8px">一覧を取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+function placeSuggest() {
+  if (!sg.input) return;
+  const r = sg.input.getBoundingClientRect(), box = $("#sg");
+  const width = Math.min(Math.max(r.width, 420), window.innerWidth - 16);
+  box.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+  box.style.top = `${r.bottom + 4}px`;
+  box.style.width = `${width}px`;
+}
+function renderSuggest() {
+  const S = SUGGEST[sg.kind];
+  const v = sg.input.value.trim().toLowerCase();
+  // 選んだ名前がそのまま入っている時は、絞り込まずに全件を出す (別のものに選び直しやすいように)
+  const q = sg.input.dataset.key && sg.input.value.trim() === sg.input.dataset.label ? "" : v;
+  const base = sg.items.filter((x) => !q || S.text(x).toLowerCase().includes(q));
+  const rows = base.filter((x) => S.match(x, sg.filter)).sort(S.order);
+  sg.shown = rows.slice(0, 50);
+  if (sg.hl >= sg.shown.length) sg.hl = sg.shown.length - 1;
+  $("#sg").innerHTML = `<div class="filters">${S.filters.map(([f, l]) => `<button type="button" class="fchip ${sg.filter === f ? "active" : ""}" data-sf="${f}">${l}<span class="n">${base.filter((x) => S.match(x, f)).length}</span></button>`).join("")}</div>
+    <div class="items">${sg.shown.length ? sg.shown.map((x, i) => S.row(x).replace('class="pick"', `class="pick ${i === sg.hl ? "hl" : ""}" data-i="${i}"`)).join("")
+      : `<div class="listing-note">${sg.items.length ? "当てはまるものがありません" : (sg.kind === "user" ? "まだリスナーの記録がありません" : "まだありません")}。URL や ID をそのまま入力して「表示」も押せます</div>`}</div>
+    <div class="foot"><span>${num(rows.length)} 件${rows.length > 50 ? " (上位 50 件を表示)" : ""} ・ ↑↓ で選んで Enter</span>${S.more ? `<button type="button" class="linkish" data-sg-more>大きな一覧で探す ›</button>` : ""}</div>`;
+  const hl = $("#sg .pick.hl");
+  if (hl) hl.scrollIntoView({ block: "nearest" });
+}
+function closeSuggest() { $("#sg").hidden = true; sg.input = null; }
+function chooseSuggest(i) {
+  const S = SUGGEST[sg.kind], x = sg.shown[i], input = sg.input;
+  if (!x) return;
+  setPicked(input, S.key(x), S.label(x));
+  closeSuggest();
+  if (sg.kind !== "user") loadGifts();
+}
+$$("[data-suggest]").forEach((input) => {
+  input.addEventListener("focus", () => openSuggest(input));
+  input.addEventListener("click", () => { if ($("#sg").hidden) openSuggest(input); });
+  input.addEventListener("input", () => { if (sg.input !== input) openSuggest(input); else { sg.hl = -1; renderSuggest(); } });
+  input.addEventListener("keydown", (ev) => {
+    if ($("#sg").hidden || sg.input !== input) return;
+    if (ev.key === "ArrowDown") { ev.preventDefault(); sg.hl = Math.min(sg.hl + 1, sg.shown.length - 1); renderSuggest(); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); sg.hl = Math.max(sg.hl - 1, -1); renderSuggest(); }
+    else if (ev.key === "Enter" && (sg.hl >= 0 || (sg.shown.length && input.value.trim() && input.value.trim() !== input.dataset.label))) {
+      // 打ち込んだ文字で絞り込んだ時は、↑↓ で選ばなくても先頭の候補を選ぶ
+      ev.preventDefault(); chooseSuggest(Math.max(sg.hl, 0));
+    }
+    else if (ev.key === "Escape") { closeSuggest(); }
+    else if (ev.key === "Enter" || ev.key === "Tab") { closeSuggest(); }
+  });
+});
+$("#sg").addEventListener("mousedown", (ev) => ev.preventDefault());  // 入力欄からフォーカスを外さない
+$("#sg").addEventListener("click", (ev) => {
+  const f = ev.target.closest("[data-sf]");
+  if (f) { sg.filter = f.dataset.sf; sg.hl = -1; return renderSuggest(); }
+  if (ev.target.closest("[data-sg-more]")) { const kind = SUGGEST[sg.kind].more; closeSuggest(); return openPicker(kind); }
+  const row = ev.target.closest(".pick");
+  if (row) chooseSuggest(Number(row.dataset.i));
+});
+document.addEventListener("mousedown", (ev) => {
+  if (!$("#sg").hidden && !ev.target.closest("#sg") && ev.target !== sg.input) closeSuggest();
+});
+window.addEventListener("resize", placeSuggest);
+window.addEventListener("scroll", placeSuggest, true);
+// ルームを選び直したら、リスナーの候補もそのルームのものにする
+$("#g-room").addEventListener("change", () => { userCache.key = null; });
 
 /* ------------------------------------------------------------ リスナー */
 const listeners = { key: null, rows: [], shown: 200, selected: null };
@@ -874,7 +1021,11 @@ $("#l-list").addEventListener("click", (ev) => {
 $("#l-detail").addEventListener("click", (ev) => {
   if (ev.target.id === "l-close") { $("#l-detail").innerHTML = ""; listeners.selected = null; return renderListeners(); }
   const b = ev.target.closest("[data-room-gifts]");
-  if (b) { setGiftMode("room"); $("#g-room").value = b.dataset.roomGifts; $("#g-hours").value = "100000000"; $("#g-user").value = String(listeners.selected || ""); location.hash = "#gifts"; loadGifts(); }
+  if (b) {
+    setGiftMode("room"); setPicked($("#g-room"), b.dataset.roomGifts, roomName(b.dataset.roomGifts)); $("#g-hours").value = "100000000";
+    const u = listeners.rows.find((x) => String(x.user_id) === String(listeners.selected));
+    setPicked($("#g-user"), String(listeners.selected || ""), u ? u.name : ""); location.hash = "#gifts"; loadGifts();
+  }
 });
 $("#l-filters").addEventListener("click", (ev) => {
   const f = ev.target.closest("[data-f]");
