@@ -52,7 +52,7 @@ def enqueue(qdir: Path, text: str, room: str | None = None, now: float | None = 
     return req_id
 
 
-async def wait_result(qdir: Path, req_id: str, timeout: float = 30.0) -> dict[str, Any] | None:
+async def wait_result(qdir: Path, req_id: str, timeout: float = 80.0) -> dict[str, Any] | None:
     path = qdir / f"{req_id}.result.json"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

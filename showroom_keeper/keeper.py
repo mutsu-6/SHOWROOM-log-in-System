@@ -28,8 +28,53 @@ TRACKER_RE = re.compile(
     r"|a-mpd\.com|criteo\.(com|net)|adnxs\.com|amazon-adsystem\.com)(:\d+)?/"
 )
 MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
-# これ以上のルームを常に開いておく時は、メモリ不足の可能性を知らせる
-KEEP_OPEN_WARN_ROOMS = 3
+# ページを開いておくのに必要なメモリの目安 (GB)。計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB
+BROWSER_BASE_GB = 0.5
+ROOM_GB = 0.5
+
+
+def memory_gb() -> float | None:
+    """使えるメモリの総量 (GB)。コンテナの上限があればそちらを使う。分からなければ None。"""
+    total = None
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                total = int(line.split()[1]) / 1024 / 1024
+                break
+    except (OSError, ValueError):
+        pass
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(path).read_text().strip()
+            if raw.isdigit():
+                limit = int(raw) / 1024 ** 3
+                if limit < (total or float("inf")):
+                    total = limit
+        except OSError:
+            continue
+    return total
+
+
+def resolve_keep_open(cfg: Config, mem: float | None = None) -> bool:
+    """配信していないルームのページも開いておくかを決める。
+
+    keep_open_when_offline が未指定なら、全ルームを開いてもメモリが足りる時だけ開いておく。
+    """
+    if cfg.keep_open_when_offline is not None:
+        need = BROWSER_BASE_GB + ROOM_GB * len(cfg.rooms)
+        mem = memory_gb() if mem is None else mem
+        if cfg.keep_open_when_offline and mem is not None and mem < need:
+            log.warning("%d ルームのページを常に開いておくには約 %.1fGB のメモリが必要ですが、このサーバーは %.1fGB です。"
+                        "重くなって視聴やコメントが止まる場合は keep_open_when_offline: false にしてください",
+                        len(cfg.rooms), need, mem)
+        return cfg.keep_open_when_offline
+    need = BROWSER_BASE_GB + ROOM_GB * len(cfg.rooms)
+    mem = memory_gb() if mem is None else mem
+    if mem is None or mem >= need:
+        return True
+    log.info("メモリ (%.1fGB) が %d ルームのページを常に開いておくには足りない (約 %.1fGB 必要) ため、"
+             "配信中のルームだけページを開きます (keep_open_when_offline で変更できます)", mem, len(cfg.rooms), need)
+    return False
 
 
 def running_under_rosetta() -> bool:
@@ -278,17 +323,14 @@ class Keeper:
         api = ShowroomAPI(ctx.request)
         try:
             room_ids = await self._room_ids(api, required=True)
-            if self.cfg.keep_open_when_offline and len(self.cfg.rooms) >= KEEP_OPEN_WARN_ROOMS:
-                log.warning(
-                    "%d ルームのページを常に開いたままにします。1 ルームにつき約 0.5GB のメモリを使うため、"
-                    "メモリが足りない場合は keep_open_when_offline: false (配信中だけ開く) にしてください",
-                    len(self.cfg.rooms),
-                )
+            keep_open = resolve_keep_open(self.cfg)
             await ensure_login(ctx, self.cfg, api, room_ids)
 
             watchers = [
                 RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
             ]
+            for w in watchers:
+                w.keep_open = keep_open
             self.watchers = watchers
             self.browser_state = "動作中"
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]

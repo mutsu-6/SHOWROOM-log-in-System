@@ -13,9 +13,10 @@ if [ "$(uname -m)" != "x86_64" ]; then
   echo "このサーバーは $(uname -m) です。Google Chrome は x86_64 (amd64) のサーバーでのみ動作します"; exit 1
 fi
 
-# メモリが少ないサーバー (例: Google Cloud の無料枠 e2-micro = 1GB) ではスワップを追加して Chrome の強制終了を防ぐ
+# メモリが少ないサーバー (例: Google Cloud の e2-micro = 1GB、e2-small = 2GB) ではスワップを追加して
+# Chrome の強制終了や、メモリ不足で全体が止まるのを防ぐ
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-if [ "$MEM_MB" -lt 1800 ] && [ "$(swapon --show | wc -l)" -eq 0 ]; then
+if [ "$MEM_MB" -lt 3500 ] && [ "$(swapon --show | wc -l)" -eq 0 ]; then
   echo "==> メモリが ${MEM_MB}MB と少ないため、2GB のスワップを追加します"
   fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab

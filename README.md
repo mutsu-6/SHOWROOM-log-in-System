@@ -8,7 +8,7 @@
 | 機能 | 内容 |
 | --- | --- |
 | ログイン維持 | ID/パスワードで自動ログイン、または手動ログインしたセッション (Cookie) を保存して再利用。監視中の全ルームのログイン状態を定期的に確認し、切れていれば再ログインして各ルームのページに反映する |
-| 配信待機 | 指定した全ルームのページを開いたままログイン状態を維持する。配信が始まったらそのページで視聴を始め、終わってもページは閉じない。配信中だけ開きたい場合は `keep_open_when_offline: false` |
+| 配信待機 | メモリに余裕があれば、配信していないルームのページも開いたままにする。配信が始まったらそのページで視聴を始め、終わってもページは閉じない。メモリが足りない時は配信中のルームだけ開く (`keep_open_when_offline` で指定可) |
 | 再生監視 | 動画の再生位置が進んでいるかを定期確認。止まっていれば再生を再開し、一定回数続けばページをリロード |
 | 定期リロード | 長時間視聴でのメモリ増加やセッション劣化を避けるため、一定間隔でリロード |
 | 障害復旧 | ネットワーク断・ページクラッシュ・ブラウザ終了を検知し、指数バックオフで自動再起動 |
@@ -114,7 +114,8 @@ http://localhost:8080/
   `cd SHOWROOM-log-in-System && git pull && sudo bash deploy/setup-server.sh` でも更新できます)。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
 - **メモリの目安**: 既定では指定した全ルームのページを常に開いておくため、ルームの数だけメモリを使います。
   計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB 増えました (3 ルームで約 1.9GB)。
-  ルームが多い場合やメモリ 2GB のサーバーでは `keep_open_when_offline: false` (配信中だけ開く) にしてください。
+  既定では、全ルームを開いてもメモリが足りる時だけ配信していないルームのページも開いておき、足りなければ配信中のルームだけ開きます
+  (例: メモリ 2GB のサーバーで 5 ルームなら配信中だけ)。`SHOWROOM_KEEP_OPEN_WHEN_OFFLINE=true` / `false` で固定できます。
   ログインはルームごとではなくアカウント単位で全ページ共通のため、この設定でもログイン状態の確認・再ログインは同じように行われます。
 - **Docker (手動)**: `.env` を用意し `docker compose up -d`。セッションは `./data/storage_state.json` に保存されます。
 - **systemd**: `deploy/showroom-keeper.service` を参照。
@@ -216,6 +217,7 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 | `SHOWROOM_BROWSER_CHANNEL` | 使用ブラウザ (`chrome` / `msedge` / 空で付属 Chromium) |
 | `SHOWROOM_BROWSER_EXECUTABLE` | 使用するブラウザ実行ファイルのパス |
 | `SHOWROOM_PROXY` (または `HTTPS_PROXY`) | ブラウザが使うプロキシ |
+| `SHOWROOM_KEEP_OPEN_WHEN_OFFLINE` | 配信していないルームのページも開いておくか (`true` / `false` / `auto`。既定は `auto` でメモリを見て決める) |
 | `SHOWROOM_WEB_PORT` / `SHOWROOM_WEB_HOST` | 管理画面のポート (既定 8080、0 で無効) と待ち受けアドレス (既定 127.0.0.1) |
 | `SHOWROOM_WEB_PASSWORD` | 管理画面のパスワード。設定すると localhost 以外からも開ける |
 

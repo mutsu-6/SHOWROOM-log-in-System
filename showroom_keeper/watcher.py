@@ -28,6 +28,8 @@ PROBE_JS = """
 """
 
 
+STATUS_RETRY = 30  # 配信状況の確認に失敗した時、確認し直すまでの秒数
+COMMENT_FILL_TIMEOUT = 30000  # コメント欄への入力を待つ上限 (ミリ秒)。サーバーが重い時は時間がかかる
 COMMENT_INPUT = 'input[placeholder="コメントを投稿"]'
 COMMENT_SUBMIT = "button.st-comment__button"
 
@@ -113,9 +115,12 @@ class RoomWatcher:
         self._viewer_count_at: float | None = None
         self._viewer_count_error: str | None = None
         self._failures = 0
+        self._status_failures = 0
         self._became_live = False
         self._went_offline = False
         self.reload_reason: str | None = None
+        # 配信していない時もページを開いておくか。keeper がメモリを見て決める (None なら設定どおり)
+        self.keep_open: bool | None = None
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ 公開 API
@@ -137,9 +142,24 @@ class RoomWatcher:
         try:
             now = self._clock()
             if self.last_status_at is None or now - self.last_status_at >= self.cfg.status_poll_interval:
-                await self._refresh_status()
+                try:
+                    await self._refresh_status()
+                    self._status_failures = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    if self.status is None:
+                        raise
+                    # 配信状況が分からないだけで、開いているページは正常なので閉じない (重い時に開き直しが重なると悪化する)。
+                    # 前回の状況のまま続け、少し待ってから確認し直す
+                    self._status_failures += 1
+                    retry = min(self.cfg.status_poll_interval, STATUS_RETRY)
+                    self.last_status_at = now - self.cfg.status_poll_interval + retry
+                    self.log.warning("配信状況を確認できません (%d 回目): %s / ページはそのまま続け、%.0f 秒後に確認し直します",
+                                     self._status_failures, str(e).splitlines()[0], retry)
 
-            should_open = bool(self.status and (self.status.is_live or self.cfg.keep_open_when_offline))
+            keep_open = self.keep_open if self.keep_open is not None else self.cfg.keep_open_when_offline is not False
+            should_open = bool(self.status and (self.status.is_live or keep_open))
             if should_open:
                 became_live = self._became_live
                 went_offline = self._went_offline
@@ -189,9 +209,15 @@ class RoomWatcher:
         page = self.page
         assert page is not None
         since = int(time.time()) - 5
-        await page.fill(COMMENT_INPUT, text, timeout=10000)
-        # ボタンのクリックはお知らせ等の重なりで阻まれることがあるため、入力欄で Enter を押して送信する
-        await page.press(COMMENT_INPUT, "Enter", timeout=10000)
+        try:
+            await page.fill(COMMENT_INPUT, text, timeout=COMMENT_FILL_TIMEOUT)
+            # ボタンのクリックはお知らせ等の重なりで阻まれることがあるため、入力欄で Enter を押して送信する
+            await page.press(COMMENT_INPUT, "Enter", timeout=COMMENT_FILL_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            if "Timeout" not in type(e).__name__ + str(e):
+                raise
+            return False, ("配信ページの反応が遅く、コメント欄に入力できませんでした。サーバーのメモリや CPU が足りていない可能性があります "
+                           "(見張るルームを減らすか、keep_open_when_offline: false にしてください)")
         for _ in range(8):
             await self._sleep(1)
             if await page.evaluate(COMMENT_LOG_JS, [self.status.room_id, text, since]):

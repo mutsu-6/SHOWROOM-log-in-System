@@ -335,3 +335,31 @@ async def test_websocket_gifts_are_recorded(tmp_path):
     got = load_recorded(tmp_path, "k")
     assert len(got) == 1 and got[0]["num"] == 3 and got[0]["live_id"] == 99
     assert w.activity.count(10) == 2  # 推定アクティブ人数には両方入る
+
+
+async def test_status_errors_do_not_close_a_working_page(env):
+    w, live, pages, clock = env
+    await w.step()
+    assert len(pages) == 1
+
+    async def down(key):
+        raise TimeoutError("APIRequestContext.get: Timeout 15000ms exceeded.")
+
+    w._fetch_status = down
+    clock.t = 60
+    await w.step()
+    # 配信状況が分からないだけなので、ページは閉じずに前回の状況のまま視聴を続ける
+    assert not pages[0].closed and w.page is pages[0] and w.status.is_live
+    assert w._status_failures == 1
+
+
+async def test_comment_reports_a_slow_page_clearly(env):
+    w, live, pages, clock = env
+    await w.step()
+
+    async def slow_fill(*a, **k):
+        raise TimeoutError("Page.fill: Timeout 30000ms exceeded.")
+
+    pages[0].fill = slow_fill
+    ok, message = await w.post_comment("こんにちは")
+    assert ok is False and "メモリや CPU" in message

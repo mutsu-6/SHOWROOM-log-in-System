@@ -84,4 +84,7 @@ def test_record_targets_have_no_count_limit():
         "SHOWROOM_EVENTS": ",".join(f"e{i}" for i in range(5)),
     })
     assert len(many.record_rooms) == 40 and len(many.events) == 5
-    assert many.keep_open_when_offline is True
+    assert many.keep_open_when_offline is None  # 既定はメモリを見て自動で決める
+    assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "false"}).keep_open_when_offline is False
+    assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "true"}).keep_open_when_offline is True
+    assert Config.load(None, env={"SHOWROOM_KEEP_OPEN_WHEN_OFFLINE": "auto"}).keep_open_when_offline is None

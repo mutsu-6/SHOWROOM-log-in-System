@@ -46,3 +46,14 @@ async def test_launch_browser_leaves_sigint_to_keeper():
     await kp.launch_browser(pw, Config(rooms=["a"]))
     # Ctrl+C でブラウザが先に終了するとセッションを保存できない
     assert calls[0]["handle_sigint"] is False
+
+
+def test_keep_open_is_decided_by_memory():
+    rooms = ["a", "b", "c", "d", "e"]
+    # 既定 (自動): 5 ルームは約 3GB 必要。2GB のサーバーでは配信中だけ開く
+    assert kp.resolve_keep_open(Config(rooms=rooms), mem=1.9) is False
+    assert kp.resolve_keep_open(Config(rooms=rooms), mem=4.0) is True
+    assert kp.resolve_keep_open(Config(rooms=["a", "b"]), mem=1.9) is True
+    # 明示した設定はそのまま使う
+    assert kp.resolve_keep_open(Config(rooms=rooms, keep_open_when_offline=True), mem=1.9) is True
+    assert kp.resolve_keep_open(Config(rooms=rooms, keep_open_when_offline=False), mem=64) is False

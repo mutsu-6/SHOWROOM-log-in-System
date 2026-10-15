@@ -94,8 +94,9 @@ class Config:
     login_check_interval: float = 180.0
     # セッション(Cookie)を保存する間隔 (分)
     save_state_minutes: float = 10.0
-    # 配信していない時も全ルームのページを開いたままにし、ログイン状態を維持する
-    keep_open_when_offline: bool = True
+    # 配信していない時も全ルームのページを開いたままにするか。None (既定) はメモリに余裕がある時だけ開いておく
+    # (1 ルームにつき約 0.5GB 使うため、小さいサーバーで全ルームを開くと重くなり視聴やコメントが止まる)
+    keep_open_when_offline: bool | None = None
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
@@ -153,6 +154,10 @@ class Config:
             cfg.state_file = Path(env["SHOWROOM_STATE_FILE"])
         if env.get("SHOWROOM_BROWSER_EXECUTABLE"):
             cfg.browser_executable = env["SHOWROOM_BROWSER_EXECUTABLE"]
+
+        if env.get("SHOWROOM_KEEP_OPEN_WHEN_OFFLINE"):
+            value = env["SHOWROOM_KEEP_OPEN_WHEN_OFFLINE"].strip().lower()
+            cfg.keep_open_when_offline = None if value == "auto" else value not in ("0", "false", "no")
 
         if "SHOWROOM_BROWSER_CHANNEL" in env:
             cfg.browser_channel = env["SHOWROOM_BROWSER_CHANNEL"]

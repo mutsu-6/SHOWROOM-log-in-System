@@ -33,7 +33,7 @@ log = logging.getLogger("web")
 PAGE = Path(__file__).with_name("admin.html")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 STATUS_TTL = 15  # 配信状況 (SHOWROOM への問い合わせ) を使い回す秒数
-COMMENT_TIMEOUT = 30.0
+COMMENT_TIMEOUT = 80.0  # 投稿処理 (入力・送信・反映の確認) の上限に余裕を持たせる
 CSRF_HEADER = "X-Showroom-Keeper"  # 変更を伴う要求に必須。他のサイトから送らせることはできない
 
 
