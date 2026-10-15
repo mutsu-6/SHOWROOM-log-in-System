@@ -187,11 +187,6 @@ def login_room_ids(watchers: list[RoomWatcher]) -> list[int]:
     return [known[0].room_id] if known else []
 
 
-def login_available(cfg: Config) -> bool:
-    """保つべきログイン (ID/パスワードか保存済みセッション) があるか。"""
-    return cfg.credentials.available or Path(cfg.state_file).exists()
-
-
 async def probe_login(api: ShowroomAPI, room_ids: list[int], tries: int = 3) -> bool | None:
     """ログイン状態を確認する。
 
@@ -229,7 +224,7 @@ async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_
 
 class Keeper:
     def __init__(self, cfg: Config):
-        if not (cfg.rooms or cfg.enter_rooms or cfg.record_rooms or cfg.events or cfg.web_port or login_available(cfg)):
+        if not (cfg.rooms or cfg.enter_rooms or cfg.record_rooms or cfg.events or cfg.web_port):
             raise ValueError("監視するルームが指定されていません (rooms / record_rooms / events)")
         self.cfg = cfg
         # 視聴ルームが無いときにログイン確認に使う配信中のルーム。確認できなくなったら探し直す
@@ -310,14 +305,12 @@ class Keeper:
             self.recorder = GiftRecorder(self.cfg)
             recorder = asyncio.ensure_future(self.recorder.run())
         try:
-            if self.cfg.rooms or self.cfg.enter_rooms or login_available(self.cfg):
-                if not (self.cfg.rooms or self.cfg.enter_rooms):
-                    log.info("視聴するルームはありません。ブラウザはログインの維持だけに使います")
+            if self.cfg.rooms or self.cfg.enter_rooms:
                 await self._run_loop()
             else:
-                # 視聴ルームもログイン情報も無く、ギフト記録だけの場合はブラウザを起動しない
+                # 視聴・入室するルームが無くギフト記録だけの場合は、メモリを使うブラウザを起動しない
                 if self.cfg.record_rooms or self.cfg.events:
-                    log.info("視聴するルームが無いため、ブラウザを開かずギフトの記録だけを行います")
+                    log.info("視聴・入室するルームが無いため、ブラウザを開かずギフトの記録だけを行います")
                 else:
                     log.info("ルームが設定されていません。管理画面から追加してください")
                 self.browser_state = "使用しない"
@@ -371,7 +364,7 @@ class Keeper:
                 w.keep_open = keep_open
             self.watchers = watchers
             enter_rooms = [key for key in self.cfg.enter_rooms if key not in self.cfg.rooms]
-            self.browser_state = "動作中" if watchers or enter_rooms else "動作中 (ログイン維持のみ)"
+            self.browser_state = "動作中"
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
             # 止める指示を待たず動き続けるので、終了時に取り消す
             background = [asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments")]
