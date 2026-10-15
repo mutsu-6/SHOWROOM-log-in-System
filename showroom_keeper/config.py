@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -148,16 +148,9 @@ class Config:
         )
         if env.get("SHOWROOM_ROOMS"):
             rooms = [r for r in env["SHOWROOM_ROOMS"].split(",") if r.strip()]
-        if env.get("SHOWROOM_HEADLESS"):
-            cfg.headless = env["SHOWROOM_HEADLESS"].lower() not in ("0", "false", "no")
-        if env.get("SHOWROOM_STATE_FILE"):
-            cfg.state_file = Path(env["SHOWROOM_STATE_FILE"])
-        if env.get("SHOWROOM_BROWSER_EXECUTABLE"):
-            cfg.browser_executable = env["SHOWROOM_BROWSER_EXECUTABLE"]
-
-        if env.get("SHOWROOM_KEEP_OPEN_WHEN_OFFLINE"):
-            value = env["SHOWROOM_KEEP_OPEN_WHEN_OFFLINE"].strip().lower()
-            cfg.keep_open_when_offline = None if value == "auto" else value not in ("0", "false", "no")
+        # その他の設定項目はすべて SHOWROOM_<項目名を大文字> で指定できる (例: SHOWROOM_LOGIN_CHECK_INTERVAL=7200)。
+        # Docker では config.yaml を読まないため、サーバーではこれで設定を変える
+        apply_env_overrides(cfg, env)
 
         if "SHOWROOM_BROWSER_CHANNEL" in env:
             cfg.browser_channel = env["SHOWROOM_BROWSER_CHANNEL"]
@@ -171,13 +164,6 @@ class Config:
         cfg.record_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.record_rooms or []))
         cfg.events = list(dict.fromkeys(normalize_event_key(str(e)) for e in cfg.events or []))
 
-        if env.get("SHOWROOM_WEB_PORT"):
-            cfg.web_port = int(env["SHOWROOM_WEB_PORT"])
-        if env.get("SHOWROOM_WEB_HOST"):
-            cfg.web_host = env["SHOWROOM_WEB_HOST"]
-        if env.get("SHOWROOM_WEB_PASSWORD"):
-            cfg.web_password = env["SHOWROOM_WEB_PASSWORD"]
-
         cfg.rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in rooms))
         apply_settings(cfg)
         cfg.validate()
@@ -189,6 +175,53 @@ class Config:
                 raise ValueError(f"{name} は正の数である必要があります")
         if self.stall_threshold < 1:
             raise ValueError("stall_threshold は 1 以上である必要があります")
+
+
+ENV_PREFIX = "SHOWROOM_"
+# 環境変数を個別に扱う項目 (カンマ区切りの一覧・ログイン情報・空の値に意味がある・HTTPS_PROXY も見る)
+ENV_SPECIAL = {"rooms", "record_rooms", "events", "credentials", "browser_channel", "proxy"}
+TRUE_WORDS = {"1", "true", "yes", "on"}
+FALSE_WORDS = {"0", "false", "no", "off"}
+
+
+def env_key(name: str) -> str:
+    return ENV_PREFIX + name.upper()
+
+
+def parse_env_value(type_name: str, raw: str) -> Any:
+    """環境変数の文字列を設定項目の型に変換する。"""
+    value = raw.strip()
+    base = type_name.replace("| None", "").replace("None |", "").strip()
+    if base == "bool":
+        word = value.lower()
+        if "None" in type_name and word == "auto":
+            return None
+        if word in TRUE_WORDS:
+            return True
+        if word in FALSE_WORDS:
+            return False
+        raise ValueError("true / false で指定してください" + (" (auto も可)" if "None" in type_name else ""))
+    if base == "int":
+        return int(value)
+    if base == "float":
+        return float(value)
+    if base == "Path":
+        return Path(value)
+    return value
+
+
+def apply_env_overrides(cfg: "Config", env: dict[str, str]) -> None:
+    """SHOWROOM_<項目名を大文字> の環境変数で設定項目を上書きする (空の値は無視)。"""
+    for f in fields(cfg):
+        if f.name in ENV_SPECIAL:
+            continue
+        raw = env.get(env_key(f.name))
+        if raw is None or not raw.strip():
+            continue
+        try:
+            setattr(cfg, f.name, parse_env_value(str(f.type), raw))
+        except ValueError as e:
+            raise ValueError(f"環境変数 {env_key(f.name)} の値が不正です: {raw!r} ({e})") from None
 
 
 SETTINGS_KEYS = ("rooms", "record_rooms", "events")

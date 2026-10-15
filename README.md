@@ -207,6 +207,9 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 
 `config.example.yaml` に全項目と説明があります。カレントディレクトリの `.env` は自動で読み込まれ、環境変数は設定ファイルより優先されます。
 
+**どの項目も `SHOWROOM_<項目名を大文字>` の環境変数 (`.env`) で指定できます** (例: `login_check_interval: 7200` → `SHOWROOM_LOGIN_CHECK_INTERVAL=7200`、
+真偽値は `true` / `false`)。サーバー (Docker) では `config.yaml` を読まないため、設定は `.env` に書いてください。
+
 | 環境変数 | 内容 |
 | --- | --- |
 | `SHOWROOM_ACCOUNT_ID` / `SHOWROOM_PASSWORD` | ログイン情報 |

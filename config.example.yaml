@@ -1,5 +1,7 @@
 # config.example.yaml をコピーして config.yaml を作成してください。
 #   cp config.example.yaml config.yaml
+# ※ サーバー (Docker) では config.yaml は使われません。各項目は .env に SHOWROOM_<項目名を大文字> で書けます
+#   (例: login_check_interval: 7200 → SHOWROOM_LOGIN_CHECK_INTERVAL=7200)。環境変数は config.yaml より優先されます。
 
 # 視聴を維持するルーム (URL または room_url_key)。ギフト記録 (record_rooms / events) だけなら空でもよい
 rooms:
