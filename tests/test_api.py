@@ -1,4 +1,4 @@
-from showroom_keeper.api import ShowroomAPI, parse_login_state, parse_room_status, summarize_login
+from showroom_keeper.api import ShowroomAPI, parse_login_state, parse_room_status
 
 
 def test_parse_room_status_is_live():
@@ -11,15 +11,6 @@ def test_parse_room_status_fallback_fields():
     assert parse_room_status("k", {"live_status": 2}).is_live
     assert not parse_room_status("k", {"live_status": 1}).is_live
     assert parse_room_status("k", {}).room_name == "k"
-
-
-def test_summarize_login_requires_every_room():
-    assert summarize_login([]) is None
-    assert summarize_login([None, None]) is None
-    assert summarize_login([True, None]) is True
-    assert summarize_login([True, True]) is True
-    assert summarize_login([True, False]) is False
-    assert summarize_login([False]) is False
 
 
 def test_parse_login_state():
@@ -69,3 +60,9 @@ async def test_login_captcha_fails():
 async def test_is_logged_in_unknown_on_error():
     req = FakeRequest({f"{B}/api/live/current_user": FakeResp({}, status=500)})
     assert await ShowroomAPI(req).is_logged_in(1) is None
+
+
+async def test_live_room_id_picks_one_live_room():
+    onlives = {"onlives": [{"lives": []}, {"lives": [{"room_id": "7"}, {"room_id": 8}]}]}
+    assert await ShowroomAPI(FakeRequest({f"{B}/api/live/onlives": FakeResp(onlives)})).live_room_id() == 7
+    assert await ShowroomAPI(FakeRequest({f"{B}/api/live/onlives": FakeResp({}, status=503)})).live_room_id() is None
