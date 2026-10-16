@@ -20,6 +20,7 @@ SHOWROOM が混んでいる・止められていそうなときは間隔を自�
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import urllib.error
@@ -301,6 +302,10 @@ class Collector:
                             str(e).splitlines()[0] if str(e) else type(e).__name__)
                 return False
             data = {}
+        ev = (data or {}).get("event")
+        if isinstance(ev, dict) and ev.get("ended_at"):
+            # 番号で読んだ古いイベントは、ここで初めて日付が分かる (「順位を公開しない」はここでは見ない)
+            self.store.upsert_events([{**_event_info({**ev, "event_id": event_id}), "show_ranking": None}])
         self.store.set_contributions(event_id, room_id, _rows(data), self._clock(), final)
         return True
 
@@ -348,6 +353,22 @@ def status(state_dir: Path, keys: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+ANCHOR_STEPS = (3200, 1600, 800, 400, 200, 100, 50)  # 登録時期の目印に読むイベント番号の間隔 (粗い方から)
+ANCHOR_FIRST = 100  # これより小さい番号のイベントは無い
+
+
+def anchor_order(top: int) -> list[int]:
+    """登録時期の目印に読むイベント番号の順番 (粗い間隔で全期間を読んでから、細かくしていく)。"""
+    seen: set[int] = set()
+    out = []
+    for step in ANCHOR_STEPS:
+        for eid in range(ANCHOR_FIRST, top + 1, step):
+            if eid not in seen:
+                seen.add(eid)
+                out.append(eid)
+    return out
+
+
 def store_status(state_dir: Path) -> dict[str, Any]:
     """research.db 全体の件数 (全ルームの収集の進み具合)。"""
     now = time.time()
@@ -366,6 +387,8 @@ def store_status(state_dir: Path) -> dict[str, Any]:
             "gifters": s.scalar("SELECT COUNT(*) FROM users"),
             "scan_next": s.meta("scan_next", 1), "scan_end": s.meta("scan_end"), "scan_done_at": s.meta("scan_done_at"),
             "history_next": s.meta("history_next"), "history_done_at": s.meta("history_done_at"),
+            "anchor_pos": s.meta("anchor_pos", 0), "anchor_done_at": s.meta("anchor_done_at"),
+            "anchor_total": len(anchor_order(int(s.meta("anchor_max")))) if s.meta("anchor_max") else None,
             "event_max": s.scalar("SELECT MAX(event_id) FROM events"),
             "oldest_ranking": s.scalar("""SELECT MIN(e.end) FROM room_events re JOIN events e USING(event_id)
                                          WHERE re.ranking_at IS NOT NULL AND e.end IS NOT NULL""", default=None),
@@ -473,18 +496,24 @@ class _Rooms:
         return self.labels[rid]
 
 
-class _Signup:
-    """ユーザー ID から登録時期を推測する (遅くともこの時までに登録している)。
+SHOWROOM_START = datetime(2013, 11, 1, tzinfo=JST).timestamp()  # SHOWROOM が始まったころ (ID 0 の目印)
+SIGNUP_CLOSE = 92 * 86400  # 目印の間がこれより狭ければ「〜月ごろ」、広ければ「〜年〜年ごろ」と出す
+SIGNUP_ROUGH = 400 * 86400  # 目印の間がこれより広い年は、年ごとの絞り込みで「大まか」と出す
 
-    SHOWROOM のユーザー ID は登録順に増えるので、ID k の人は、k 以上の ID の人が初めて分かった時
-    (イベントの貢献ランキング・記録したギフト) までには登録している。集めた情報が多いほど実際に近づく。
+
+class _Signup:
+    """ユーザー ID から登録時期を推測する。
+
+    SHOWROOM のユーザー ID は登録順に増える。ある時までに分かった最大の ID (イベントの貢献ランキング・記録したギフト)
+    を目印にすると、ID k の人は k 以上の ID が初めて分かった時までには登録している。目印の間は ID と時期を
+    直線でつないで推測する (古いイベントを飛び飛びに読んで、目印を先にそろえる: sweep の _next_signup_anchor)。
     """
 
     def __init__(self, steps: list[list[float]]):
         # ID の小さい順に (それまでに分かった最大の ID, その時)。どちらも増える一方
         self.steps = steps
-        self.ids = [int(i) for i, _ in steps]
-        self.ats = [a for _, a in steps]
+        self.ids = [0] + [int(i) for i, _ in steps]
+        self.ats = [SHOWROOM_START] + [max(float(a), SHOWROOM_START) for _, a in steps]
 
     @classmethod
     def build(cls, s: Store, rec: _Recorded) -> _Signup:
@@ -499,25 +528,40 @@ class _Signup:
         return cls(steps)
 
     def at(self, uid: int) -> float | None:
-        i = bisect_left(self.ids, uid)
+        """遅くともこの時までに登録している。"""
+        i = bisect_left(self.ids, uid, 1)
         return self.ats[i] if i < len(self.ids) else None
 
-    def id_range(self, start: float, end: float) -> tuple[int, int] | None:
-        """登録時期の推測が start 以上 end 未満になる ID の範囲。"""
-        lo, hi = bisect_left(self.ats, start), bisect_left(self.ats, end)
-        if lo >= hi:
+    def guess(self, uid: int) -> tuple[float, float, float] | None:
+        """(推測した登録時期, 前の目印, 次の目印)。分かっている最大の ID より大きければ None。"""
+        i = bisect_left(self.ids, uid, 1)
+        if i >= len(self.ids):
             return None
-        return (self.ids[lo - 1] + 1 if lo else 1), self.ids[hi - 1]
+        m0, m1, t0, t1 = self.ids[i - 1], self.ids[i], self.ats[i - 1], self.ats[i]
+        return t0 + (uid - m0) / (m1 - m0) * (t1 - t0), t0, t1
 
-    def years(self) -> list[tuple[int, int, int]]:
-        """推測した登録年ごとの ID の範囲 (新しい年から)。"""
-        if not self.ats:
+    def id_at(self, t: float) -> float:
+        """推測した登録時期が t になる ID (guess の逆)。"""
+        j = bisect_left(self.ats, t)
+        if j <= 0:
+            return 0
+        if j >= len(self.ats):
+            return self.ids[-1]
+        m0, m1, t0, t1 = self.ids[j - 1], self.ids[j], self.ats[j - 1], self.ats[j]
+        return m0 + (t - t0) / (t1 - t0) * (m1 - m0)
+
+    def years(self) -> list[tuple[int, int, int, bool]]:
+        """推測した登録年ごとの (年, 最初の ID, 最後の ID, 大まかか) (新しい年から)。"""
+        if len(self.ids) < 2:
             return []
         out = []
-        for year in range(datetime.fromtimestamp(self.ats[-1], JST).year, datetime.fromtimestamp(self.ats[0], JST).year - 1, -1):
-            r = self.id_range(datetime(year, 1, 1, tzinfo=JST).timestamp(), datetime(year + 1, 1, 1, tzinfo=JST).timestamp())
-            if r:
-                out.append((year, *r))
+        for year in range(datetime.fromtimestamp(self.ats[-1], JST).year, 2012, -1):
+            start, end = datetime(year, 1, 1, tzinfo=JST).timestamp(), datetime(year + 1, 1, 1, tzinfo=JST).timestamp()
+            lo = max(math.ceil(self.id_at(start)), 1)
+            hi = self.ids[-1] if end > self.ats[-1] else math.ceil(self.id_at(end)) - 1
+            if hi >= lo:
+                rough = any(g[2] - g[1] > SIGNUP_ROUGH for g in (self.guess(lo), self.guess(hi)) if g)
+                out.append((year, lo, hi, rough))
         return out
 
 
@@ -571,14 +615,16 @@ def _user_names(store: Store, rec: _Recorded, uids: list[int]) -> dict[int, str]
 
 
 def _summary(uid: int, name: str | None, slots: dict[int, dict[str, Any]], ev: Any, gifts: list[Any],
-             rooms: _Rooms, support: set[int], signup: float | None = None) -> dict[str, Any]:
+             rooms: _Rooms, support: set[int], signup: tuple[float, float, float] | None = None) -> dict[str, Any]:
     scores = {rid: room_score(v) for rid, v in slots.items()}
     total = sum(scores.values())
     other = {rid: s for rid, s in scores.items() if rid not in support and s > 0}
     top = sorted(other.items(), key=lambda kv: -kv[1])
     h = habits(gifts)
     return {
-        "user_id": uid, "name": name or "(名前なし)", "signup_at": signup,
+        "user_id": uid, "name": name or "(名前なし)",
+        # 推測した登録時期と、その前後の目印 (この間に登録したと考えられる)
+        "signup_at": signup and signup[0], "signup_from": signup and signup[1], "signup_to": signup and signup[2],
         "support_points": sum(s for rid, s in scores.items() if rid in support),
         "other_points": sum(other.values()), "total_points": total,
         "room_count": sum(1 for s in scores.values() if s > 0),
@@ -663,12 +709,11 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
             s.set_meta(SIGNUP_META, signup.steps)
         signup_years, extra_ids = [], []
         overall = set(cand_ids)
-        for year, lo, hi in signup.years():
+        for year, lo, hi, rough in signup.years():
             band = (*left, lo, hi)
             n = s.scalar(f"SELECT COUNT(*) FROM u WHERE {where} AND user_id BETWEEN ? AND ?", band)
             if n:
-                # いちばん古い年は、集めた情報より前に登録した人もまとめて入る
-                signup_years.append({"year": year, "count": n, "earliest": lo == 1})
+                signup_years.append({"year": year, "count": n, "rough": rough})
                 extra_ids += [r[0] for r in s.all(f"""SELECT user_id FROM u WHERE {where} AND user_id BETWEEN ? AND ?
                                                      ORDER BY total DESC, user_id LIMIT ?""", (*band, SIGNUP_YEAR_LIMIT))
                               if r[0] not in overall]
@@ -702,7 +747,7 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         sup = set(sup_ids)
         # ルームごとの内訳は 1 人ずつ読む (数万ルームに出てくる人もいて、まとめて読むとメモリが足りなくなる)
         summary = {u: _summary(u, names.get(u), _slots(s, rooms, rec, [u]).get(u, {}), evs.get(u), rec.gifts.get(u, []),
-                               rooms, sup, signup.at(u)) for u in uids}
+                               rooms, sup, signup.guess(u)) for u in uids}
         top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
         room_list = []
         for r in room_rows:
@@ -892,7 +937,7 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                 "coverage": {k: cov[k] for k in ("complete_from", "last_full", "cumulative_from")}, "room_total": len(room_list), "event_total": event_total,
                 "watch": {"memo": w["memo"] or "", "added_at": w["added_at"]} if w else None,
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
-                                    _signup(s, rec).at(uid)),
+                                    _signup(s, rec).guess(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid)}
 
 
@@ -931,7 +976,7 @@ def watch_list(state_dir: Path, support: list[str]) -> list[dict[str, Any]]:
         for r in rows:
             uid = r["user_id"]
             summary = _summary(uid, names.get(uid), slots.get(uid, {}), stats.get(uid), rec.gifts.get(uid, []), rooms, sup,
-                               signup.at(uid))
+                               signup.guess(uid))
             out.append({**summary, "memo": r["memo"] or "", "added_at": r["added_at"], "updated_at": r["updated_at"]})
         return out
 

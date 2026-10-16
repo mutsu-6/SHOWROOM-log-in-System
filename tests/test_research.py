@@ -262,23 +262,80 @@ def test_cumulative_history_and_monthly_timeline(collected):
 
 
 def test_signup_is_estimated_from_user_id_order():
-    jan = lambda y: datetime(y, 1, 15, tzinfo=JST).timestamp()  # noqa: E731
-    # ID 500 が 2020 年、ID 900 が 2022 年に分かった。ID 700 が 2023 年に分かっても、900 より前に登録している
+    jan = lambda y: datetime(y, 1, 1, tzinfo=JST).timestamp()  # noqa: E731
+    # ID 500 が 2020 年、ID 900 が 2022 年に初めて分かった (間の ID はその間に登録した)
     sg = research._Signup([[500, jan(2020)], [900, jan(2022)]])
-    assert sg.at(1) == sg.at(500) == jan(2020) and sg.at(501) == sg.at(700) == jan(2022) and sg.at(901) is None
-    assert sg.years() == [(2022, 501, 900), (2020, 1, 500)]
+    assert sg.at(700) == jan(2022) and sg.at(901) is None  # 遅くとも
+    est, before, after = sg.guess(700)
+    assert (before, after) == (jan(2020), jan(2022)) and est == jan(2020) + (jan(2022) - jan(2020)) / 2
+    assert sg.guess(500)[0] == jan(2020) and sg.guess(901) is None
+    assert sg.guess(1)[1] == research.SHOWROOM_START
+    years = sg.years()
+    assert years[0][0] == 2022 and years[-1][0] == 2013
+    # 年ごとの ID の範囲はすき間なく続き、どの ID の推測もその年に入る
+    assert years[-1][1] == 1 and years[0][2] == 900
+    assert all(a[1] == b[2] + 1 for a, b in zip(years, years[1:]))
+    for year, lo, hi, rough in years:
+        assert rough  # 目印が 2 年おきなので大まか
+        for uid in (lo, hi):
+            assert datetime.fromtimestamp(sg.guess(uid)[0], JST).year == year
 
 
 def test_analysis_lists_gifters_by_signup_year(collected):
     tmp_path, _, _, _ = collected
     d = research.analyze(tmp_path, [], max_age=0)
     every = {u["user_id"]: u for u in d["candidates"] + d["signup_candidates"]}
-    assert all(u["signup_at"] for u in every.values())
-    years = {y["year"]: y for y in d["signup_years"]}
-    assert sum(y["count"] for y in years.values()) == d["candidate_count"]
-    assert [y["earliest"] for y in d["signup_years"]][-1] is True
+    assert all(u["signup_from"] <= u["signup_at"] <= u["signup_to"] for u in every.values())
+    assert sum(y["count"] for y in d["signup_years"]) == d["candidate_count"]
     detail = research.gifter_detail(tmp_path, 20, [])
     assert detail["summary"]["signup_at"] == every[20]["signup_at"]
+
+
+class FakeOldEvents:
+    """登録時期の目印を集める時の SHOWROOM の代わり (番号 100〜250 の古いイベント)。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, path):
+        self.calls.append(path)
+        if path.startswith("/api/event/search?status=4&page=1"):
+            return {"event_list": [{"event_id": 250, "event_name": "最近", "started_at": NOW - 86400 * 9, "ended_at": NOW - 86400 * 8}],
+                    "next_page": None}
+        if path.startswith("/api/event/search"):
+            return {"event_list": [], "next_page": None}
+        if path.startswith("/api/event/room_list?event_id=100&"):
+            return {"list": [{"room_id": r, "room_url_key": f"r{r}", "point": 1000 - r, "rank": r} for r in (1, 2, 3, 4)] +
+                            [{"room_id": 9, "room_url_key": "r9", "point": 0, "rank": 9}], "next_page": None}
+        if path.startswith("/api/event/room_list"):
+            return {"list": [], "next_page": None}
+        if path.startswith("/api/event/contribution_ranking?event_id=100&"):
+            rid = int(path.rsplit("=", 1)[1])
+            return {"event": {"event_name": "昔のイベント", "started_at": 1_440_000_000, "ended_at": 1_450_000_000, "show_ranking": 0},
+                    "ranking": [{"user_id": 1000 + rid, "name": f"u{rid}", "point": 10, "rank": 1}]}
+        raise AssertionError(f"想定していない問い合わせ: {path}")
+
+
+def test_sweep_reads_old_events_first_as_signup_anchors(tmp_path, monkeypatch):
+    get = FakeOldEvents()
+    monkeypatch.setattr(sweep.Sweeper, "_onlives", lambda self, now: self.store.set_meta("live_at", now) or True)
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    for _ in range(6):  # 配信中のルーム・イベントの一覧のあと、目印を 4 つ
+        sw.step()
+    assert research.anchor_order(250) == [100, 200, 150, 250]
+    assert [c.split("&")[0].rsplit("=", 1)[1] for c in get.calls if "room_list" in c] == ["100", "200", "150", "250"]
+    # 上位・中ほど・下位の 3 ルームだけ取る (ポイントが 0 のルームは取らない)
+    assert sorted(int(c.rsplit("=", 1)[1]) for c in get.calls if "contribution_ranking" in c) == [1, 3, 4]
+    with Store(tmp_path) as s:
+        e = s.one("SELECT name, end, show_ranking FROM events WHERE event_id=100")
+        assert tuple(e) == ("昔のイベント", 1_450_000_000, 1)  # 番号で読んだ古いイベントの日付が分かる
+        assert s.meta("anchor_done_at") is None
+    sw.step()
+    with Store(tmp_path) as s:
+        assert s.meta("anchor_done_at")
+    assert research.store_status(tmp_path)["anchor_total"] == 4
+    with Store(tmp_path) as s:
+        assert research._Signup.build(s, research._Recorded(tmp_path)).at(1004) == 1_450_000_000
 
 
 def test_older_research_db_gets_new_columns(tmp_path):
