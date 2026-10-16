@@ -194,6 +194,29 @@ async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
     return ctx
 
 
+def page_factory(ctx: BrowserContext, cfg: Config) -> Any:
+    """配信ページを開く関数。background_tabs なら、開いたページを空白のページの裏に回す。
+
+    ヘッドレスのブラウザでも、前面に無いタブは画面の描き直しが減り CPU が下がる
+    (映像の再生・ページのスクリプト・コメントの受信と投稿はそのまま動く)。
+    """
+    cover: Any = None
+
+    async def new_page() -> Any:
+        nonlocal cover
+        page = await ctx.new_page()
+        if cfg.background_tabs:
+            try:
+                if cover is None or cover.is_closed():
+                    cover = await ctx.new_page()
+                await cover.bring_to_front()
+            except Exception as e:  # noqa: BLE001 - 裏に回せなくても視聴はできる
+                log.debug("空白のページを前面にできませんでした: %s", e)
+        return page
+
+    return new_page
+
+
 async def save_state(ctx: BrowserContext, cfg: Config) -> None:
     path = Path(cfg.state_file)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -380,9 +403,8 @@ class Keeper:
             # ログインはアカウント単位なので、確認は 1 ルームで足りる
             await ensure_login(ctx, self.cfg, api, room_ids[:1])
 
-            watchers = [
-                RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
-            ]
+            new_page = page_factory(ctx, self.cfg)  # 空白のページはルーム全体で 1 つ
+            watchers = [RoomWatcher(key, self.cfg, api.room_status, new_page) for key in self.cfg.rooms]
             for w in watchers:
                 w.keep_open = keep_open
             self.watchers = watchers

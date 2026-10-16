@@ -128,3 +128,37 @@ def test_narrow_streaming_urls_keeps_only_requested_quality():
     assert len(data["streaming_url_list"]) == 4  # 元の応答は書き換えない
     assert narrow_streaming_urls(data, VIDEO_QUALITY["medium"]) is data  # その画質が無ければそのまま
     assert narrow_streaming_urls({"errors": []}, 100) == {"errors": []}
+
+
+async def test_page_factory_keeps_one_blank_page_in_front():
+    from showroom_keeper.config import Config
+    from showroom_keeper.keeper import page_factory
+
+    class FakePage:
+        def __init__(self, ctx):
+            self.ctx, self.closed = ctx, False
+
+        def is_closed(self):
+            return self.closed
+
+        async def bring_to_front(self):
+            self.ctx.front = self
+
+    class FakeContext:
+        def __init__(self):
+            self.pages, self.front = [], None
+
+        async def new_page(self):
+            page = FakePage(self)
+            self.pages.append(page)
+            self.front = page  # 新しいページは前面に出る
+            return page
+
+    ctx = FakeContext()
+    new_page = page_factory(ctx, Config())
+    a = await new_page()
+    b = await new_page()
+    assert len(ctx.pages) == 3 and ctx.front not in (a, b)  # 空白のページ 1 つが前面
+    off = FakeContext()
+    page = await page_factory(off, Config(background_tabs=False))()
+    assert off.pages == [page] and off.front is page
