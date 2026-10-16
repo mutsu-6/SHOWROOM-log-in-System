@@ -1496,6 +1496,7 @@ function sweepStatus(d) {
     : t.gap > t.base ? `<b style="color:var(--warn)">混んでいるため間隔を ${num(t.gap)} 秒に広げています</b>` : `${num(t.gap)} 秒に 1 回`;
   const scan = !w.scan ? "しない" : s.scan_done_at ? `済み (${tm(s.scan_done_at, true).slice(0, 11)})`
     : `${num(s.scan_next - 1)} / ${num(s.scan_end || 0)} 番 (${s.scan_end ? Math.floor((s.scan_next - 1) / s.scan_end * 100) : 0}%)`;
+  const anchor = s.anchor_done_at ? "" : s.anchor_total ? ` ・ 登録時期の目印 ${Math.floor(Math.min(s.anchor_pos, s.anchor_total) / s.anchor_total * 100)}%` : "";
   const hist = s.history_done_at ? `済み (${tm(s.history_done_at, true).slice(0, 11)})`
     : s.history_next != null && s.event_max ? `番号 ${num(s.history_next)} まで (${Math.floor((1 - s.history_next / s.event_max) * 100)}%)` : "これから";
   const oldestAt = s.oldest_ranking ? new Date(s.oldest_ranking * 1000) : null;
@@ -1504,7 +1505,7 @@ function sweepStatus(d) {
   return `<h3 style="margin-top:14px">SHOWROOM の全ルーム</h3>
     <div class="summary">${stat(num(s.rooms), "見つけたルーム")}${stat(num(s.collected), "集めたルーム")}${stat(num(s.rankings), "貢献ランキング (件)")}
       ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
-    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest} ・ ルーム番号の調べ ${scan}
+    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest}${anchor} ・ ルーム番号の調べ ${scan}
       ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}</div>`;
 }
 function researchStatus(d) {
@@ -1524,14 +1525,21 @@ function researchStatus(d) {
 const R_FILTERS = [["all", "すべて"], ["recorded", "行動がわかる (ギフトの記録あり)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
 const R_SORTS = [["other", "ほかのルームへのポイント順"], ["event", "イベントでのポイント順"], ["events", "参加イベントの多い順"], ["visits", "来場回数の多い順"], ["rooms", "送るルームの多い順"], ["last", "最近ギフトを送った順"]];
 const jstParts = (t) => { const d = new Date((t + 9 * 3600) * 1000); return [d.getUTCFullYear(), d.getUTCMonth() + 1]; };
-const signupText = (t) => { if (!t) return ""; const [y, m] = jstParts(t); return `${y}年${m}月`; };
-const signupCell = (u) => u.signup_at ? ` <span class="uid" title="ユーザー ID から推測した登録時期 (遅くともこの月までに登録)">登録 〜${signupText(u.signup_at)}</span>` : "";
+const SIGNUP_CLOSE = 92 * 86400;  // 前後の目印の間がこれより狭ければ月まで出す
+function signupText(u) {
+  if (!u.signup_at) return "";
+  const [y, m] = jstParts(u.signup_at);
+  if (u.signup_to - u.signup_from <= SIGNUP_CLOSE) return `${y}年${m}月ごろ`;
+  const [y0] = jstParts(u.signup_from), [y1] = jstParts(u.signup_to);
+  return y0 === y1 ? `${y0}年ごろ` : `${y0}〜${y1}年ごろ`;
+}
+const signupRange = (u) => `ユーザー ID から推測した登録時期。前後の目印 (その時までに分かった最大の ID) から、${jstParts(u.signup_from).join("年")}月〜${jstParts(u.signup_to).join("年")}月の間と考えられます`;
+const signupCell = (u) => u.signup_at ? ` <span class="uid" title="${esc(signupRange(u))}">登録 ${signupText(u)}</span>` : "";
 function signupMatch(u, f = research.signup) {
   if (f === "all") return true;
   if (!u.signup_at) return false;
   if (f.startsWith("within")) return u.signup_at >= Date.now() / 1000 - Number(f.slice(6)) * 365 * 86400;
-  const year = jstParts(u.signup_at)[0], band = ((research.data && research.data.signup_years) || []).find((y) => String(y.year) === f);
-  return band && band.earliest ? year <= band.year : year === Number(f);
+  return jstParts(u.signup_at)[0] === Number(f);
 }
 function researchRows(rows) {
   const f = research.filter;
@@ -1555,7 +1563,7 @@ function renderResearch() {
   const years = d.signup_years || [];
   if (research.signup !== "all" && !research.signup.startsWith("within") && !years.some((y) => String(y.year) === research.signup)) research.signup = "all";
   const signupSelect = years.length ? `<select id="r-signup" title="ユーザー ID から推測した登録時期で絞り込む">${[["all", "すべての登録時期"], ["within1", "ここ 1 年以内に登録"], ["within3", "ここ 3 年以内に登録"],
-    ...years.map((y) => [String(y.year), `${y.year} 年${y.earliest ? "以前" : "ごろ"}に登録 (${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
+    ...years.map((y) => [String(y.year), `${y.year} 年ごろに登録 (${y.rough ? "大まか・" : ""}${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
   const stat = (v, l) => `<div class="stat"><div class="v">${num(v)}</div><div class="l">${l}</div></div>`;
   let html = watchSection() + trendSection(d);
   html += `<div class="summary">${all
@@ -1563,7 +1571,7 @@ function renderResearch() {
     : stat(d.candidate_count, "誘導の候補 (人)") + stat(d.fan_count, "応援ルームのギフター (人)") + stat(d.gifter_count, "分かったギフター (人)")}</div>`;
   const sorts = R_SORTS.map(([v, l]) => [v, v === "other" && all ? "分かったポイント順" : l]);
   html += `<div class="row"><h3 style="flex:1">${all ? "ギフター一覧" : "誘導の候補"}</h3>${signupSelect}<select id="r-sort" title="並び順">${sorts.map(([v, l]) => `<option value="${v}" ${v === research.sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-    <div class="hint" style="margin-top:0">${all ? "調べるルームなどで分かったギフターです。" : "応援ルームにはまだ送っていないが、ほかのルームに送っているギフターです。"}ポイントは集めた情報で分かった分 (少なくともこれだけ送っている) です。登録時期はユーザー ID から推測した「遅くともこの月まで」です。行をクリックすると詳しく表示します。</div>
+    <div class="hint" style="margin-top:0">${all ? "調べるルームなどで分かったギフターです。" : "応援ルームにはまだ送っていないが、ほかのルームに送っているギフターです。"}ポイントは集めた情報で分かった分 (少なくともこれだけ送っている) です。登録時期はユーザー ID から推測したものです (カーソルを合わせると幅が出ます)。行をクリックすると詳しく表示します。</div>
     <div class="filters" id="r-filters" style="margin:8px 0">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div>`;
   html += rows.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">${all ? "分かった pt" : "ほかのルームへ"}</th><th>主なルーム</th><th class="num">イベント</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
     <tbody>${rows.slice(0, research.shown).map((u, i) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
@@ -1732,7 +1740,7 @@ async function openGifter(uid) {
     if (!d.found) { box.innerHTML = `<div class="empty">情報がありません (ID ${esc(uid)})</div>`; return; }
     const s = d.summary, h = d.habits;
     box.innerHTML = `<div class="card" style="margin:14px 0">
-      <div class="card-head"><div><div class="card-title">${esc(s.name)}</div><div class="card-key">ユーザー ID ${esc(d.user_id)}${s.signup_at ? ` ・ 登録は遅くとも ${signupText(s.signup_at)} (ID から推測)` : ""}</div></div>
+      <div class="card-head"><div><div class="card-title">${esc(s.name)}</div><div class="card-key">ユーザー ID ${esc(d.user_id)}${s.signup_at ? ` ・ <span title="${esc(signupRange(s))}">登録 ${signupText(s)} (ID から推測)</span>` : ""}</div></div>
         <div class="row" style="gap:6px"><button class="btn small ${d.watch ? "primary" : ""}" id="r-watch" data-uid="${esc(d.user_id)}" data-on="${d.watch ? 1 : 0}">${d.watch ? "★ 気になる (外す)" : "☆ 気になる"}</button><button class="btn small" id="r-close">閉じる</button></div></div>
       ${d.watch ? `<div class="row" style="margin:-4px 0 12px"><textarea id="r-memo" class="grow" rows="2" maxlength="500" placeholder="メモ (例: 月末に大きく送る、歌の配信が好き)">${esc(d.watch.memo)}</textarea>
         <button class="btn small" id="r-memo-save" data-uid="${esc(d.user_id)}">メモを保存</button></div>` : ""}

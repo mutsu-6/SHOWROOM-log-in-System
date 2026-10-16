@@ -5,6 +5,8 @@
 - イベントの一覧 /api/event/search (開催中・開催予定・終了) と、その参加ルーム /api/event/room_list
 - 過去のイベント: イベント番号を新しい順に 1 までさかのぼり、参加ルームと各ルームのポイント・順位を読む
   (2014 年からのギフトの量の移り変わりを見るため)
+- 登録時期の目印: 古いイベントを番号で飛び飛びに (粗い間隔から細かく) 読み、数ルームの貢献ランキングを取る
+  (ユーザー ID から登録時期を推測するため。最初に 1 時間ほどでそろえる)
 - ルーム番号を 1 から順に調べる /api/room/profile?room_id= (最初の 1 回だけ。見つかっている最大の番号を
   SCAN_MARGIN 過ぎたら終わる)
 
@@ -24,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import research
-from .research import PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, is_missing
+from .research import PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
 
 log = logging.getLogger("research")
 
@@ -40,6 +42,7 @@ SCAN_MARGIN = 20000  # ルーム番号の順番の調べを、見つかってい
 IDLE = 60  # することが無いときに待つ時間 (秒)
 RETRY_AFTER = 86400  # 失敗したルーム・イベントを後回しにする時間 (秒)
 BATCH = 100  # 次の仕事の候補をまとめて調べる件数
+ANCHOR_ROOMS = 3  # 1 つのイベントで貢献ランキングを取るルームの数 (上位・中ほど・下位)
 
 
 class Sweeper:
@@ -101,6 +104,9 @@ class Sweeper:
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
             return self._event_list(now)
         self._aggregate()
+        # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
+        if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
+            return True
         jobs = [self._next_progress, self._next_ranking, self._next_room, self._next_event_rooms, self._next_event_history]
         if self.scan:
             jobs.append(self._next_scan)
@@ -243,6 +249,40 @@ class Sweeper:
             log.warning("過去のイベントを読めなかったので飛ばします (%s)", self.last_error)
         self._history_failures = 0
         st.set_meta("history_next", eid - 1)
+        return True
+
+    def _next_signup_anchor(self, now: float) -> bool:
+        """登録時期の目印を 1 つ読む: 古いイベントの参加ルームと、数ルームの貢献ランキング (イベントの日付も分かる)。"""
+        st = self.store
+        top = st.meta("anchor_max")
+        if top is None:
+            top = int(st.scalar("SELECT MAX(event_id) FROM events", default=0))
+            if not top:
+                return False  # イベントの一覧を読んでから始める
+            st.set_meta("anchor_max", top)
+        order = anchor_order(int(top))
+        pos = int(st.meta("anchor_pos", 0))
+        while pos < len(order) and st.one("""SELECT 1 FROM room_events re JOIN events e USING(event_id)
+                                            WHERE re.event_id=? AND re.ranking_at IS NOT NULL AND e.end IS NOT NULL""", (order[pos],)):
+            pos += 1  # 日付と貢献ランキングが分かっているイベント
+        if pos >= len(order):
+            st.set_meta("anchor_pos", pos)
+            st.set_meta("anchor_done_at", now)
+            log.info("登録時期の目印をそろえました (%d イベント)", len(order))
+            return False
+        eid = order[pos]
+        self.doing = f"登録時期の目印 (イベント番号 {eid})"
+        try:
+            self._read_event_rooms(eid, now)
+            rooms = [r[0] for r in st.all("SELECT room_id FROM room_events WHERE event_id=? AND point > 0 ORDER BY rank, room_id",
+                                          (eid,))]
+            for rid in dict.fromkeys(rooms[i] for i in (0, len(rooms) // 2, -1)[:ANCHOR_ROOMS] if rooms):
+                self.c.fetch_ranking(eid, rid, final=True)
+        except Exception as err:  # noqa: BLE001 - 目印は飛び飛びなので、読めないものは飛ばす
+            if not is_missing(err):
+                self.last_error = f"{self.doing}: {str(err).splitlines()[0] if str(err) else type(err).__name__}"
+                log.warning("登録時期の目印を読めなかったので飛ばします (%s)", self.last_error)
+        st.set_meta("anchor_pos", pos + 1)
         return True
 
     def _next_scan(self, now: float) -> bool:
