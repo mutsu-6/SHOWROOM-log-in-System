@@ -187,3 +187,26 @@ async def test_keeper_applies_saved_settings_without_restart(monkeypatch, tmp_pa
     await asyncio.wait_for(task, timeout=2)
     assert seen == [["a"], ["b", "c"]]
     assert settings_path(cfg).exists()
+
+
+def test_list_endpoints(admin, tmp_path, monkeypatch):
+    from showroom_keeper import listing
+    from showroom_keeper.gifts import record_gift
+
+    keeper, base = admin
+    monkeypatch.setattr(listing, "_names_cache", None)
+    monkeypatch.setattr(listing, "_file_cache", {})
+    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir: {1: {"gift_name": "星", "point": 1, "free": True}})
+    record_gift(tmp_path, "a", 1, {"t": 2, "u": 7, "ac": "たろう", "g": 1, "n": 3, "created_at": time.time()})
+    code, body = call(base + "/api/lists/rooms")
+    rooms = {r["key"]: r for r in json.loads(body)["rooms"]}
+    assert code == 200 and rooms["a"]["records"] == 1 and rooms["a"]["is_live"] and "watch" in rooms["a"]["tags"]
+    code, body = call(base + "/api/listeners?days=7")
+    assert code == 200 and json.loads(body)["listeners"][0]["points"] == 3
+    code, body = call(base + "/api/listener?user=7")
+    assert code == 200 and json.loads(body)["total"]["times"] == 1
+    assert call(base + "/api/listener?user=abc")[0] == 400
+    monkeypatch.setattr(listing, "lookup_user", lambda uid: {"user_id": int(uid), "name": "だれか"})
+    code, body = call(base + "/api/lookup/user?id=12")
+    assert code == 200 and json.loads(body)["user"]["name"] == "だれか"
+    assert call(base + "/api/lookup/user?id=x1")[0] == 400

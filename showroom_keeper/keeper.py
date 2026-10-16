@@ -10,6 +10,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
@@ -29,6 +30,38 @@ TRACKER_RE = re.compile(
     r"|a-mpd\.com|criteo\.(com|net)|adnxs\.com|amazon-adsystem\.com)(:\d+)?/"
 )
 MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
+# 画質の名前と、SHOWROOM の配信 URL 一覧 (/api/live/streaming_url) の quality の値
+VIDEO_QUALITY = {"low": 100, "medium": 200, "original": 1000}
+STREAMING_URL_PATTERN = "**/api/live/streaming_url*"
+
+
+def narrow_streaming_urls(data: Any, quality: int) -> Any:
+    """配信ページが受け取る画質の一覧を、指定の画質のものだけにする (その画質が無ければそのまま)。
+
+    再生プレーヤーは一覧から再生する URL を選ぶため、一覧を絞ると指定の画質で再生される
+    (再生プレーヤーの画質の切り替えで選ぶのと同じ映像)。
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("streaming_url_list"), list):
+        return data
+    keep = [e for e in data["streaming_url_list"] if isinstance(e, dict) and e.get("quality") == quality]
+    if not keep:
+        return data
+    return {**data, "streaming_url_list": [dict(e, is_default=i == 0) for i, e in enumerate(keep)]}
+
+
+async def _limit_quality(ctx: BrowserContext, quality: int) -> None:
+    async def handle(route: Any) -> None:
+        try:
+            resp = await route.fetch()
+        except Exception:  # noqa: BLE001 - 取れなければページ側の通常の処理に任せる
+            await route.continue_()
+            return
+        try:
+            await route.fulfill(response=resp, json=narrow_streaming_urls(await resp.json(), quality))
+        except Exception:  # noqa: BLE001 - 形式が違う時は手を加えずに渡す
+            await route.fulfill(response=resp)
+
+    await ctx.route(STREAMING_URL_PATTERN, handle)
 # ページを開いておくのに必要なメモリの目安 (GB)。計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB
 BROWSER_BASE_GB = 0.5
 ROOM_GB = 0.5
@@ -156,7 +189,35 @@ async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
     if cfg.block_media:
         for pattern in MEDIA_PATTERNS:
             await ctx.route(pattern, lambda route: route.abort())
+    quality = VIDEO_QUALITY.get(str(cfg.video_quality).lower())
+    if quality:
+        await _limit_quality(ctx, quality)
+    elif str(cfg.video_quality).lower() != "auto":
+        log.warning("video_quality %r は使えません (low / medium / original / auto)。SHOWROOM の再生プレーヤーに任せます", cfg.video_quality)
     return ctx
+
+
+def page_factory(ctx: BrowserContext, cfg: Config) -> Any:
+    """配信ページを開く関数。background_tabs なら、開いたページを空白のページの裏に回す。
+
+    ヘッドレスのブラウザでも、前面に無いタブは画面の描き直しが減り CPU が下がる
+    (映像の再生・ページのスクリプト・コメントの受信と投稿はそのまま動く)。
+    """
+    cover: Any = None
+
+    async def new_page() -> Any:
+        nonlocal cover
+        page = await ctx.new_page()
+        if cfg.background_tabs:
+            try:
+                if cover is None or cover.is_closed():
+                    cover = await ctx.new_page()
+                await cover.bring_to_front()
+            except Exception as e:  # noqa: BLE001 - 裏に回せなくても視聴はできる
+                log.debug("空白のページを前面にできませんでした: %s", e)
+        return page
+
+    return new_page
 
 
 async def save_state(ctx: BrowserContext, cfg: Config) -> None:
@@ -359,9 +420,8 @@ class Keeper:
                 # 確認できないままパスワードでログインし直すと、有効なセッションでも毎回ログインしてしまう
                 log.warning("ログイン状態を確認できるルームが見つかりません。次の確認で再度試します")
 
-            watchers = [
-                RoomWatcher(key, self.cfg, api.room_status, ctx.new_page) for key in self.cfg.rooms
-            ]
+            new_page = page_factory(ctx, self.cfg)  # 空白のページはルーム全体で 1 つ
+            watchers = [RoomWatcher(key, self.cfg, api.room_status, new_page) for key in self.cfg.rooms]
             for w in watchers:
                 w.keep_open = keep_open
             self.watchers = watchers

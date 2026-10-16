@@ -182,6 +182,16 @@ def _print_user(u: dict[str, Any]) -> None:
         print(f"     {datetime.fromtimestamp(h['at'], JST):%m/%d %H:%M:%S}  {h['gift']}×{h['num']}  ({h['points']:,} pt){where}")
 
 
+def _remember(rooms: dict[str, tuple[Any, Any]], state_dir: Path) -> None:
+    """管理画面の一覧に名前で出せるよう、分かったルーム名を覚えておく。"""
+    try:
+        from .listing import remember_rooms
+
+        remember_rooms(state_dir, rooms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def room_report(state_dir: Path, room_key: str, hours: float | None = None, user: str | None = None) -> dict[str, Any]:
     """1 ルームのギフト履歴の集計 (CLI と管理画面で共通)。hours が None なら今回の配信、1e8 以上なら記録のすべて。"""
     status = _get(f"/api/room/status?room_url_key={room_key}")
@@ -197,6 +207,7 @@ def room_report(state_dir: Path, room_key: str, hours: float | None = None, user
            if not since or g["at"] >= since]
     gifts = merge(recorded, api)
     catalog = fetch_catalog(room_id)
+    _remember({room_key: (name, room_id)}, state_dir)
     period = ("記録のすべて" if all_records else f"直近 {hours:g} 時間" if hours else
               f"今回の配信 ({datetime.fromtimestamp(since, JST):%m/%d %H:%M} 開始)" if since else "記録のすべて")
     report: dict[str, Any] = {
@@ -353,6 +364,7 @@ def event_report(state_dir: Path, event_key: str, user: str | None = None, offic
             catalog.update(fetch_catalog(r["room_id"]))
         except Exception:  # noqa: BLE001
             continue
+    _remember({r["room_url_key"]: (r.get("room_name"), r.get("room_id")) for r in rooms if r.get("room_url_key")}, state_dir)
 
     rows: list[dict[str, Any]] = []
     failed = 0

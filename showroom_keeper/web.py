@@ -137,6 +137,22 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
     }
 
 
+def live_rooms(keeper: Any) -> dict[str, str]:
+    """配信中と分かっているルーム {room_url_key: 名前} (視聴中・ギフト記録中のもの)。"""
+    live = {w.key: w.status.room_name for w in list(keeper.watchers) if w.status and w.status.is_live}
+    if keeper.recorder is not None:
+        live.update({r["room"]: r["name"] for r in keeper.recorder.active()})
+    return live
+
+
+def _days(value: str | None) -> float | None:
+    """一覧の期間 (日数)。空・0 は期間で絞り込まない。"""
+    if not value:
+        return None
+    days = float(value)
+    return days if days > 0 else None
+
+
 def post_comment(keeper: Any, text: str, room: str | None, timeout: float = COMMENT_TIMEOUT) -> dict[str, Any]:
     """comment コマンドと同じキューに依頼を置き、keeper の投稿結果を待つ。"""
     from .comments import enqueue, queue_dir, validate
@@ -225,6 +241,13 @@ class AdminHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _state_dir(self) -> Path:
+        return Path(self.keeper.cfg.state_file).parent
+
+    def _settings(self) -> dict[str, list[str]]:
+        cfg = self.keeper.cfg
+        return {key: list(getattr(cfg, key, []) or []) for key in ("rooms", "record_rooms", "events", "enter_rooms")}
+
     def _body(self) -> dict[str, Any] | None:
         if self.headers.get(CSRF_HEADER) != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
             self._error(403, "不正な要求です")
@@ -250,7 +273,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             if url.path in ("/", "/index.html"):
                 self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8",
                            {"Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-                            "script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"})
+                            "script-src 'self' 'unsafe-inline'; img-src 'self' data: https://static.showroom-live.com; connect-src 'self'"})
             elif url.path == "/api/overview":
                 self._json(build_overview(self.keeper, self.cache))
             elif url.path == "/api/logs":
@@ -268,6 +291,30 @@ class AdminHandler(BaseHTTPRequestHandler):
                 state_dir = Path(self.keeper.cfg.state_file).parent
                 self._json(event_report(state_dir, normalize_event_key(q.get("event", "")), q.get("user") or None,
                                         official=q.get("official", "1") != "0"))
+            elif url.path == "/api/lists/rooms":
+                from .listing import list_rooms
+
+                self._json({"rooms": list_rooms(self._state_dir(), self._settings(), live_rooms(self.keeper), lookup=True,
+                                                q=q.get("q", "")[:100], showroom=q.get("showroom") == "1")})
+            elif url.path == "/api/lists/events":
+                from .listing import list_events
+
+                self._json({"events": list_events(self._state_dir(), list(self.keeper.cfg.events))})
+            elif url.path == "/api/listeners":
+                from .listing import list_listeners
+
+                room = normalize_room_key(q["room"]) if q.get("room") else None
+                self._json(list_listeners(self._state_dir(), _days(q.get("days")), room))
+            elif url.path == "/api/lookup/user":
+                from .listing import lookup_user
+
+                if not str(q.get("id", "")).strip().isdigit():
+                    raise ValueError("ユーザー ID は数字で指定してください")
+                self._json({"user": lookup_user(q["id"])})
+            elif url.path == "/api/listener":
+                from .listing import listener_detail
+
+                self._json(listener_detail(self._state_dir(), q.get("user"), _days(q.get("days"))))
             else:
                 self._error(404, "見つかりません")
         except (ValueError, LookupError) as e:

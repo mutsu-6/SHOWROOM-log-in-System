@@ -146,6 +146,45 @@ td.name { max-width: 280px; word-break: break-word; }
 .logs .WARNING { background: var(--warn-soft); } .logs .ERROR, .logs .CRITICAL { background: var(--accent-soft); }
 .logs .n { color: var(--info); }
 
+/* 一覧から選ぶ (ルーム・イベント) */
+.modal { position: fixed; inset: 0; z-index: 20; background: rgba(15, 18, 25, .45); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 40px rgba(0,0,0,.25);
+  width: min(760px, 100%); max-height: 86vh; display: flex; flex-direction: column; }
+.modal-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.modal-title { display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 16px; }
+.modal-body { overflow-y: auto; padding: 6px 8px 10px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.fchip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--muted); }
+.fchip.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.fchip .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.pick { display: flex; gap: 12px; align-items: center; width: 100%; text-align: left; border: 0; background: transparent; padding: 10px; border-radius: 10px; cursor: pointer; }
+.pick:hover, .pick:focus-visible { background: var(--panel2); }
+.pick .main { flex: 1; min-width: 0; }
+.pick .t { font-weight: 600; word-break: break-word; }
+.pick .s { color: var(--muted); font-size: 12px; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pick .side { color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pick img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
+.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: var(--panel2); color: var(--muted); }
+.tag.live { background: var(--accent-soft); color: var(--accent); } .tag.ok { background: var(--ok-soft); color: var(--ok); }
+.tag.info { background: var(--info-soft); color: var(--info); } .tag.warn { background: var(--warn-soft); color: var(--warn); }
+.listing-note { color: var(--muted); font-size: 12px; padding: 8px 10px; }
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--panel2); }
+tr.selected td { background: var(--info-soft); }
+#l-detail { scroll-margin-top: 110px; }
+/* 入力欄の下に出る候補 */
+.suggest { position: fixed; z-index: 15; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18);
+  max-height: min(460px, 60vh); display: flex; flex-direction: column; overflow: hidden; }
+.suggest .sg-head { padding: 8px 8px 6px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-start; }
+.suggest .sg-head .filters { flex: 1; }
+.suggest .sg-head select { flex: none; padding: 3px 6px; font-size: 12px; }
+.pick .noimg { width: 44px; height: 44px; border-radius: 8px; background: var(--panel2); flex: none; }
+.suggest .pick img, .suggest .pick .noimg { width: 36px; height: 36px; }
+@media (max-width: 560px) { .suggest .sg-head { flex-direction: column; } }
+.suggest .items { overflow-y: auto; padding: 4px; }
+.suggest .pick { padding: 8px 10px; }
+.suggest .pick.hl { background: var(--info-soft); }
+.suggest .foot { border-top: 1px solid var(--line); padding: 6px 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }  /* 上に固定したヘッダーに隠れないように */
+
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; transition: .2s; max-width: calc(100% - 32px); z-index: 10; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
@@ -166,6 +205,7 @@ td.name { max-width: 280px; word-break: break-word; }
     <a href="#dashboard" data-tab="dashboard">ダッシュボード</a>
     <a href="#comment" data-tab="comment">コメント</a>
     <a href="#gifts" data-tab="gifts">ギフト</a>
+    <a href="#listeners" data-tab="listeners">リスナー</a>
     <a href="#settings" data-tab="settings">ルーム設定</a>
     <a href="#logs" data-tab="logs">ログ</a>
   </nav>
@@ -213,8 +253,8 @@ td.name { max-width: 280px; word-break: break-word; }
       </div>
       <form id="g-form" class="row">
         <span id="g-room-wrap" class="row grow">
-          <input type="text" id="g-room" class="grow" list="g-room-list" placeholder="ルーム (URL または room_url_key)">
-          <datalist id="g-room-list"></datalist>
+          <input type="text" id="g-room" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名・URL で SHOWROOM 全体から検索 (クリックで一覧)">
+          <button type="button" class="btn" data-pick="g-room">一覧から選ぶ</button>
           <select id="g-hours">
             <option value="">今回の配信</option>
             <option value="24">直近 24 時間</option>
@@ -223,45 +263,79 @@ td.name { max-width: 280px; word-break: break-word; }
           </select>
         </span>
         <span id="g-event-wrap" class="row grow" hidden>
-          <input type="text" id="g-event" class="grow" list="g-event-list" placeholder="イベント (URL または event_url_key)">
-          <datalist id="g-event-list"></datalist>
+          <input type="text" id="g-event" class="grow" autocomplete="off" data-suggest="event" placeholder="イベント名・URL で検索 (クリックで一覧)">
+          <button type="button" class="btn" data-pick="g-event">一覧から選ぶ</button>
           <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="g-official" checked> 公式の貢献ランキング</label>
         </span>
-        <input type="search" id="g-user" placeholder="リスナー (名前の一部かユーザー ID)" style="flex:0 1 230px">
+        <input type="search" id="g-user" autocomplete="off" data-suggest="user" placeholder="リスナー名・ID で検索 (クリックで一覧)" style="flex:0 1 260px">
         <button class="btn primary" type="submit">表示</button>
       </form>
     </div>
     <div id="g-result"></div>
   </section>
 
+  <!-- リスナー -->
+  <section data-tab="listeners">
+    <h2>リスナー</h2>
+    <p class="sub">記録したギフトのリスナー一覧です。行をクリックすると、記録したすべてのルームでの履歴を表示します。</p>
+    <div class="card">
+      <div class="row">
+        <input type="search" id="l-q" class="grow" placeholder="名前の一部かユーザー ID で絞り込む (記録に無い ID は SHOWROOM で調べます)">
+        <select id="l-days" title="期間">
+          <option value="1">直近 24 時間</option>
+          <option value="7">直近 7 日</option>
+          <option value="30" selected>直近 30 日</option>
+          <option value="0">記録のすべて</option>
+        </select>
+        <input type="search" id="l-room" autocomplete="off" data-suggest="room" placeholder="ルームで絞り込む (空ならすべて)" style="flex:0 1 240px">
+        <select id="l-sort" title="並び順">
+          <option value="points">ポイントの多い順</option>
+          <option value="paid">有料ポイントの多い順</option>
+          <option value="times">回数の多い順</option>
+          <option value="last">最近ギフトを送った順</option>
+          <option value="rooms">送ったルームの多い順</option>
+        </select>
+        <label class="row" style="gap:4px;color:var(--muted)">最低 <input type="number" id="l-min" min="0" step="100" value="0" style="width:90px"> pt</label>
+      </div>
+      <div class="filters" id="l-filters" style="margin-top:10px">
+        <button type="button" class="fchip active" data-f="all">すべて</button>
+        <button type="button" class="fchip" data-f="paid">有料ギフトあり</button>
+        <button type="button" class="fchip" data-f="multi">複数のルームに送っている</button>
+        <button type="button" class="fchip" data-f="today">今日送った</button>
+      </div>
+    </div>
+    <div id="l-detail"></div>
+    <div id="l-list"></div>
+  </section>
+
   <!-- 設定 -->
   <section data-tab="settings">
     <h2>ルーム設定</h2>
-    <p class="sub">URL をそのまま貼り付けて追加できます。保存すると、視聴とギフト記録をやり直して反映します。</p>
+    <p class="sub">入力欄をクリックすると、SHOWROOM のルーム・イベントを名前で検索して選べます (URL の貼り付けも使えます)。保存すると、視聴とギフト記録をやり直して反映します。</p>
     <div class="settings">
       <div class="card" data-list="rooms">
         <h3 style="margin-top:0">視聴するルーム</h3>
         <div class="hint" style="margin-top:0">ページを開いて視聴状態を保ちます。1 ルームにつき約 0.5GB のメモリを使います。</div>
         <ul class="list"></ul>
-        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/r/…"><button class="btn" type="submit">追加</button></form>
+        <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
       <div class="card" data-list="enter_rooms">
         <h3 style="margin-top:0">配信開始時に入室するルーム</h3>
         <div class="hint" style="margin-top:0">配信が始まったら一度だけページを開き、配信に参加したのを確かめてから閉じます (1 回 10 秒ほど)。視聴するルームと重なる分は入室しません。</div>
         <ul class="list"></ul>
-        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/r/…"><button class="btn" type="submit">追加</button></form>
+        <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
       <div class="card" data-list="record_rooms">
         <h3 style="margin-top:0">ギフトだけ記録するルーム</h3>
         <div class="hint" style="margin-top:0">ブラウザを使わず、配信中のギフトを受信して記録します。件数の上限はありません。</div>
         <ul class="list"></ul>
-        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/r/…"><button class="btn" type="submit">追加</button></form>
+        <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
       <div class="card" data-list="events">
         <h3 style="margin-top:0">ギフトを記録するイベント</h3>
         <div class="hint" style="margin-top:0">参加ルームすべてのギフトを記録します。終了すると自動で記録をやめます。</div>
         <ul class="list"></ul>
-        <form class="row"><input type="text" class="grow" placeholder="https://www.showroom-live.com/event/…"><button class="btn" type="submit">追加</button></form>
+        <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="event" placeholder="イベント名で検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
     </div>
     <div class="savebar">
@@ -284,6 +358,20 @@ td.name { max-width: 280px; word-break: break-word; }
   </section>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
+<div class="suggest" id="sg" hidden role="listbox"></div>
+<div class="modal" id="picker" hidden role="dialog" aria-modal="true" aria-labelledby="pk-title">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="modal-title"><span id="pk-title">一覧から選ぶ</span><button type="button" class="btn small" id="pk-close">閉じる (Esc)</button></div>
+      <div class="row">
+        <input type="search" id="pk-q" class="grow" placeholder="名前や URL の一部で検索" autocomplete="off">
+        <select id="pk-sort" title="並び順"></select>
+      </div>
+      <div class="filters" id="pk-filters"></div>
+    </div>
+    <div class="modal-body" id="pk-list"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -337,6 +425,7 @@ function showTab() {
   $$("section[data-tab]").forEach((s) => s.classList.toggle("active", s.dataset.tab === name));
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
   if (name === "logs") loadLogs();
+  if (name === "listeners") loadListeners();
   if (name === "comment") setTimeout(() => $("#c-text").focus(), 0);
 }
 window.addEventListener("hashchange", showTab);
@@ -433,8 +522,6 @@ function renderOverview() {
   $("#c-send").disabled = !live.length;
   $("#c-hint").textContent = live.length ? "" : "視聴中のルームで配信が始まると投稿できます。";
   const keys = [...new Set([...o.settings.rooms, ...o.settings.record_rooms, ...o.recording.map((r) => r.room)])];
-  $("#g-room-list").innerHTML = keys.map((k) => `<option value="${esc(k)}">`).join("");
-  $("#g-event-list").innerHTML = o.settings.events.map((k) => `<option value="${esc(k)}">`).join("");
   if (!settingsDirty) loadSettings(o.settings);
 }
 
@@ -451,7 +538,7 @@ $("#rooms").addEventListener("click", (ev) => {
   const b = ev.target.closest("button[data-act]");
   if (!b) return;
   if (b.dataset.act === "comment") { location.hash = "#comment"; $("#c-room").value = b.dataset.room; }
-  if (b.dataset.act === "gifts") { setGiftMode("room"); $("#g-room").value = b.dataset.room; location.hash = "#gifts"; loadGifts(); }
+  if (b.dataset.act === "gifts") { setGiftMode("room"); setPicked($("#g-room"), b.dataset.room, roomName(b.dataset.room)); location.hash = "#gifts"; loadGifts(); }
 });
 
 /* ------------------------------------------------------------ コメント */
@@ -501,9 +588,11 @@ $("#g-form").addEventListener("submit", (ev) => { ev.preventDefault(); loadGifts
 $("#g-result").addEventListener("click", (ev) => {
   const more = ev.target.closest("[data-more-btn]");
   if (more) { $$("#g-result tr[data-more]").forEach((tr) => { tr.hidden = false; }); more.remove(); return; }
+  const all = ev.target.closest("[data-listener]");
+  if (all) { openListener(all.dataset.listener); return; }
   const b = ev.target.closest("[data-user]");
   if (!b) return;
-  $("#g-user").value = b.dataset.user;
+  setPicked($("#g-user"), b.dataset.user, b.textContent.trim());
   loadGifts();
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -513,7 +602,7 @@ const splitBar = (u) => {
   if (!t) return "";
   return `<div class="splitbar" title="有料 ${num(u.paid_points)} / 無料 ${num(u.free_points)}"><div class="p" style="width:${(u.paid_points / t) * 100}%"></div><div class="f" style="width:${(u.free_points / t) * 100}%"></div></div>`;
 };
-const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span></td>`;
+const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="記録したすべてのルームでの履歴">全ルーム ›</button></td>`;
 const legend = `<div class="legend"><span><i style="background:var(--accent)"></i>有料</span><span><i style="background:var(--info)"></i>無料 (星・種など)</span></div>`;
 
 function rankingTable(rows, opts = {}) {
@@ -561,15 +650,15 @@ function userBlock(users, official) {
 }
 
 async function loadGifts() {
-  const user = $("#g-user").value.trim();
+  const user = pickedValue($("#g-user"));
   const out = $("#g-result");
   let path, waitMsg = "読み込み中…";
   if (giftMode === "room") {
-    const room = $("#g-room").value.trim();
+    const room = pickedValue($("#g-room"));
     if (!room) { toast("ルームを入力してください"); return; }
     path = `/api/gifts/room?room=${encodeURIComponent(room)}&hours=${encodeURIComponent($("#g-hours").value)}&user=${encodeURIComponent(user)}`;
   } else {
-    const event = $("#g-event").value.trim();
+    const event = pickedValue($("#g-event"));
     if (!event) { toast("イベントを入力してください"); return; }
     const official = $("#g-official").checked;
     path = `/api/gifts/event?event=${encodeURIComponent(event)}&official=${official ? 1 : 0}&user=${encodeURIComponent(user)}`;
@@ -631,8 +720,410 @@ function renderEventGifts(r) {
   return html;
 }
 
+/* ------------------------------------------------------------ 一覧 (ルーム・イベント・リスナー) */
+// ルームは SHOWROOM 全体 (配信中の全ルーム + 名前検索) と手元の登録・記録を合わせた一覧、
+// イベントは SHOWROOM の開催中・開催前・終了 (約 1 か月) のイベント、リスナーは記録したギフトの送り主。
+const names = { room: {}, event: {} };  // 一覧で分かった名前 (ID → 名前)
+const listCache = new Map();  // URL → [取得時刻, 一覧]
+async function cachedApi(url, field, ttl = 60000) {
+  const hit = listCache.get(url);
+  if (hit && Date.now() - hit[0] < ttl) return hit[1];
+  const rows = (await api(url))[field];
+  listCache.set(url, [Date.now(), rows]);
+  return rows;
+}
+async function roomList(q = "") {
+  const rows = await cachedApi(`/api/lists/rooms?showroom=1&q=${encodeURIComponent(q.trim())}`, "rooms");
+  rows.forEach((r) => { if (r.name !== r.key || !names.room[r.key]) names.room[r.key] = r.name; });
+  return rows;
+}
+async function eventList() {
+  const rows = await cachedApi("/api/lists/events", "events", 300000);
+  rows.forEach((e) => { names.event[e.key] = e.title; });
+  return rows;
+}
+const roomName = (key) => names.room[key] || key;
+const eventName = (key) => names.event[key] || key;
+
+const userCache = { key: null, at: 0, rows: [] };
+const userLookups = new Map();
+function lookupUser(id) {
+  if (!userLookups.has(id)) userLookups.set(id, api(`/api/lookup/user?id=${encodeURIComponent(id)}`).then((r) => r.user).catch(() => null));
+  return userLookups.get(id);
+}
+async function userList(q, room) {
+  if (userCache.key !== room || Date.now() - userCache.at > 60000) {
+    const r = await api(`/api/listeners?days=0&room=${encodeURIComponent(room)}`);
+    Object.assign(userCache, { key: room, at: Date.now(), rows: r.listeners });
+  }
+  // 記録に無いユーザー ID は SHOWROOM のプロフィールで調べる
+  const id = q.trim();
+  if (/^\d{1,12}$/.test(id) && !userCache.rows.some((u) => String(u.user_id) === id)) {
+    const p = await lookupUser(id);
+    if (p) return [...userCache.rows, { ...p, names: [p.name], points: 0, paid_points: 0, free_points: 0, times: 0, room_count: 0, rooms: [], last_at: null, lookup: true, hit: true }];
+  }
+  return userCache.rows;
+}
+
+const by = (field, asc = false) => (a, b) => asc ? (a[field] || 9e12) - (b[field] || 9e12) : (b[field] || 0) - (a[field] || 0);
+const byName = (field) => (a, b) => String(a[field] || "").localeCompare(String(b[field] || ""), "ja");
+const thumb = (src) => src ? `<img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="noimg"></span>`;
+const STATE_ORDER = { ongoing: 0, upcoming: 1, ended: 2 };
+const LISTS = {
+  room: {
+    title: "ルームを選ぶ", what: "ルーム",
+    load: (q) => roomList(q), remote: true,
+    filters: [["all", "すべて"], ["live", "配信中"], ["registered", "登録済み"], ["watch", "視聴中"], ["enter", "入室"], ["record", "ギフト記録"], ["has_records", "記録あり"]],
+    match: (r, f) => f === "all" || (f === "live" ? r.is_live : f === "registered" ? r.registered : r.tags.includes(f)),
+    text: (r) => `${r.name} ${r.key}`,
+    sorts: [["best", "おすすめ順"], ["viewers", "視聴者の多い順"], ["followers", "フォロワーの多い順"], ["started", "配信開始が新しい順"],
+            ["recent", "最近ギフトがあった順"], ["records", "記録の多い順"], ["name", "名前順"]],
+    sort: (s) => ({
+      // 登録済み → 記録あり → 配信中 → フォロワーの多い順
+      best: (a, b) => (b.registered - a.registered) || ((b.records > 0) - (a.records > 0)) || (b.is_live - a.is_live) || by("followers")(a, b),
+      viewers: by("viewers"), followers: by("followers"), started: by("started_at"), recent: by("last_at"), records: by("records"), name: byName("name"),
+    })[s],
+    row: (r) => `<button type="button" class="pick" data-key="${esc(r.key)}">${thumb(r.image)}
+      <div class="main"><div class="t">${esc(r.name)}</div>
+        <div class="s"><span>${esc(r.key)}</span>${r.is_live ? '<span class="tag live">配信中</span>' : ""}${r.tags.includes("watch") ? '<span class="tag ok">視聴中</span>' : ""}${r.tags.includes("record") ? '<span class="tag info">ギフト記録</span>' : ""}${r.tags.includes("enter") ? '<span class="tag">入室</span>' : ""}${r.genre ? `<span>${esc(r.genre)}</span>` : ""}</div></div>
+      <div class="side">${[r.is_live && r.viewers != null ? `視聴 ${num(r.viewers)} 人` : "", r.followers != null ? `フォロワー ${num(r.followers)}` : "",
+        r.records ? `記録 ${num(r.records)} 件 (${tm(r.last_at, true).slice(0, 5)})` : ""].filter(Boolean).slice(0, 2).join("<br>")}</div></button>`,
+    key: (r) => r.key, label: (r) => r.name,
+  },
+  event: {
+    title: "イベントを選ぶ", what: "イベント",
+    load: () => eventList(),
+    filters: [["all", "すべて"], ["ongoing", "開催中"], ["upcoming", "開催前"], ["ended", "終了"], ["recording", "ギフト記録中"], ["official_cached", "公式ランキング取得済み"]],
+    match: (e, f) => f === "all" || (f in STATE_ORDER ? e.state === f : e[f]),
+    text: (e) => `${e.title} ${e.key}`,
+    sorts: [["best", "おすすめ順"], ["end", "終了日の早い順"], ["end_desc", "終了日の遅い順"], ["start", "開始日の新しい順"], ["start_asc", "開始日の古い順"], ["name", "名前順"]],
+    sort: (s) => ({
+      // 記録中 → 開催中 (終わりが近い順) → 開催前 (始まりが近い順) → 終了 (最近終わった順)
+      best: (a, b) => (b.recording - a.recording) || (STATE_ORDER[a.state] - STATE_ORDER[b.state])
+        || (a.state === "ended" ? by("end")(a, b) : a.state === "upcoming" ? by("start", true)(a, b) : by("end", true)(a, b)),
+      end: by("end", true), end_desc: by("end"), start: by("start"), start_asc: by("start", true), name: byName("title"),
+    })[s],
+    row: (e) => `<button type="button" class="pick" data-key="${esc(e.key)}">${thumb(e.image)}
+      <div class="main"><div class="t">${esc(e.title)}</div>
+        <div class="s"><span>${esc(e.key)}</span>${{ ongoing: '<span class="tag live">開催中</span>', upcoming: '<span class="tag warn">開催前</span>', ended: '<span class="tag">終了</span>' }[e.state]}${e.recording ? '<span class="tag info">ギフト記録中</span>' : ""}${e.official_cached ? '<span class="tag ok">公式ランキング取得済み</span>' : ""}</div></div>
+      <div class="side">${e.start ? day(e.start) : ""}<br>〜 ${e.end ? day(e.end) : ""}</div></button>`,
+    key: (e) => e.key, label: (e) => e.title,
+  },
+  user: {
+    title: "リスナーを選ぶ", what: "リスナー",
+    load: (q, input) => userList(q, input.id === "g-user" && giftMode === "room" ? pickedValue($("#g-room")) : ""), remote: true,
+    filters: [["all", "すべて"], ["paid", "有料ギフトあり"], ["multi", "複数のルーム"], ["today", "今日送った"]],
+    match: (u, f) => f === "all" || (f === "paid" ? u.paid_points > 0 : f === "multi" ? u.room_count > 1 : u.last_at >= new Date().setHours(0, 0, 0, 0) / 1000),
+    text: (u) => `${u.names.join(" ")} ${u.user_id}`,
+    sorts: [["points", "ポイントの多い順"], ["paid", "有料ポイントの多い順"], ["times", "回数の多い順"], ["last", "最近送った順"], ["rooms", "送ったルームの多い順"], ["name", "名前順"]],
+    sort: (s) => ({ points: by("points"), paid: by("paid_points"), times: by("times"), last: by("last_at"), rooms: by("room_count"), name: byName("name") })[s],
+    row: (u) => `<button type="button" class="pick" data-key="${esc(u.user_id)}">${u.lookup ? thumb(u.avatar) : ""}<div class="main"><div class="t">${esc(u.name || "(名前なし)")}</div>
+      <div class="s"><span>ID ${esc(u.user_id)}</span>${u.lookup ? '<span class="tag warn">記録なし・SHOWROOM で見つかったユーザー</span>' : ""}${u.names.length > 1 ? `<span>旧名 ${esc(u.names.slice(1, 3).join("、"))}</span>` : ""}${u.rooms && u.rooms.length ? `<span>${esc(u.rooms.slice(0, 2).map((r) => r.name).join("、"))}${u.room_count > 2 ? ` ほか ${u.room_count - 2}` : ""}</span>` : ""}</div></div>
+      <div class="side">${u.lookup ? (u.level ? `ファンレベル ${num(u.level)}` : "") : `${num(u.points)} pt<br>${num(u.times)} 回`}</div></button>`,
+    key: (u) => String(u.user_id), label: (u) => u.name || String(u.user_id),
+  },
+};
+// 検索語・絞り込み・並び順で一覧を作る (SHOWROOM の検索で見つかったもの hit は、名前に検索語が無くても出す)
+function listRows(L, items, q, filter, sortKey) {
+  q = q.trim().toLowerCase();
+  const base = items.filter((x) => !q || x.hit || L.text(x).toLowerCase().includes(q));
+  const rows = base.filter((x) => L.match(x, filter)).sort(L.sort(sortKey));
+  if (!q || sortKey !== L.sorts[0][0]) return { base, rows };
+  // おすすめ順では、名前が検索語で始まるもの → 名前に検索語を含むもの → その他 (説明文などで見つかったもの) の順にする
+  const rank = (x) => { const t = L.label(x).toLowerCase(); return t.startsWith(q) ? 0 : t.includes(q) || L.key(x).toLowerCase().includes(q) ? 1 : 2; };
+  return { base, rows: rows.map((x, i) => [rank(x), i, x]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map((r) => r[2]) };
+}
+const filterChips = (L, base, current, attr) => L.filters.map(([f, l]) =>
+  `<button type="button" class="fchip ${current === f ? "active" : ""}" ${attr}="${f}">${l}<span class="n">${num(base.filter((x) => L.match(x, f)).length)}</span></button>`).join("");
+const sortOptions = (L, current) => L.sorts.map(([v, l]) => `<option value="${v}" ${v === current ? "selected" : ""}>${l}</option>`).join("");
+const sortPref = {};  // 種類ごとに選んだ並び順 (候補と大きな一覧で共通)
+const sortOf = (kind) => sortPref[kind] || LISTS[kind].sorts[0][0];
+
+/* 入力欄で選んだ時の動き */
+function setPicked(input, key, label) {
+  input.value = label || key || "";
+  input.dataset.key = key || "";
+  input.dataset.label = input.value;
+}
+function pickedValue(input) {
+  const v = input.value.trim();
+  if (input.dataset.key && v === input.dataset.label) return input.dataset.key;
+  // 名前をそのまま打った時も、一覧に同じ名前があればその ID を使う
+  const kind = input.dataset.suggest;
+  if (kind === "user") { const u = userCache.rows.find((x) => x.name === v); if (u) return String(u.user_id); }
+  if (kind === "room" || kind === "event") { const hit = Object.entries(names[kind]).find(([, n]) => n === v); if (hit) return hit[0]; }
+  return v;
+}
+function afterPick(input, key) {
+  const card = input.closest("[data-list]");
+  if (card) { setPicked(input, "", ""); return addSetting(card.dataset.list, key); }
+  if (input.id === "g-room" || input.id === "g-event") loadGifts();
+  if (input.id === "l-room") loadListeners();
+}
+const typedQuery = (input) => (input.dataset.key && input.value.trim() === input.dataset.label ? "" : input.value);
+
+/* ------------------------------------------------------------ 入力欄の候補 (クリック・入力で名前の一覧を出す) */
+const sg = { input: null, kind: null, items: [], shown: [], filter: "all", hl: -1, loading: false, seq: 0, timer: null };
+async function loadSuggest(input, q) {
+  const L = LISTS[input.dataset.suggest], seq = ++sg.seq;
+  sg.loading = true;
+  try {
+    const items = await L.load(q, input);
+    if (sg.input === input && seq === sg.seq) { sg.items = items; sg.loading = false; renderSuggest(); }
+  } catch (e) {
+    if (sg.input === input && seq === sg.seq) { sg.loading = false; $("#sg").innerHTML = `<div class="empty" style="margin:8px">一覧を取得できませんでした: ${esc(e.message)}</div>`; }
+  }
+}
+function openSuggest(input) {
+  const kind = input.dataset.suggest;
+  if (sg.input !== input) Object.assign(sg, { filter: "all", items: sg.kind === kind ? sg.items : [] });
+  Object.assign(sg, { input, kind, hl: -1 });
+  placeSuggest();
+  $("#sg").hidden = false;
+  if (!sg.items.length) $("#sg").innerHTML = `<div class="loading" style="padding:14px"><span class="spinner"></span>読み込み中…</div>`;
+  else renderSuggest();
+  loadSuggest(input, LISTS[kind].remote ? typedQuery(input) : "");
+}
+function placeSuggest() {
+  if (!sg.input) return;
+  const r = sg.input.getBoundingClientRect(), box = $("#sg");
+  const width = Math.min(Math.max(r.width, 460), window.innerWidth - 16);
+  box.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+  box.style.top = `${r.bottom + 4}px`;
+  box.style.width = `${width}px`;
+}
+const SUGGEST_LIMIT = 100;
+function renderSuggest() {
+  const L = LISTS[sg.kind];
+  // 選んだ名前がそのまま入っている時は、絞り込まずに全件を出す (別のものに選び直しやすいように)
+  const { base, rows } = listRows(L, sg.items, typedQuery(sg.input), sg.filter, sortOf(sg.kind));
+  sg.shown = rows.slice(0, SUGGEST_LIMIT);
+  if (sg.hl >= sg.shown.length) sg.hl = sg.shown.length - 1;
+  const empty = sg.loading ? `<div class="loading" style="padding:10px"><span class="spinner"></span>SHOWROOM を検索しています…</div>`
+    : `<div class="listing-note">${sg.items.length ? "当てはまるものがありません" : `まだ${L.what}の記録がありません`}。${sg.kind === "user" ? "ユーザー ID (数字) を入れると SHOWROOM で調べます" : "URL や ID をそのまま入力しても使えます"}</div>`;
+  $("#sg").innerHTML = `<div class="sg-head"><div class="filters">${filterChips(L, base, sg.filter, "data-sf")}</div>
+      <select data-sg-sort title="並び順">${sortOptions(L, sortOf(sg.kind))}</select></div>
+    <div class="items">${sg.shown.length ? sg.shown.map((x, i) => L.row(x).replace('class="pick"', `class="pick ${i === sg.hl ? "hl" : ""}" data-i="${i}"`)).join("") : empty}</div>
+    <div class="foot"><span>${num(rows.length)} 件${rows.length > SUGGEST_LIMIT ? ` (上位 ${SUGGEST_LIMIT} 件を表示)` : ""}${sg.loading && sg.shown.length ? " ・ SHOWROOM を検索中…" : ""} ・ ↑↓ で選んで Enter</span><button type="button" class="linkish" data-sg-more>大きな一覧で探す ›</button></div>`;
+  const hl = $("#sg .pick.hl");
+  if (hl) hl.scrollIntoView({ block: "nearest" });
+}
+function closeSuggest() { $("#sg").hidden = true; sg.input = null; clearTimeout(sg.timer); }
+function chooseSuggest(i) {
+  const L = LISTS[sg.kind], x = sg.shown[i], input = sg.input;
+  if (!x) return;
+  setPicked(input, L.key(x), L.label(x));
+  closeSuggest();
+  afterPick(input, L.key(x));
+}
+function bindSuggest(input) {
+  input.addEventListener("focus", () => openSuggest(input));
+  input.addEventListener("click", () => { if ($("#sg").hidden || sg.input !== input) openSuggest(input); });
+  input.addEventListener("input", () => {
+    if (sg.input !== input) return openSuggest(input);
+    sg.hl = -1; renderSuggest();
+    if (!LISTS[sg.kind].remote) return;
+    clearTimeout(sg.timer);  // 打ち終わるのを少し待ってから SHOWROOM を検索する
+    sg.timer = setTimeout(() => { if (sg.input === input) { sg.loading = true; renderSuggest(); loadSuggest(input, typedQuery(input)); } }, 350);
+  });
+  input.addEventListener("keydown", (ev) => {
+    if ($("#sg").hidden || sg.input !== input) return;
+    if (ev.key === "ArrowDown") { ev.preventDefault(); sg.hl = Math.min(sg.hl + 1, sg.shown.length - 1); renderSuggest(); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); sg.hl = Math.max(sg.hl - 1, -1); renderSuggest(); }
+    else if (ev.key === "Enter" && (sg.hl >= 0 || (sg.shown.length && typedQuery(input).trim()))) {
+      // 打ち込んだ文字で絞り込んだ時は、↑↓ で選ばなくても先頭の候補を選ぶ
+      ev.preventDefault(); chooseSuggest(Math.max(sg.hl, 0));
+    }
+    else if (ev.key === "Escape" || ev.key === "Enter" || ev.key === "Tab") { closeSuggest(); }
+  });
+}
+$$("[data-suggest]").forEach(bindSuggest);
+// 入力欄からフォーカスを外さない (並び順の選択だけは開けるように除く)
+$("#sg").addEventListener("mousedown", (ev) => { if (!ev.target.closest("select")) ev.preventDefault(); });
+$("#sg").addEventListener("change", (ev) => {
+  if (!ev.target.matches("[data-sg-sort]")) return;
+  sortPref[sg.kind] = ev.target.value; sg.hl = -1; renderSuggest();
+  if (sg.input) sg.input.focus({ preventScroll: true });
+});
+$("#sg").addEventListener("click", (ev) => {
+  const f = ev.target.closest("[data-sf]");
+  if (f) { sg.filter = f.dataset.sf; sg.hl = -1; return renderSuggest(); }
+  if (ev.target.closest("[data-sg-more]")) { const input = sg.input; closeSuggest(); return openPicker(input); }
+  const row = ev.target.closest(".pick");
+  if (row) chooseSuggest(Number(row.dataset.i));
+});
+document.addEventListener("mousedown", (ev) => {
+  if (!$("#sg").hidden && !ev.target.closest("#sg") && ev.target !== sg.input) closeSuggest();
+});
+window.addEventListener("resize", placeSuggest);
+window.addEventListener("scroll", (ev) => { if (!ev.target.closest || !ev.target.closest("#sg")) placeSuggest(); }, true);
+
+/* ------------------------------------------------------------ 大きな一覧 (画面の中央に出す) */
+const PICKER_LIMIT = 300;
+const picker = { input: null, kind: "room", filter: "all", items: [], seq: 0, timer: null, loading: false };
+async function loadPicker(q) {
+  const seq = ++picker.seq;
+  picker.loading = true;
+  try {
+    const items = await LISTS[picker.kind].load(q, picker.input);
+    if (seq === picker.seq) { picker.items = items; picker.loading = false; renderPicker(); }
+  } catch (e) {
+    if (seq === picker.seq) { picker.loading = false; $("#pk-list").innerHTML = `<div class="empty">一覧を取得できませんでした: ${esc(e.message)}</div>`; }
+  }
+}
+function openPicker(input) {
+  const kind = input.dataset.suggest, L = LISTS[kind];
+  Object.assign(picker, { input, kind, filter: "all", items: [] });
+  $("#pk-title").textContent = L.title;
+  $("#pk-q").value = typedQuery(input);
+  $("#pk-q").placeholder = kind === "room" ? "ルーム名や URL で SHOWROOM 全体を検索" : kind === "event" ? "イベント名や URL で検索" : "名前の一部かユーザー ID で検索";
+  $("#pk-sort").innerHTML = sortOptions(L, sortOf(kind));
+  $("#picker").hidden = false;
+  $("#pk-q").focus();
+  $("#pk-list").innerHTML = `<div class="loading"><span class="spinner"></span>読み込み中…</div>`;
+  loadPicker(L.remote ? $("#pk-q").value : "");
+}
+function renderPicker() {
+  const L = LISTS[picker.kind];
+  const { base, rows } = listRows(L, picker.items, $("#pk-q").value, picker.filter, sortOf(picker.kind));
+  $("#pk-filters").innerHTML = filterChips(L, base, picker.filter, "data-f");
+  $("#pk-list").innerHTML = (picker.loading ? `<div class="listing-note"><span class="spinner"></span> SHOWROOM を検索しています…</div>` : "")
+    + (rows.length ? rows.slice(0, PICKER_LIMIT).map(L.row).join("") + `<div class="listing-note">${num(rows.length)} 件${rows.length > PICKER_LIMIT ? ` (上位 ${PICKER_LIMIT} 件を表示。検索で絞り込んでください)` : ""}</div>`
+      : picker.loading ? "" : `<div class="empty">当てはまるものがありません</div>`);
+}
+function closePicker() { $("#picker").hidden = true; }
+$$("[data-pick]").forEach((b) => b.addEventListener("click", () => openPicker($(`#${b.dataset.pick}`))));
+$("#pk-close").addEventListener("click", closePicker);
+$("#picker").addEventListener("click", (ev) => {
+  if (ev.target === $("#picker")) return closePicker();
+  const f = ev.target.closest("[data-f]");
+  if (f) { picker.filter = f.dataset.f; return renderPicker(); }
+  const row = ev.target.closest(".pick");
+  if (!row) return;
+  const L = LISTS[picker.kind], x = picker.items.find((i) => L.key(i) === row.dataset.key);
+  setPicked(picker.input, row.dataset.key, x ? L.label(x) : row.dataset.key);
+  closePicker();
+  afterPick(picker.input, row.dataset.key);
+});
+$("#pk-q").addEventListener("input", () => {
+  renderPicker();
+  if (!LISTS[picker.kind].remote) return;
+  clearTimeout(picker.timer);
+  picker.timer = setTimeout(() => { picker.loading = true; renderPicker(); loadPicker($("#pk-q").value); }, 350);
+});
+$("#pk-sort").addEventListener("change", () => { sortPref[picker.kind] = $("#pk-sort").value; renderPicker(); });
+$("#pk-q").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); const first = $("#pk-list .pick"); if (first) first.click(); }
+});
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#picker").hidden) closePicker(); });
+
+/* ------------------------------------------------------------ リスナー */
+const listeners = { key: null, rows: [], shown: 200, selected: null };
+async function loadListeners(force = false) {
+  const days = $("#l-days").value, room = pickedValue($("#l-room")), key = `${days}|${room}`;
+  if (!force && listeners.key === key) return renderListeners();
+  $("#l-list").innerHTML = `<div class="loading"><span class="spinner"></span>記録を集計しています…</div>`;
+  try {
+    const r = await api(`/api/listeners?days=${encodeURIComponent(days)}&room=${encodeURIComponent(room)}`);
+    Object.assign(listeners, { key, rows: r.listeners, shown: 200, catalog: r.catalog });
+    renderListeners();
+  } catch (e) {
+    $("#l-list").innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+function listenerRows() {
+  const q = $("#l-q").value.trim().toLowerCase(), min = Number($("#l-min").value) || 0;
+  const f = $("#l-filters .active").dataset.f, todayStart = new Date().setHours(0, 0, 0, 0) / 1000;
+  const sorts = { points: (u) => u.points, paid: (u) => u.paid_points, times: (u) => u.times, last: (u) => u.last_at, rooms: (u) => u.room_count };
+  const key = sorts[$("#l-sort").value];
+  return listeners.rows.filter((u) => (!q || String(u.user_id) === q || u.names.some((n) => n.toLowerCase().includes(q)))
+    && u.points >= min
+    && (f === "all" || (f === "paid" && u.paid_points > 0) || (f === "multi" && u.room_count > 1) || (f === "today" && u.last_at >= todayStart)))
+    .sort((a, b) => key(b) - key(a));
+}
+function renderListeners() {
+  const rows = listenerRows();
+  const head = `<div class="summary"><div class="stat"><div class="v">${num(rows.length)}</div><div class="l">人 (全 ${num(listeners.rows.length)} 人中)</div></div>
+    <div class="stat"><div class="v">${num(rows.reduce((t, u) => t + u.points, 0))} pt</div><div class="l">合計 (有料 ${num(rows.reduce((t, u) => t + u.paid_points, 0))})</div></div></div>
+    ${listeners.catalog ? "" : `<div class="hint">ギフトのポイント表をまだ取得できていないため、ポイントが 0 になっています (視聴かギフト記録を始めると取得します)。</div>`}`;
+  if (!rows.length) {
+    const q = $("#l-q").value.trim();
+    $("#l-list").innerHTML = head + `<div class="empty">当てはまるリスナーはいません${/^\d{1,12}$/.test(q) ? `<div id="l-lookup" class="hint">ユーザー ID ${esc(q)} を SHOWROOM で調べています…</div>` : ""}</div>`;
+    if (/^\d{1,12}$/.test(q)) lookupUser(q).then((p) => {
+      const box = $("#l-lookup");
+      if (!box || $("#l-q").value.trim() !== q) return;
+      box.innerHTML = p ? `<div class="pick" style="justify-content:center;cursor:default">${thumb(p.avatar)}<div style="text-align:left"><div class="t">${esc(p.name)}</div>
+          <div class="s">ID ${esc(p.user_id)}${p.level ? ` ・ ファンレベル ${num(p.level)}` : ""} ・ SHOWROOM にいるユーザーですが、ギフトの記録はまだありません</div></div></div>`
+        : `SHOWROOM にもユーザー ID ${esc(q)} は見つかりませんでした`;
+    });
+    return;
+  }
+  $("#l-list").innerHTML = head + `<div class="row"><h3 style="flex:1">一覧</h3>${legend}</div><div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">回数</th><th>送ったルーム</th><th class="num">最後</th></tr></thead>
+    <tbody>${rows.slice(0, listeners.shown).map((u, i) => `<tr class="clickable ${listeners.selected == u.user_id ? "selected" : ""}" data-uid="${esc(u.user_id)}">
+      <td class="rank">${i + 1}</td><td class="name"><b>${esc(u.name || "(名前なし)")}</b> <span class="uid">ID ${esc(u.user_id)}</span>${u.names.length > 1 ? `<div class="uid">旧名: ${esc(u.names.slice(1, 3).join("、"))}</div>` : ""}</td>
+      <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num">${num(u.paid_points)}</td><td class="num">${num(u.free_points)}</td><td class="num">${num(u.times)}</td>
+      <td>${esc(u.rooms.slice(0, 2).map((r) => r.name).join("、"))}${u.room_count > 2 ? ` ほか ${u.room_count - 2}` : ""}</td><td class="num">${tm(u.last_at, true).slice(0, 11)}</td></tr>`).join("")}</tbody></table></div>`
+    + (rows.length > listeners.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="l-more">さらに表示 (${num(rows.length - listeners.shown)} 人)</button></div>` : "");
+}
+async function openListener(uid) {
+  location.hash = "#listeners";
+  listeners.selected = uid;
+  const box = $("#l-detail");
+  box.innerHTML = `<div class="loading"><span class="spinner"></span>履歴を読み込み中…</div>`;
+  try {
+    const d = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=${encodeURIComponent($("#l-days").value)}`);
+    if (!d.found) { box.innerHTML = `<div class="empty">この期間の記録はありません (ID ${esc(uid)})</div>`; return; }
+    const t = d.total;
+    box.innerHTML = `<div class="card" style="margin:14px 0">
+      <div class="card-head"><div><div class="card-title">${esc(d.names.join(" / "))}</div><div class="card-key">ユーザー ID ${esc(d.user_id)} ・ ${tm(d.first_at, true).slice(0, 11)} 〜 ${tm(d.last_at, true).slice(0, 11)}</div></div>
+        <button class="btn small" id="l-close">閉じる</button></div>
+      <div class="summary">
+        <div class="stat"><div class="v">${num(t.points)} pt</div><div class="l">合計 (有料 ${num(t.paid_points)} / 無料 ${num(t.free_points)})</div></div>
+        <div class="stat"><div class="v">${num(t.times)}</div><div class="l">回数 (${num(t.count)} 個)</div></div>
+        <div class="stat"><div class="v">${num(d.rooms.length)}</div><div class="l">ルーム</div></div>
+      </div>
+      <h3>ルーム別</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">有料</th><th class="num">回数</th><th class="num">最後</th><th></th></tr></thead>
+      <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}</td><td class="num"><b>${num(r.points)}</b></td><td class="num">${num(r.paid_points)}</td><td class="num">${num(r.times)}</td><td class="num">${tm(r.last_at, true).slice(0, 11)}</td>
+        <td><button class="linkish" data-room-gifts="${esc(r.key)}">ギフト画面で見る ›</button></td></tr>`).join("")}</tbody></table></div>
+      <h3>日別</h3><div class="chips">${d.days.map((x) => `<span class="chip">${esc(x.day)}　${num(x.points)} pt</span>`).join("")}</div>
+      <h3>履歴 (新しい順)</h3><div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>日時</th><th>ルーム</th><th>ギフト</th><th class="num">個数</th><th class="num">pt</th></tr></thead>
+      <tbody>${d.history.map((h) => `<tr><td>${tm(h.at, true)}</td><td>${esc(h.room_name)}</td><td>${esc(h.gift)}</td><td class="num">${num(h.num)}</td><td class="num">${num(h.points)}</td></tr>`).join("")}</tbody></table></div>
+    </div>`;
+    renderListeners();
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    box.innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+$("#l-list").addEventListener("click", (ev) => {
+  if (ev.target.id === "l-more") { listeners.shown += 200; return renderListeners(); }
+  const tr = ev.target.closest("tr[data-uid]");
+  if (tr) openListener(tr.dataset.uid);
+});
+$("#l-detail").addEventListener("click", (ev) => {
+  if (ev.target.id === "l-close") { $("#l-detail").innerHTML = ""; listeners.selected = null; return renderListeners(); }
+  const b = ev.target.closest("[data-room-gifts]");
+  if (b) {
+    setGiftMode("room"); setPicked($("#g-room"), b.dataset.roomGifts, roomName(b.dataset.roomGifts)); $("#g-hours").value = "100000000";
+    const u = listeners.rows.find((x) => String(x.user_id) === String(listeners.selected));
+    setPicked($("#g-user"), String(listeners.selected || ""), u ? u.name : ""); location.hash = "#gifts"; loadGifts();
+  }
+});
+$("#l-filters").addEventListener("click", (ev) => {
+  const f = ev.target.closest("[data-f]");
+  if (!f) return;
+  $$("#l-filters .fchip").forEach((x) => x.classList.toggle("active", x === f));
+  listeners.shown = 200; renderListeners();
+});
+["#l-q", "#l-min"].forEach((id) => $(id).addEventListener("input", () => { listeners.shown = 200; renderListeners(); }));
+$("#l-sort").addEventListener("change", renderListeners);
+$("#l-days").addEventListener("change", () => { loadListeners(); if (listeners.selected) openListener(listeners.selected); });
+// ルームの絞り込みを消した時 (× や空にした時) は、すべてのルームに戻す
+$("#l-room").addEventListener("input", () => { if (!$("#l-room").value.trim()) { setPicked($("#l-room"), "", ""); loadListeners(); } });
+
 /* ------------------------------------------------------------ 設定 */
-let saved = { rooms: [], enter_rooms: [], record_rooms: [], events: [] }, draft = null, settingsDirty = false;
+let saved = { rooms: [], enter_rooms: [], record_rooms: [], events: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;
 const KEY_RE = { rooms: /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/, enter_rooms: /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/, record_rooms: /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/, events: /showroom-live\.com\/event\/([A-Za-z0-9_\-]+)/ };
 function normalize(kind, value) {
   value = value.trim();
@@ -644,12 +1135,24 @@ function loadSettings(s) {
   saved = JSON.parse(JSON.stringify(s));
   draft = JSON.parse(JSON.stringify(s));
   renderSettings();
+  // 登録済みのルーム・イベントの名前を出す
+  if (!settingNamesLoaded) { settingNamesLoaded = true; Promise.allSettled([roomList(""), eventList()]).then(() => { if (draft) renderSettings(); }); }
+}
+function settingLabel(kind, key) {
+  const name = kind === "events" ? eventName(key) : roomName(key);
+  return name && name !== key ? `<b>${esc(name)}</b> <small>${esc(key)}</small>` : esc(key);
+}
+function addSetting(kind, key) {
+  if (draft[kind].includes(key)) return toast("もう追加されています");
+  draft[kind].push(key);
+  renderSettings();
+  toast(`「${kind === "events" ? eventName(key) : roomName(key)}」を追加しました。「保存して反映」で確定します`);
 }
 function renderSettings() {
   for (const card of $$("[data-list]")) {
     const kind = card.dataset.list, items = draft[kind];
     card.querySelector(".list").innerHTML = items.length
-      ? items.map((k, i) => `<li><span>${esc(k)}${kind === "record_rooms" && draft.rooms.includes(k) ? "<br><small>視聴中のルームなので、ギフトはブラウザ側で記録します (二重には記録しません)</small>" : ""}</span>${kind === "events" ? "" : `<a href="${roomUrl(k)}" target="_blank" rel="noopener noreferrer" title="SHOWROOM で開く">↗</a>`}<button class="x" data-i="${i}" title="削除" aria-label="${esc(k)} を削除">×</button></li>`).join("")
+      ? items.map((k, i) => `<li><span>${settingLabel(kind, k)}${kind === "record_rooms" && draft.rooms.includes(k) ? "<br><small>視聴中のルームなので、ギフトはブラウザ側で記録します (二重には記録しません)</small>" : ""}</span>${kind === "events" ? "" : `<a href="${roomUrl(k)}" target="_blank" rel="noopener noreferrer" title="SHOWROOM で開く">↗</a>`}<button class="x" data-i="${i}" title="削除" aria-label="${esc(k)} を削除">×</button></li>`).join("")
       : `<li class="none">まだありません</li>`;
   }
   settingsDirty = JSON.stringify(saved) !== JSON.stringify(draft);
