@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .research_store import Store, db_path
+from .research_store import MONTH_SQL, Store, db_path
 from .status import JST
 
 log = logging.getLogger("research")
@@ -663,7 +663,11 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         room_rows = s.all("SELECT * FROM rs ORDER BY points DESC LIMIT 200")
         pairs = _room_pairs(s, rooms)
 
-        uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids))
+        cov = coverage(state_dir, max_age=0)
+        trend = _trend(s, cov, left)
+        trend_ids = [r["user_id"] for kind in ("falling", "rising") for r in trend[kind]]
+
+        uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids + trend_ids))
         evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
         sup = set(sup_ids)
         # ルームごとの内訳は 1 人ずつ読む (数万ルームに出てくる人もいて、まとめて読むとメモリが足りなくなる)
@@ -686,7 +690,113 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
                 "signup_candidates": [summary[u] for u in extra_ids], "signup_years": signup_years,
                 "fans": [summary[u] for u in fan_ids], "fan_count": fan_count, "similar": similar,
                 "pairs": pairs, "rooms": room_list, "room_count": room_count, "multi_count": multi_count,
-                "gifter_count": gifter_count}
+                "gifter_count": gifter_count, "coverage": cov,
+                "trend": {**trend, **{kind: [{**summary[r["user_id"]], "recent": r["recent"], "before": r["before"]} for r in trend[kind]]
+                                      for kind in ("falling", "rising")}}}
+
+
+# ------------------------------------------------------------------ 集まり具合と、支出の増え減り
+COMPLETE_RATIO = 0.95  # 貢献ランキングをこの割合まで取った月を「集め終わった」とする
+ROOMS_RATIO = 0.95  # 見つけたルームのうち、この割合まで累計ランキングなどを取るまでは、どの月も集め終わっていない扱い
+TREND_PERIODS = (12, 6, 3)  # 比べる期間 (か月)。集め終わった月で比べられる、いちばん長い期間を使う
+TREND_MIN = 10000  # 増え減りの一覧に出す人の、多い方の期間のポイントの下限
+TREND_LIMIT = 100  # 増え減りの一覧に出す人数 (それぞれ)
+_coverage_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _add_months(month: str, n: int) -> str:
+    y, m = map(int, month.split("-"))
+    t = y * 12 + m - 1 + n
+    return f"{t // 12:04d}-{t % 12 + 1:02d}"
+
+
+def coverage(state_dir: Path, max_age: float = ANALYSIS_TTL, now: float | None = None) -> dict[str, Any]:
+    """月ごとの集まり具合 (イベントの貢献ランキングを、その月に終わったイベントの分どれだけ取ったか)。
+
+    全ルームの収集は新しいイベントから取るので、古い月ほど少なく見える。集め終わっていない月を比べると
+    「最近増えた」ように見えてしまうため、増え減りは集め終わった月どうしでだけ比べる。
+    """
+    key = str(Path(state_dir).resolve())
+    hit = _coverage_cache.get(key)
+    if hit and time.time() - hit[0] < max_age and now is None:
+        return hit[1]
+    with Store(state_dir) as s:
+        result = _coverage(s, time.time() if now is None else now)
+    _coverage_cache[key] = (time.time(), result)
+    return result
+
+
+def _coverage(s: Store, now: float) -> dict[str, Any]:
+    rows = s.all(f"""SELECT {MONTH_SQL} AS month, SUM(re.final=1) AS done, SUM({PENDING_RANKING}) AS pending
+                     FROM room_events re JOIN events e USING(event_id)
+                     WHERE e.end IS NOT NULL AND e.end < ? AND e.show_ranking=1 GROUP BY month ORDER BY month""",
+                 (now - 3600, RANKING_RETRIES, now - 3600))
+    rooms_total = s.scalar("SELECT COUNT(*) FROM rooms")
+    rooms_done = s.scalar("SELECT COUNT(*) FROM rooms WHERE collected_at IS NOT NULL")
+    rooms_ok = bool(rooms_total) and rooms_done >= rooms_total * ROOMS_RATIO
+    # 過去のイベントの読み込み (番号を新しい順にさかのぼる) がどの月まで進んだか。読み終えていれば全部
+    nxt, read_done = s.meta("history_next"), s.meta("history_done_at")
+    if read_done:
+        read_from = "0000-00"
+    else:
+        first = s.scalar("SELECT MIN(end) FROM events WHERE event_id > ? AND end IS NOT NULL", (nxt,), default=None) \
+            if nxt is not None else None
+        read_from = _add_months(_month(first), 1) if first else "9999-99"  # その月の途中のイベントは、まだ読んでいないかもしれない
+    this_month = _month(now)
+    last_full = _add_months(this_month, -1)
+    by_month = {r["month"]: (r["done"] or 0, r["pending"] or 0) for r in rows}
+    months = []
+    if by_month:
+        m = min(by_month)
+        while m <= this_month:
+            done, pending = by_month.get(m, (0, 0))
+            ratio = done / (done + pending) if done + pending else None
+            months.append({"month": m, "done": done, "pending": pending, "ratio": None if ratio is None else round(ratio, 3),
+                           "complete": m < this_month and rooms_ok and m >= read_from and (ratio is None or ratio >= COMPLETE_RATIO)})
+            m = _add_months(m, 1)
+    complete_from = None
+    for row in reversed([x for x in months if x["month"] <= last_full]):
+        if not row["complete"]:
+            break
+        complete_from = row["month"]
+    years: dict[str, dict[str, Any]] = {}
+    for row in months:
+        y = years.setdefault(row["month"][:4], {"year": int(row["month"][:4]), "done": 0, "pending": 0, "months": 0, "complete": 0})
+        y["done"] += row["done"]
+        y["pending"] += row["pending"]
+        y["months"] += 1
+        y["complete"] += row["complete"]
+    for y in years.values():
+        y["ratio"] = round(y["done"] / (y["done"] + y["pending"]), 3) if y["done"] + y["pending"] else None
+    return {"months": months, "years": sorted(years.values(), key=lambda y: -y["year"]), "complete_from": complete_from,
+            "last_full": last_full, "rooms": {"total": rooms_total, "collected": rooms_done, "ok": rooms_ok},
+            "read_from": None if read_from == "9999-99" else read_from, "read_done": bool(read_done),
+            "cumulative_from": (lambda at: _month(at) if at else None)(s.scalar("SELECT MIN(at) FROM cumulative_history", default=None))}
+
+
+def _trend(s: Store, cov: dict[str, Any], left: tuple[str, ...]) -> dict[str, Any]:
+    """離れつつある人・伸びている人 (集め終わった月どうしで、最近の期間とその前の期間のイベントの貢献ポイントを比べる)。"""
+    while s.build_user_month():  # 前に集めた分がまだ入っていなければ、ここで入れ終える
+        pass
+    last, start = cov["last_full"], cov["complete_from"]
+    period = next((p for p in TREND_PERIODS if start and _add_months(last, -(2 * p - 1)) >= start), None)
+    out: dict[str, Any] = {"period": period, "min": TREND_MIN, "falling": [], "rising": [], "falling_count": 0, "rising_count": 0}
+    if period is None:
+        return out
+    recent_from, before_from = _add_months(last, -(period - 1)), _add_months(last, -(2 * period - 1))
+    out.update({"recent": [recent_from, last], "before": [before_from, _add_months(recent_from, -1)]})
+    s.conn.execute("DROP TABLE IF EXISTS temp.tr")
+    s.conn.execute("""CREATE TEMP TABLE tr AS SELECT user_id, SUM(CASE WHEN month >= ? THEN points ELSE 0 END) AS recent,
+                        SUM(CASE WHEN month < ? THEN points ELSE 0 END) AS before FROM user_month
+                      WHERE month BETWEEN ? AND ? GROUP BY user_id""", (recent_from, recent_from, before_from, last))
+    gone = f"(SELECT name FROM users n WHERE n.user_id=tr.user_id) IN ({','.join('?' * len(left))})"
+    for kind, cond, order in (("falling", "before >= ? AND recent * 2 <= before", "before - recent"),
+                              ("rising", "recent >= ? AND recent >= before * 2", "recent - before")):
+        where = f"{cond} AND NOT COALESCE({gone}, 0)"
+        out[f"{kind}_count"] = s.scalar(f"SELECT COUNT(*) FROM tr WHERE {where}", (TREND_MIN, *left))
+        out[kind] = [dict(r) for r in s.all(f"SELECT user_id, recent, before FROM tr WHERE {where} ORDER BY {order} DESC, user_id LIMIT ?",
+                                            (TREND_MIN, *left, TREND_LIMIT))]
+    return out
 
 
 PAIR_MIN_SHARED = 2  # ルーム同士の重なりに出す、共通のギフターの最少人数
@@ -746,7 +856,10 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         room_list = sorted(({"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "support": rid in sup,
                              "points": room_score(v), **v} for rid, v in slots.items()), key=lambda r: -r["points"])
         w = s.one("SELECT memo, added_at FROM watch WHERE user_id=?", (uid,))
-        return {"user_id": uid, "found": True, "room_total": len(room_list), "event_total": event_total,
+    cov = coverage(state_dir)
+    with Store(state_dir) as s:
+        return {"user_id": uid, "found": True,
+                "coverage": {k: cov[k] for k in ("complete_from", "last_full", "cumulative_from")}, "room_total": len(room_list), "event_total": event_total,
                 "watch": {"memo": w["memo"] or "", "added_at": w["added_at"]} if w else None,
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).at(uid)),

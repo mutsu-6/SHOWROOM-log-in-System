@@ -50,10 +50,17 @@ CREATE TABLE IF NOT EXISTS user_room (
     user_id INTEGER, room_id INTEGER, cumulative INTEGER DEFAULT 0, cumulative_rank INTEGER,
     visits INTEGER DEFAULT 0, events INTEGER DEFAULT 0, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS user_room_room ON user_room(room_id);
+-- ギフターの月ごとのイベントの貢献ポイント (イベントが終わった月、日本時間)。貢献ランキングを保存するたびに足す
+-- (支出の増え減りを、全部の貢献ランキングを数え直さずに出すため)
+CREATE TABLE IF NOT EXISTS user_month (
+    user_id INTEGER, month TEXT, points INTEGER, PRIMARY KEY (user_id, month)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS user_month_month ON user_month(month);
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
+MONTH_SQL = "strftime('%Y-%m', e.end + 9 * 3600, 'unixepoch')"  # イベントが終わった月 (日本時間)
+USER_MONTH_STEP = 2000  # user_month を前に集めた分から作るとき、1 回に足すイベントの数
 HISTORY_EVERY = 25 * 86400  # 累計ランキングの値を残す間隔 (ルームごと。月ごとの推移に使う)
 
 _ready: set[str] = set()
@@ -200,16 +207,56 @@ class Store:
                            WHERE o.event_id=? AND o.room_id=? AND o.user_id=user_room.user_id)
                          WHERE room_id=? AND user_id IN (SELECT user_id FROM contributions WHERE event_id=? AND room_id=?)""",
                       (event_id, room_id, room_id, event_id, room_id))
+            months = self._user_month_ready(c, event_id)
+            if months:
+                c.execute(f"""INSERT INTO user_month(user_id, month, points)
+                               SELECT o.user_id, {MONTH_SQL}, -o.point FROM contributions o JOIN events e USING(event_id)
+                               WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
+                               ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
             c.execute("DELETE FROM contributions WHERE event_id=? AND room_id=?", (event_id, room_id))
             c.executemany("INSERT OR REPLACE INTO contributions(event_id, room_id, user_id, point, rank) VALUES (?, ?, ?, ?, ?)",
                           [(event_id, room_id, r["user_id"], r["point"], r.get("rank")) for r in rows])
             c.executemany("""INSERT INTO user_room(user_id, room_id, events) VALUES (?, ?, ?)
                              ON CONFLICT(user_id, room_id) DO UPDATE SET events = events + excluded.events""",
                           [(r["user_id"], room_id, r["point"]) for r in rows])
+            if months:
+                c.execute(f"""INSERT INTO user_month(user_id, month, points)
+                               SELECT o.user_id, {MONTH_SQL}, o.point FROM contributions o JOIN events e USING(event_id)
+                               WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
+                               ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
             c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
                            failures=0""", (room_id, event_id, now, int(final)))
             self._names(c, rows)
+
+    # ---------------------------------------------------------------- 月ごとの集計 (user_month)
+    def _user_month_ready(self, c: sqlite3.Connection, event_id: int) -> bool:
+        """このイベントの分が、もう user_month に入っているか (入っていれば、取り直しのたびに足し引きする)。"""
+        row = c.execute("SELECT v FROM meta WHERE k='user_month_upto'").fetchone()
+        return row is not None and (json.loads(row[0]) is True or event_id <= json.loads(row[0]))
+
+    def build_user_month(self, step: int = USER_MONTH_STEP) -> bool:
+        """前に集めた貢献ランキングを、user_month に少しずつ足す (イベント番号の小さい順)。
+
+        戻り値は、まだ残りがあるか。全部足し終えると meta の user_month_upto が true になり、
+        そのあとは set_contributions が保存のたびに足す。
+        """
+        with self.tx() as c:
+            row = c.execute("SELECT v FROM meta WHERE k='user_month_upto'").fetchone()
+            upto = 0 if row is None else json.loads(row[0])
+            if upto is True:
+                return False
+            ids = [r[0] for r in c.execute("SELECT DISTINCT event_id FROM contributions WHERE event_id > ? ORDER BY event_id LIMIT ?",
+                                           (upto, step))]
+            if ids:
+                c.execute(f"""INSERT INTO user_month(user_id, month, points)
+                               SELECT o.user_id, {MONTH_SQL} AS m, SUM(o.point) FROM contributions o JOIN events e USING(event_id)
+                               WHERE o.event_id > ? AND o.event_id <= ? AND e.end IS NOT NULL GROUP BY o.user_id, m
+                               ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (upto, ids[-1]))
+            done = len(ids) < step
+            c.execute("INSERT INTO meta(k, v) VALUES ('user_month_upto', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                      (json.dumps(True if done else ids[-1]),))
+            return not done
 
     def set_event_rooms(self, event_id: int, rows: list[dict[str, Any]], now: float) -> None:
         """イベントの参加ルームと、各ルームのイベントのポイント・順位を入れる。"""

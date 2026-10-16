@@ -53,6 +53,7 @@ class Sweeper:
         self._rooms: list[Any] = []
         self._rankings: list[Any] = []
         self._history_failures = 0
+        self._aggregated = False
         self.doing = ""
         self.last_error: str | None = None
         self.running = False
@@ -99,6 +100,7 @@ class Sweeper:
             return self._onlives(now)
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
             return self._event_list(now)
+        self._aggregate()
         jobs = [self._next_progress, self._next_ranking, self._next_room, self._next_event_rooms, self._next_event_history]
         if self.scan:
             jobs.append(self._next_scan)
@@ -175,6 +177,16 @@ class Sweeper:
         except Exception as err:  # noqa: BLE001
             self._failed("events", "event_id", e["event_id"], now, err)
         return True
+
+    def _aggregate(self) -> None:
+        """前に集めた貢献ランキングを、月ごとの集計 (user_month) に少しずつ入れる。
+
+        SHOWROOM には問い合わせないので、仕事の順番には数えず、ほかの仕事の前に少しずつ行う。
+        """
+        if self._aggregated:
+            return
+        self.doing = "月ごとの集計"
+        self._aggregated = not self.store.build_user_month()
 
     def _next_progress(self, now: float) -> bool:
         """開催中のイベントの参加ルームのポイントと順位を、PROGRESS_EVERY ごとに残す (ポイントの推移)。

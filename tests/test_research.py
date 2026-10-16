@@ -524,3 +524,69 @@ def test_watch_list_with_memo(collected):
         research.set_watch(tmp_path, "abc", True)
     with pytest.raises(ValueError):
         research.set_watch(tmp_path, 1, True, "あ" * 501)
+
+
+def _monthly_events(s, months_back, points, now, pending_months=()):
+    """months_back か月前から先月まで、月に 1 つずつ終わったイベントと貢献ランキングを入れる。"""
+    s.upsert_rooms([{"room_id": 1, "key": "r1", "name": "ルーム"}], "settings", now)
+    s.conn.execute("UPDATE rooms SET collected_at=?", (now,))
+    s.set_meta("history_done_at", now)
+    this = datetime.fromtimestamp(now, JST).replace(day=15, hour=12, minute=0, second=0, microsecond=0)
+    for back in range(months_back, 0, -1):
+        y, m = this.year, this.month - back
+        while m <= 0:
+            y, m = y - 1, m + 12
+        end = this.replace(year=y, month=m).timestamp()
+        eid = 1000 + back
+        s.upsert_events([{"event_id": eid, "name": f"e{back}", "end": end, "show_ranking": True}])
+        s.link([(1, eid)])
+        if back in pending_months:
+            continue  # まだ取っていない貢献ランキング
+        s.set_contributions(eid, 1, [{"user_id": u, "point": f(back), "name": f"u{u}"} for u, f in points.items() if f(back)],
+                            now, final=True)
+
+
+def test_trend_compares_only_collected_months(tmp_path):
+    with Store(tmp_path) as s:
+        _monthly_events(s, 26, {
+            1: lambda b: 20000 if b > 12 else 1000,  # 前の 12 か月は多く、最近は少ない → 離れつつある
+            2: lambda b: 8000 if b <= 12 else 0,  # 最近から送り始めた → 伸びている
+            3: lambda b: 5000,  # 変わらない
+        }, NOW)
+    cov = research.coverage(tmp_path, max_age=0)
+    assert cov["complete_from"] is not None and all(m["complete"] for m in cov["months"][:-1])
+    d = research.analyze(tmp_path, [], max_age=0)
+    t = d["trend"]
+    assert t["period"] == 12
+    assert [u["user_id"] for u in t["falling"]] == [1] and t["falling"][0]["before"] == 240000
+    assert [u["user_id"] for u in t["rising"]] == [2] and t["rising"][0]["recent"] == 96000
+    assert t["falling"][0]["name"] == "u1"
+    assert research.gifter_detail(tmp_path, 1, [])["coverage"]["complete_from"] == cov["complete_from"]
+
+
+def test_trend_waits_for_older_months(tmp_path):
+    # 古い月の貢献ランキングをまだ取っていない時は、そこまで比べない (取れている短い期間で比べる)
+    with Store(tmp_path) as s:
+        _monthly_events(s, 26, {1: lambda b: 20000}, NOW, pending_months=(9, 15))
+    cov = research.coverage(tmp_path, max_age=0)
+    assert not next(m for m in cov["months"] if m["pending"])["complete"]
+    t = research.analyze(tmp_path, [], max_age=0)["trend"]
+    assert t["period"] == 3 and t["falling"] == [] and t["rising"] == []
+    # ルームをまだ集め終わっていない時は、どの月も集め終わっていない扱い
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": n} for n in range(2, 10)], "live", NOW)
+    assert research.coverage(tmp_path, max_age=0)["complete_from"] is None
+    assert research.analyze(tmp_path, [], max_age=0)["trend"]["period"] is None
+
+
+def test_user_month_is_built_from_earlier_rankings(tmp_path):
+    with Store(tmp_path) as s:
+        _monthly_events(s, 3, {1: lambda b: 100 * b}, NOW)
+        s.conn.execute("DELETE FROM user_month")
+        s.conn.execute("DELETE FROM meta WHERE k='user_month_upto'")  # user_month が無かったころの research.db
+        assert s.build_user_month(step=2) is True
+        assert s.build_user_month(step=2) is False
+        assert s.scalar("SELECT SUM(points) FROM user_month WHERE user_id=1") == 600
+        # 取り直したときは、前の分を引いてから足す
+        s.set_contributions(1001, 1, [{"user_id": 1, "point": 150}], NOW, final=True)
+        assert s.scalar("SELECT SUM(points) FROM user_month WHERE user_id=1") == 650

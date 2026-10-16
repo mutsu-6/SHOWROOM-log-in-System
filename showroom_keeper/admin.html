@@ -198,6 +198,13 @@ svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
 .hbar .ht i { display: block; height: 100%; border-radius: 4px; }
 .hbar .hv { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: right; }
 .chart-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 36px 8px; background: var(--panel2); border-radius: 8px; }
+.cov { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.cov .ct { background: var(--panel2); border-radius: 4px; height: 10px; overflow: hidden; }
+.cov .ct i { display: block; height: 100%; border-radius: 4px; background: var(--info); }
+.cov .ct i.full { background: var(--ok); }
+.cov .cv { color: var(--muted); text-align: right; }
+.warn-note { color: var(--warn); }
+details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 6px 0; }
 .seg { display: inline-flex; flex: none; max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
 .seg button { flex: none; white-space: nowrap; border: 0; background: transparent; color: var(--muted); padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--line); }
@@ -1331,6 +1338,13 @@ function renderTimeline(t) {
   const ym = (s) => s ? `${s.slice(0, 4)}年${Number(s.slice(5))}月` : "—";
   const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const trend = change === null ? "" : `<small style="color:${change >= 0 ? "var(--ok)" : "var(--accent)"}">${change >= 0 ? "+" : ""}${num(change)}%</small>`;
+  // 比べた 24 か月に、集め終わっていない月 (イベント) や、集め始める前の月 (累計ランキング) があれば注意を出す
+  const cov = t.coverage || {}, windowStart = months[Math.max(0, n - 24)].month;
+  const caution = kind === "events" && (!cov.complete_from || windowStart < cov.complete_from)
+    ? `イベントの貢献ランキングを集め終わっていない月があります${cov.complete_from ? ` (集め終わったのは ${ym(cov.complete_from)}から)` : ""}。古い月ほど少なく出るので、「その前の 12 か月」と比べた増え減りは、まだ当てになりません。`
+    : kind === "cumulative" && cov.cumulative_from && windowStart < cov.cumulative_from
+      ? `累計ランキングの増えは、${ym(cov.cumulative_from)}に集め始めてからの分だけです。それより前の月は 0 になるので、比べた増え減りは当てになりません。`
+      : "";
   const toggle = `<div class="seg" role="group">${TIMELINE_KINDS.map(([k, l]) => `<button type="button" class="${k === kind ? "active" : ""}" aria-pressed="${k === kind}" data-tl="${k}" ${has(k) ? "" : "disabled"}>${l}</button>`).join("")}</div>`;
   const legend = chartLegend(keys.filter((k) => months.some((m) => m[kind].rooms[k])).map((k) => [nameOf(k), color(k)]));
   box.innerHTML = `<h3>支出の移り変わり</h3>
@@ -1340,7 +1354,7 @@ function renderTimeline(t) {
       ${stat(best[0] ? `${best[0]}<small>年</small>` : "—", best[0] ? `一番多かった年 (${shortNum(best[1].total)} pt)` : "一番多かった年")}
       ${stat(active.length ? ym(active[0].month) : "—", "最初に分かった月")}
       ${stat(active.length ? ym(active[active.length - 1].month) : "—", "最後に分かった月")}
-    </div>
+    </div>${caution ? `<div class="hint warn-note">※ ${esc(caution)}</div>` : ""}
     <div class="charts one">
       <div class="chart-card wide"><div class="chart-head"><div><b>月ごと</b><div class="chart-sub">どの月に、どのルームへ送ったか (薄い帯は偶数の年)</div></div>${toggle}</div>
         ${has(kind) ? stackedBars(monthBars, { width: full, height: 190, maxBar: 24 }) + legend : chartEmpty("この種類の情報はまだありません")}
@@ -1534,7 +1548,7 @@ function renderResearch() {
   const signupSelect = years.length ? `<select id="r-signup" title="ユーザー ID から推測した登録時期で絞り込む">${[["all", "すべての登録時期"], ["within1", "ここ 1 年以内に登録"], ["within3", "ここ 3 年以内に登録"],
     ...years.map((y) => [String(y.year), `${y.year} 年${y.earliest ? "以前" : "ごろ"}に登録 (${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
   const stat = (v, l) => `<div class="stat"><div class="v">${num(v)}</div><div class="l">${l}</div></div>`;
-  let html = watchSection();
+  let html = watchSection() + trendSection(d);
   html += `<div class="summary">${all
     ? stat(d.gifter_count, "分かったギフター (人)") + stat(d.multi_count, "複数のルームに送る人") + stat(d.room_count, "ギフターの分かったルーム")
     : stat(d.candidate_count, "誘導の候補 (人)") + stat(d.fan_count, "応援ルームのギフター (人)") + stat(d.gifter_count, "分かったギフター (人)")}</div>`;
@@ -1622,6 +1636,43 @@ function renderRankingCharts(d, sel) {
       <div class="chart-card"><div class="chart-head"><div><b>イベントでの順位</b><div class="chart-sub">貢献ランキングで、何位に入ることが多いか</div></div></div>${rankChart}</div>
     </div>`;
 }
+// 離れつつある人・伸びている人 (集め終わった月どうしで比べる) と、月ごとの集まり具合
+const ymText = (m) => m ? `${m.slice(0, 4)}年${Number(m.slice(5))}月` : "—";
+function coverageBlock(c) {
+  if (!c || !c.months.length) return `<div class="hint">まだイベントの貢献ランキングがありません。</div>`;
+  const pctText = (r) => r === null ? "—" : `${Math.floor(r * 1000) / 10}%`;
+  const gate = [`ルームの収集 ${num(c.rooms.collected)} / ${num(c.rooms.total)} (${pctText(c.rooms.total ? c.rooms.collected / c.rooms.total : null)})${c.rooms.ok ? "" : " ・ 95% までは、どの月も「集め終わっていない」扱いです"}`,
+    c.read_done ? "過去のイベント: すべて読みました" : `過去のイベント: 新しい方から読んでいるところです${c.read_from && c.read_from <= c.last_full ? ` (${ymText(c.read_from)}より後の分は読みました)` : ""}`];
+  const rows = c.years.map((y) => `<span>${y.year}</span><span class="ct"><i class="${y.complete === y.months ? "full" : ""}" style="width:${(y.ratio || 0) * 100}%"></i></span>
+    <span class="cv" title="集め終わった月 / その年の月">${pctText(y.ratio)} (${y.complete}/${y.months})</span>`).join("");
+  return `<div class="hint" style="margin-top:0">${gate.map(esc).join("<br>")}</div>
+    <details class="more"><summary>年ごとの集まり具合 (その年に終わったイベントの貢献ランキングを、どれだけ取ったか)</summary>
+    <div class="cov">${rows}</div><div class="hint">かっこの中は、集め終わった月の数 / その年の月の数です。緑の年は、全部の月を集め終わっています。集め終わった月は ${c.complete_from ? `${ymText(c.complete_from)}〜${ymText(c.last_full)}` : "まだありません"}。</div></details>`;
+}
+function trendSection(d) {
+  const t = d.trend, c = d.coverage;
+  if (!t || !c) return "";
+  let html = `<h3>離れつつある人・伸びている人</h3>`;
+  if (!t.period) {
+    return html + `<div class="hint" style="margin-top:0">集め終わった月どうしでだけ比べます (集め終わっていない古い月と比べると、だれでも「最近増えた」ように見えてしまうため)。比べるには、続けて 6 か月以上集め終わった月が要ります。全ルームの収集が進むと出ます。</div>${coverageBlock(c)}`;
+  }
+  const range = (r) => `${ymText(r[0])}〜${ymText(r[1])}`;
+  const list = (rows, kind) => rows.length ? table(rows.slice(0, 10), kind)
+    + (rows.length > 10 ? `<details class="more"><summary>さらに表示 (${num(rows.length - 10)} 人)</summary>${table(rows.slice(10), kind)}</details>` : "")
+    : `<div class="empty">当てはまる人はいません</div>`;
+  const table = (rows, kind) => `<div class="table-wrap"><table><thead><tr><th>ギフター</th><th class="num">前の ${t.period} か月</th><th class="num">最近 ${t.period} か月</th><th class="num">増え減り</th><th>主なルーム</th></tr></thead>
+    <tbody>${rows.map((u) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
+      <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
+      <td class="num">${num(u.before)} pt</td><td class="num"><b>${num(u.recent)}</b> pt</td>
+      <td class="num" style="color:${kind === "rising" ? "var(--ok)" : "var(--accent)"}">${u.before ? `${u.recent >= u.before ? "+" : ""}${num(Math.round((u.recent / u.before - 1) * 100))}%` : "新しく"}</td>
+      <td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td></tr>`).join("")}</tbody></table></div>`;
+  return html + `<div class="hint" style="margin-top:0">イベントの貢献ポイントを、最近 ${t.period} か月 (${range(t.recent)}) とその前の ${t.period} か月 (${range(t.before)}) で比べます。どちらも集め終わった月です。
+      離れつつある人: 前の期間に ${num(t.min)} pt 以上送り、最近は半分以下。伸びている人: 最近 ${num(t.min)} pt 以上送り、前の期間の 2 倍以上。</div>
+    <div>
+      <div><b>離れつつある人</b> <small class="muted">${num(t.falling_count)} 人</small>${list(t.falling, "falling")}</div>
+      <div style="margin-top:12px"><b>伸びている人</b> <small class="muted">${num(t.rising_count)} 人</small>${list(t.rising, "rising")}</div>
+    </div>${coverageBlock(c)}`;
+}
 // 気になるギフター (☆ を付けた人) の一覧。メモと、分析と同じ要約を出す
 async function loadWatch() {
   try {
@@ -1698,7 +1749,7 @@ async function openGifter(uid) {
     </div>`;
     renderRankingCharts(d, "#r-rank-charts");
     renderResearch();
-    renderTimeline(d.timeline);
+    renderTimeline({ ...d.timeline, coverage: d.coverage });
     box.scrollIntoView({ behavior: "smooth", block: "start" });
     if (h) {  // 行動のグラフは、リスナーの履歴と同じもの (記録したギフトすべてから)
       const l = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=0`);
