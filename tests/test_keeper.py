@@ -112,3 +112,19 @@ def test_status_warns_only_when_checks_stop_for_twice_the_interval():
     assert "途絶え" not in format_login(stat, now=1000 + 3 * 3600)
     assert "途絶え" in format_login(stat, now=1000 + 5 * 3600)
     assert "途絶え" in format_login({"logged_in": True, "checked_at": 1000.0}, now=1000 + 700)  # 以前の記録 (3 分間隔)
+
+
+def test_narrow_streaming_urls_keeps_only_requested_quality():
+    from showroom_keeper.keeper import VIDEO_QUALITY, narrow_streaming_urls
+
+    data = {"streaming_url_list": [
+        {"id": 200, "is_default": True, "quality": 0, "type": "webrtc", "url": "webrtc://x/main"},
+        {"id": 203, "is_default": False, "quality": 100, "type": "webrtc", "url": "webrtc://x/main_ll"},
+        {"id": 2, "is_default": False, "quality": 1000, "type": "hls", "url": "https://x/main_ss.m3u8"},
+        {"id": 4, "is_default": False, "quality": 100, "type": "hls", "url": "https://x/main_ll.m3u8"},
+    ]}
+    low = narrow_streaming_urls(data, VIDEO_QUALITY["low"])["streaming_url_list"]
+    assert [e["id"] for e in low] == [203, 4] and [e["is_default"] for e in low] == [True, False]
+    assert len(data["streaming_url_list"]) == 4  # 元の応答は書き換えない
+    assert narrow_streaming_urls(data, VIDEO_QUALITY["medium"]) is data  # その画質が無ければそのまま
+    assert narrow_streaming_urls({"errors": []}, 100) == {"errors": []}

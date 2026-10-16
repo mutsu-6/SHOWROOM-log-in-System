@@ -10,6 +10,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
@@ -28,6 +29,38 @@ TRACKER_RE = re.compile(
     r"|a-mpd\.com|criteo\.(com|net)|adnxs\.com|amazon-adsystem\.com)(:\d+)?/"
 )
 MEDIA_PATTERNS = ("**/*.ts", "**/*.m4s", "**/*.aac")
+# 画質の名前と、SHOWROOM の配信 URL 一覧 (/api/live/streaming_url) の quality の値
+VIDEO_QUALITY = {"low": 100, "medium": 200, "original": 1000}
+STREAMING_URL_PATTERN = "**/api/live/streaming_url*"
+
+
+def narrow_streaming_urls(data: Any, quality: int) -> Any:
+    """配信ページが受け取る画質の一覧を、指定の画質のものだけにする (その画質が無ければそのまま)。
+
+    再生プレーヤーは一覧から再生する URL を選ぶため、一覧を絞ると指定の画質で再生される
+    (再生プレーヤーの画質の切り替えで選ぶのと同じ映像)。
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("streaming_url_list"), list):
+        return data
+    keep = [e for e in data["streaming_url_list"] if isinstance(e, dict) and e.get("quality") == quality]
+    if not keep:
+        return data
+    return {**data, "streaming_url_list": [dict(e, is_default=i == 0) for i, e in enumerate(keep)]}
+
+
+async def _limit_quality(ctx: BrowserContext, quality: int) -> None:
+    async def handle(route: Any) -> None:
+        try:
+            resp = await route.fetch()
+        except Exception:  # noqa: BLE001 - 取れなければページ側の通常の処理に任せる
+            await route.continue_()
+            return
+        try:
+            await route.fulfill(response=resp, json=narrow_streaming_urls(await resp.json(), quality))
+        except Exception:  # noqa: BLE001 - 形式が違う時は手を加えずに渡す
+            await route.fulfill(response=resp)
+
+    await ctx.route(STREAMING_URL_PATTERN, handle)
 # ページを開いておくのに必要なメモリの目安 (GB)。計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB
 BROWSER_BASE_GB = 0.5
 ROOM_GB = 0.5
@@ -153,6 +186,11 @@ async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
     if cfg.block_media:
         for pattern in MEDIA_PATTERNS:
             await ctx.route(pattern, lambda route: route.abort())
+    quality = VIDEO_QUALITY.get(str(cfg.video_quality).lower())
+    if quality:
+        await _limit_quality(ctx, quality)
+    elif str(cfg.video_quality).lower() != "auto":
+        log.warning("video_quality %r は使えません (low / medium / original / auto)。SHOWROOM の再生プレーヤーに任せます", cfg.video_quality)
     return ctx
 
 

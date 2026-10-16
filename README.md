@@ -229,6 +229,7 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 | `SHOWROOM_BROWSER_CHANNEL` | 使用ブラウザ (`chrome` / `msedge` / 空で付属 Chromium) |
 | `SHOWROOM_BROWSER_EXECUTABLE` | 使用するブラウザ実行ファイルのパス |
 | `SHOWROOM_PROXY` (または `HTTPS_PROXY`) | ブラウザが使うプロキシ |
+| `SHOWROOM_VIDEO_QUALITY` | 視聴する画質 (`low` 256x144・約 0.2Mbps / `medium` 640x360・約 0.8Mbps / `original` 配信そのまま・最大 1080p 約 6Mbps / `auto` 再生プレーヤー任せ)。既定は `low`。SHOWROOM の再生プレーヤーで選べる画質と同じもので、低いほど通信量と映像の処理が減る |
 | `SHOWROOM_KEEP_OPEN_WHEN_OFFLINE` | 配信していないルームのページも開いておくか (`true` / `false` / `auto`。既定は `auto` でメモリを見て決める) |
 | `SHOWROOM_WEB_PORT` / `SHOWROOM_WEB_HOST` | 管理画面のポート (既定 8080、0 で無効) と待ち受けアドレス (既定 127.0.0.1) |
 | `SHOWROOM_WEB_PASSWORD` | 管理画面のパスワード。設定すると localhost 以外からも開ける |

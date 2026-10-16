@@ -99,6 +99,10 @@ class Config:
     keep_open_when_offline: bool | None = None
     # 映像を受信せず帯域を節約する (視聴カウントに影響する可能性あり)
     block_media: bool = False
+    # 視聴する映像の画質。"low" (256x144・約 0.2Mbps) / "medium" (640x360・約 0.8Mbps) /
+    # "original" (配信そのまま・最大 1080p 約 6Mbps) / "auto" (SHOWROOM の再生プレーヤー任せ)。
+    # 画質は SHOWROOM の再生プレーヤーで視聴者が選べるもの。低いほど通信量と映像の処理が減る
+    video_quality: str = "low"
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
     # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
     record_gifts: bool = True
