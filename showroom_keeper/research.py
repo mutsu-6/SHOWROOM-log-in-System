@@ -297,37 +297,73 @@ def _summary(u: dict[str, Any], names: dict[str, str], support: set[str]) -> dic
     }
 
 
+PAIR_MIN_SHARED = 2  # ルーム同士の重なりに出す、共通のギフターの最少人数
+
+
 def analyze(state_dir: Path, support: list[str], limit: int = 300) -> dict[str, Any]:
-    """応援ルームを基準に、誘導の候補・応援ルームのギフター・似ているルームを出す。"""
+    """集めた情報をギフターとルームの両方から分析する。
+
+    応援ルームがあれば、それを基準に誘導の候補・応援ルームのギフター・似ているルームを出す。
+    無ければ (mode "all")、ギフター一覧 (分かったポイントの多い順)・ルーム同士の重なり・ルームごとのまとめを出す。
+    """
     users, names = build_gifters(state_dir)
     sup = set(support)
     summaries = [_summary(u, names, sup) for u in users.values()]
+    active = [s for s in summaries if s["name"] not in LEFT_NAMES]
     fans = sorted((s for s in summaries if s["support_points"] > 0), key=lambda s: -s["support_points"])
-    # 誘導の候補: 応援ルームにはまだ送っておらず、ほかのルームに送っている人
-    candidates = sorted((s for s in summaries if s["support_points"] == 0 and s["other_points"] > 0
-                         and s["name"] not in LEFT_NAMES), key=lambda s: -s["other_points"])
+    # 応援ルームがあれば「応援ルームにはまだ送っておらず、ほかのルームに送っている人」(誘導の候補)、
+    # 無ければ分かったギフター全員
+    candidates = sorted((s for s in active if s["support_points"] == 0 and s["other_points"] > 0),
+                        key=lambda s: -s["other_points"])
 
-    # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか
     givers: dict[str, set[Any]] = defaultdict(set)
+    points: dict[str, int] = defaultdict(int)
+    top: dict[str, tuple[int, Any]] = {}
     for u in users.values():
         for k, v in u["rooms"].items():
-            if room_score(v) > 0:
+            score = room_score(v)
+            if score > 0:
                 givers[k].add(u["user_id"])
+                points[k] += score
+                if score > top.get(k, (0, None))[0]:
+                    top[k] = (score, u["user_id"])
+
+    # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか
     fan_ids = set().union(*(givers.get(k, set()) for k in sup)) if sup else set()
     similar = []
     for k, ids in givers.items():
-        if k in sup or not ids:
-            continue
         shared = ids & fan_ids
-        if not shared:
+        if k in sup or not shared:
             continue
         similar.append({"key": k, "name": names.get(k, k), "gifters": len(ids), "shared": len(shared),
-                        "overlap": round(len(shared) / len(ids | fan_ids), 3),
-                        "candidates": len(ids - fan_ids)})
+                        "overlap": round(len(shared) / len(ids | fan_ids), 3), "candidates": len(ids - fan_ids)})
     similar.sort(key=lambda r: (-r["shared"], -r["overlap"]))
-    return {"support": [{"key": k, "name": names.get(k, k), "gifters": len(givers.get(k, set()))} for k in support],
+
+    # ルーム同士の重なり: どのルームとどのルームに、同じギフターが送っているか (ギフターの好みが近いルーム)
+    keys = sorted(givers, key=lambda k: -len(givers[k]))
+    pairs = []
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            shared = givers[a] & givers[b]
+            if len(shared) >= PAIR_MIN_SHARED:
+                pairs.append({"a": a, "a_name": names.get(a, a), "b": b, "b_name": names.get(b, b), "shared": len(shared),
+                              "overlap": round(len(shared) / len(givers[a] | givers[b]), 3)})
+    pairs.sort(key=lambda r: (-r["shared"], -r["overlap"]))
+
+    by_id = {s["user_id"]: s for s in summaries}
+    researched = load_rooms(state_dir)
+    rooms = sorted(({"key": k, "name": names.get(k, k), "gifters": len(ids), "points": points[k],
+                     "multi": sum(1 for uid in ids if by_id[uid]["room_count"] > 1),
+                     "events": len((researched.get(k) or {}).get("events") or []), "researched": k in researched,
+                     "support": k in sup,
+                     "top": {"user_id": top[k][1], "name": by_id[top[k][1]]["name"], "points": top[k][0]} if k in top else None}
+                    for k, ids in givers.items()), key=lambda r: -r["points"])
+    return {"mode": "support" if sup else "all",
+            "support": [{"key": k, "name": names.get(k, k), "gifters": len(givers.get(k, set()))} for k in support],
             "candidates": candidates[:limit], "candidate_count": len(candidates),
             "fans": fans[:limit], "fan_count": len(fans), "similar": similar[:100],
+            "pairs": pairs[:100], "rooms": rooms[:200], "room_count": len(rooms),
+            "multi_count": sum(1 for s in active if s["room_count"] > 1),
             "gifter_count": len(users)}
 
 

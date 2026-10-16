@@ -388,7 +388,7 @@ svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
       </div>
       <div class="card" data-list="support_rooms">
         <h3 style="margin-top:0">応援しているルーム</h3>
-        <div class="hint" style="margin-top:0">「分析」の基準にするルームです。累計ランキングとイベントの貢献ランキングを毎日集めます (視聴はしません)。</div>
+        <div class="hint" style="margin-top:0">「分析」の基準にするルームです (無くても使えます)。累計ランキングとイベントの貢献ランキングを毎日集めます (視聴はしません)。</div>
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
@@ -1349,7 +1349,7 @@ async function loadResearch() {
     d.status.forEach((r) => { if (r.name && r.name !== r.key) names.room[r.key] = r.name; });
     const many = d.support_rooms.length > 1;
     sel.innerHTML = (many ? `<option value="">すべての応援ルーム</option>` : "")
-      + (d.support_rooms.map((k) => `<option value="${esc(k)}">${esc(roomName(k))}</option>`).join("") || `<option value="">(未設定)</option>`);
+      + (d.support_rooms.map((k) => `<option value="${esc(k)}">${esc(roomName(k))}</option>`).join("") || `<option value="">設定なし (すべてのルーム)</option>`);
     if (d.support_rooms.includes(cur)) sel.value = cur;
     renderResearch();
     clearTimeout(research.timer);  // 集めている間は 5 秒ごとに進み具合を見る
@@ -1381,36 +1381,56 @@ const habitCell = (u) => u.habits ? `${esc(u.habits.top_weekday)}曜 ${esc(hourT
 const roomsCell = (u) => esc(u.top_rooms.map((r) => `${r.name} ${num(r.points)}`).join("、")) + (u.room_count > u.top_rooms.length + (u.support_points ? 1 : 0) ? ` ほか` : "");
 const eventCell = (u) => u.event_count ? `${num(u.event_count)} 件<div class="uid">最高 ${num(u.best_rank)} 位・${num(u.event_points)} pt</div>` : `<span class="uid">-</span>`;
 function renderResearch() {
-  const d = research.data;
+  const d = research.data, all = d.mode === "all";
   researchStatus(d);
   if (!d.status.length) {
-    $("#r-body").innerHTML = `<div class="empty">「ルーム設定」で「応援しているルーム」と「調べるルーム」を追加してください。保存するとすぐに情報を集め始めます。</div>`;
+    $("#r-body").innerHTML = `<div class="empty">「ルーム設定」の「調べるルーム」にルームを追加してください (応援しているルームは無くても使えます)。保存するとすぐに情報を集め始めます。</div>`;
     return;
   }
   const rows = researchRows(d.candidates);
-  let html = `<div class="summary">
-    <div class="stat"><div class="v">${num(d.candidate_count)}</div><div class="l">誘導の候補 (人)</div></div>
-    <div class="stat"><div class="v">${num(d.fan_count)}</div><div class="l">応援ルームのギフター (人)</div></div>
-    <div class="stat"><div class="v">${num(d.gifter_count)}</div><div class="l">分かったギフター (人)</div></div></div>`;
-  html += `<div class="row"><h3 style="flex:1">誘導の候補</h3><select id="r-sort" title="並び順">${R_SORTS.map(([v, l]) => `<option value="${v}" ${v === research.sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-    <div class="hint" style="margin-top:0">応援ルームにはまだ送っていないが、ほかのルームに送っているギフターです。ポイントは集めた情報で分かった分 (少なくともこれだけ送っている) です。行をクリックすると詳しく表示します。</div>
+  const stat = (v, l) => `<div class="stat"><div class="v">${num(v)}</div><div class="l">${l}</div></div>`;
+  let html = `<div class="summary">${all
+    ? stat(d.gifter_count, "分かったギフター (人)") + stat(d.multi_count, "複数のルームに送る人") + stat(d.room_count, "ギフターの分かったルーム")
+    : stat(d.candidate_count, "誘導の候補 (人)") + stat(d.fan_count, "応援ルームのギフター (人)") + stat(d.gifter_count, "分かったギフター (人)")}</div>`;
+  const sorts = R_SORTS.map(([v, l]) => [v, v === "other" && all ? "分かったポイント順" : l]);
+  html += `<div class="row"><h3 style="flex:1">${all ? "ギフター一覧" : "誘導の候補"}</h3><select id="r-sort" title="並び順">${sorts.map(([v, l]) => `<option value="${v}" ${v === research.sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    <div class="hint" style="margin-top:0">${all ? "調べるルームなどで分かったギフターです。" : "応援ルームにはまだ送っていないが、ほかのルームに送っているギフターです。"}ポイントは集めた情報で分かった分 (少なくともこれだけ送っている) です。行をクリックすると詳しく表示します。</div>
     <div class="filters" id="r-filters" style="margin:8px 0">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div>`;
-  html += rows.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">ほかのルームへ</th><th>主なルーム</th><th class="num">イベント</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
+  html += rows.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">${all ? "分かった pt" : "ほかのルームへ"}</th><th>主なルーム</th><th class="num">イベント</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
     <tbody>${rows.slice(0, research.shown).map((u, i) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
       <td class="rank">${i + 1}</td><td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span></td>
       <td class="num"><b>${num(u.other_points)}</b> pt</td><td>${roomsCell(u)}</td><td class="num">${eventCell(u)}</td><td class="num">${u.visits ? num(u.visits) : "-"}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`
       + (rows.length > research.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="r-more">さらに表示 (${num(rows.length - research.shown)} 人)</button></div>` : "")
     : `<div class="empty">当てはまるギフターはいません</div>`;
-  html += `<h3>応援ルームとギフターが重なるルーム</h3><div class="hint" style="margin-top:0">応援ルームのギフターが、ほかに送っているルームです。重なりが大きいルームほど、ギフターの好みが近いと考えられます。</div>`
-    + (d.similar.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">共通のギフター</th><th class="num">そのルームのギフター</th><th class="num">重なり</th><th class="num">誘導の候補</th></tr></thead>
-      <tbody>${d.similar.map((r) => `<tr><td class="name">${esc(r.name)}${d.research_rooms.includes(r.key) ? ' <span class="tag info">調べるルーム</span>' : ""}</td><td class="num"><b>${num(r.shared)}</b> 人</td><td class="num">${num(r.gifters)} 人</td>
-        <td class="num">${(r.overlap * 100).toFixed(1)}%</td><td class="num">${num(r.candidates)} 人</td></tr>`).join("")}</tbody></table></div>`
-      : `<div class="empty">まだありません (応援ルームのギフターが、集めたほかのルームに見つかると出ます)</div>`);
-  html += `<h3>応援ルームのギフター</h3>` + (d.fans.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">応援ルームへ</th><th class="num">ほかのルームへ</th><th>ほかの主なルーム</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
-    <tbody>${d.fans.slice(0, 200).map((u, i) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}"><td class="rank">${i + 1}</td>
-      <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span></td><td class="num"><b>${num(u.support_points)}</b> pt</td><td class="num">${num(u.other_points)} pt</td>
-      <td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td><td class="num">${u.visits ? num(u.visits) : "-"}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`
-    : `<div class="empty">まだ分かっていません</div>`);
+  const pct = (x) => `${(x * 100).toFixed(1)}%`;
+  const researchTag = (k) => d.research_rooms.includes(k) ? ' <span class="tag info">調べるルーム</span>' : "";
+  if (all) {
+    html += `<h3>ルーム同士の重なり</h3><div class="hint" style="margin-top:0">同じギフターが送っているルームの組です。重なりが大きいほど、ギフターの好みが近いルームと考えられます (共通のギフターが ${2} 人以上の組)。</div>`
+      + (d.pairs.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th>ルーム</th><th class="num">共通のギフター</th><th class="num">重なり</th></tr></thead>
+        <tbody>${d.pairs.map((p) => `<tr><td class="name">${esc(p.a_name)}${researchTag(p.a)}</td><td class="name">${esc(p.b_name)}${researchTag(p.b)}</td>
+          <td class="num"><b>${num(p.shared)}</b> 人</td><td class="num">${pct(p.overlap)}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="empty">まだありません (調べるルームを増やすと、重なるルームが見つかりやすくなります)</div>`);
+  } else {
+    html += `<h3>応援ルームとギフターが重なるルーム</h3><div class="hint" style="margin-top:0">応援ルームのギフターが、ほかに送っているルームです。重なりが大きいルームほど、ギフターの好みが近いと考えられます。</div>`
+      + (d.similar.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">共通のギフター</th><th class="num">そのルームのギフター</th><th class="num">重なり</th><th class="num">誘導の候補</th></tr></thead>
+        <tbody>${d.similar.map((r) => `<tr><td class="name">${esc(r.name)}${researchTag(r.key)}</td><td class="num"><b>${num(r.shared)}</b> 人</td><td class="num">${num(r.gifters)} 人</td>
+          <td class="num">${pct(r.overlap)}</td><td class="num">${num(r.candidates)} 人</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="empty">まだありません (応援ルームのギフターが、集めたほかのルームに見つかると出ます)</div>`);
+  }
+  html += `<h3>ルームごとのまとめ</h3><div class="hint" style="margin-top:0">集めた情報と記録したギフトで分かった分です。</div>`
+    + (d.rooms.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">ギフター</th><th class="num">分かった pt</th><th class="num">掛け持ち</th><th class="num">イベント</th><th>いちばん多いギフター</th></tr></thead>
+      <tbody>${d.rooms.slice(0, 100).map((r) => `<tr><td class="name">${esc(r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}${researchTag(r.key)}</td>
+        <td class="num">${num(r.gifters)} 人</td><td class="num"><b>${num(r.points)}</b></td><td class="num" title="ほかのルームにも送っているギフター">${num(r.multi)} 人</td>
+        <td class="num">${r.researched ? `${num(r.events)} 件` : "-"}</td><td>${r.top ? `<button class="linkish" data-ruid-btn="${esc(r.top.user_id)}">${esc(r.top.name)}</button> <span class="uid">${num(r.top.points)} pt</span>` : ""}</td></tr>`).join("")}</tbody></table></div>`
+      + (d.room_count > 100 ? `<div class="hint">ほか ${num(d.room_count - 100)} ルーム</div>` : "")
+      : `<div class="empty">まだありません</div>`);
+  if (!all) {
+    html += `<h3>応援ルームのギフター</h3>` + (d.fans.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">応援ルームへ</th><th class="num">ほかのルームへ</th><th>ほかの主なルーム</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
+      <tbody>${d.fans.slice(0, 200).map((u, i) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}"><td class="rank">${i + 1}</td>
+        <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span></td><td class="num"><b>${num(u.support_points)}</b> pt</td><td class="num">${num(u.other_points)} pt</td>
+        <td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td><td class="num">${u.visits ? num(u.visits) : "-"}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`
+      : `<div class="empty">まだ分かっていません</div>`);
+  }
   $("#r-body").innerHTML = html;
 }
 async function openGifter(uid) {
@@ -1425,8 +1445,10 @@ async function openGifter(uid) {
     box.innerHTML = `<div class="card" style="margin:14px 0">
       <div class="card-head"><div><div class="card-title">${esc(s.name)}</div><div class="card-key">ユーザー ID ${esc(d.user_id)}</div></div><button class="btn small" id="r-close">閉じる</button></div>
       <div class="summary">
-        <div class="stat"><div class="v">${num(s.support_points)} pt</div><div class="l">応援ルームへ</div></div>
-        <div class="stat"><div class="v">${num(s.other_points)} pt</div><div class="l">ほかのルームへ (${num(s.room_count)} ルーム)</div></div>
+        ${research.data && research.data.mode === "all"
+          ? `<div class="stat"><div class="v">${num(s.total_points)} pt</div><div class="l">分かったポイント (${num(s.room_count)} ルーム)</div></div>`
+          : `<div class="stat"><div class="v">${num(s.support_points)} pt</div><div class="l">応援ルームへ</div></div>
+        <div class="stat"><div class="v">${num(s.other_points)} pt</div><div class="l">ほかのルームへ (${num(s.room_count)} ルーム)</div></div>`}
         <div class="stat"><div class="v">${num(s.event_count)}</div><div class="l">参加したイベント${s.best_rank ? ` (最高 ${num(s.best_rank)} 位)` : ""}</div></div>
         <div class="stat"><div class="v">${s.focus === null ? "-" : `${Math.round(s.focus * 100)}%`}</div><div class="l">いちばん多いルームの割合</div></div>
       </div>
@@ -1454,6 +1476,8 @@ $("#r-body").addEventListener("click", (ev) => {
   if (ev.target.id === "r-more") { research.shown += 100; return renderResearch(); }
   const f = ev.target.closest("[data-rf]");
   if (f) { research.filter = f.dataset.rf; research.shown = 100; return renderResearch(); }
+  const top = ev.target.closest("[data-ruid-btn]");
+  if (top) return openGifter(top.dataset.ruidBtn);
   const tr = ev.target.closest("tr[data-ruid]");
   if (tr) openGifter(tr.dataset.ruid);
 });
