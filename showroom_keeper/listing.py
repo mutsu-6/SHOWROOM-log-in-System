@@ -36,9 +36,16 @@ SEARCH_TTL = 600  # ルーム検索の結果を使い回す秒数
 SEARCH_CACHE_MAX = 200
 USER_TTL = 3600  # ユーザーのプロフィールを使い回す秒数
 
+NAME_MISS_TTL = 3600  # SHOWROOM に無かったルームを問い合わせ直さない秒数
+NAME_ERROR_TTL = 300  # 問い合わせに失敗したルームを問い合わせ直さない秒数
+CATALOG_ROOMS_PER_CALL = 10  # 1 回の集計で、ギフトの一覧を新しく取りに行くルームの上限
+
 _lock = threading.Lock()
+_names_write_lock = threading.Lock()
 _names_cache: dict[str, dict[str, Any]] | None = None
 _names_path: Path | None = None
+_names_mtime: float | None = None
+_name_misses: dict[str, float] = {}  # {room_url_key: 次に問い合わせてよい時刻}
 _file_cache: dict[Path, tuple[float, int, list[dict[str, Any]]]] = {}
 _event_cache: tuple[float, list[dict[str, Any]]] | None = None
 _live_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
@@ -51,24 +58,30 @@ def _names_file(state_dir: Path) -> Path:
     return gift_dir(state_dir) / ROOM_NAMES_FILE
 
 
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def room_names(state_dir: Path) -> dict[str, dict[str, Any]]:
-    """覚えているルーム名 {room_url_key: {name, room_id}}。"""
-    global _names_cache, _names_path
+    """覚えているルーム名 {room_url_key: {name, room_id}}。別のプロセスが書き換えたら読み直す。"""
+    global _names_cache, _names_path, _names_mtime
     path = _names_file(state_dir)
+    mtime = _mtime(path)
     with _lock:
-        if _names_cache is None or _names_path != path:
+        if _names_cache is None or _names_path != path or _names_mtime != mtime:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 _names_cache = data if isinstance(data, dict) else {}
             except (OSError, ValueError):
                 _names_cache = {}
-            _names_path = path
+            _names_path, _names_mtime = path, mtime
         return dict(_names_cache)
 
 
-def remember_rooms(state_dir: Path, rooms: dict[str, tuple[str | None, Any]]) -> None:
-    """ルーム名と room_id を覚える ({room_url_key: (名前, room_id)})。変わった時だけ書き込む。"""
-    current = room_names(state_dir)
+def _merge_rooms(current: dict[str, dict[str, Any]], rooms: dict[str, tuple[str | None, Any]]) -> bool:
     changed = False
     for key, (name, room_id) in rooms.items():
         if not key:
@@ -78,19 +91,29 @@ def remember_rooms(state_dir: Path, rooms: dict[str, tuple[str | None, Any]]) ->
         if new != old:
             current[key] = new
             changed = True
-    if not changed:
+    return changed
+
+
+def remember_rooms(state_dir: Path, rooms: dict[str, tuple[str | None, Any]]) -> None:
+    """ルーム名と room_id を覚える ({room_url_key: (名前, room_id)})。変わった時だけ書き込む。"""
+    if not _merge_rooms(room_names(state_dir), rooms):
         return
-    global _names_cache
+    global _names_cache, _names_mtime
     path = _names_file(state_dir)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        return
-    with _lock:
-        _names_cache = current
+    # 同時に書くと片方の名前が消えるので、書く直前の内容に足して書く
+    with _names_write_lock:
+        current = room_names(state_dir)
+        if not _merge_rooms(current, rooms):
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            return
+        with _lock:
+            _names_cache, _names_mtime = current, _mtime(path)
 
 
 NAME_LOOKUP_LIMIT = 40  # 一覧を開いた時に、名前の分からないルームを問い合わせる上限 (1 回あたり)
@@ -104,19 +127,30 @@ def fill_unknown_names(state_dir: Path, keys: list[str], get: Any = None, limit:
 
     get = get or _get
     known = room_names(state_dir)
-    unknown = [k for k in dict.fromkeys(keys) if k and not (known.get(k) or {}).get("room_id")][:limit]
+    now = time.time()
+    with _lock:
+        misses = dict(_name_misses)
+    unknown = [k for k in dict.fromkeys(keys)
+               if k and not (known.get(k) or {}).get("room_id") and misses.get(k, 0) <= now][:limit]
     if not unknown:
         return
 
-    def one(key: str) -> tuple[str, Any]:
+    def one(key: str) -> tuple[str, Any, float]:
         try:
-            return key, get(f"/api/room/status?room_url_key={key}")
-        except Exception:  # noqa: BLE001 - 分からなければ room_url_key のまま出す
-            return key, None
+            return key, get(f"/api/room/status?room_url_key={key}"), NAME_MISS_TTL
+        except Exception as e:  # noqa: BLE001 - 分からなければ room_url_key のまま出す
+            return key, None, NAME_MISS_TTL if getattr(e, "code", None) == 404 else NAME_ERROR_TTL
 
     with ThreadPoolExecutor(8) as ex:
-        found = {key: (st.get("room_name"), st.get("room_id")) for key, st in ex.map(one, unknown)
-                 if isinstance(st, dict) and st.get("room_id")}
+        results = list(ex.map(one, unknown))
+    found = {key: (st.get("room_name"), st.get("room_id")) for key, st, _ in results
+             if isinstance(st, dict) and st.get("room_id")}
+    with _lock:
+        for key in [k for k, until in _name_misses.items() if until <= now]:
+            del _name_misses[key]
+        for key, _, ttl in results:
+            if key not in found:
+                _name_misses[key] = now + ttl
     remember_rooms(state_dir, found)
 
 
@@ -392,39 +426,64 @@ def list_events(state_dir: Path, configured: list[str], get: Any = None) -> list
     return sorted(out.values(), key=lambda e: (not e["recording"], order[e["state"]], e["end"] or 0))
 
 
-# ------------------------------------------------------------------ ギフトのポイント表 (全ルーム共通)
-def gift_catalog(state_dir: Path) -> dict[int, dict[str, Any]]:
-    """ギフトの名前・ポイント・無料かどうか。1 日 1 回、覚えているルームの 1 つから取り直す。"""
-    path = state_dir / "cache" / "gift_catalog.json"
-    try:
-        cached = json.loads(path.read_text(encoding="utf-8"))
-        if time.time() - float(cached["at"]) < CATALOG_TTL:
-            return {int(k): v for k, v in cached["gifts"].items()}
-    except (OSError, ValueError, KeyError, TypeError):
-        cached = None
-    room_ids = [v.get("room_id") for v in room_names(state_dir).values() if v.get("room_id")][:3]
-    if not room_ids:  # まだルームを覚えていなければ、配信中のルームを 1 つ使う
-        try:
-            from .gifts import _get
+# ------------------------------------------------------------------ ギフトのポイント表
+_catalog_lock = threading.Lock()
 
-            room_ids = [l["room_id"] for gr in _get("/api/live/onlives").get("onlives", [])
-                        for l in gr.get("lives", []) if l.get("room_id")][:1]
-        except Exception:  # noqa: BLE001
-            room_ids = []
-    for room_id in room_ids:
+
+def gift_catalog(state_dir: Path, rooms: list[str] | None = None) -> dict[int, dict[str, Any]]:
+    """ギフトの名前・ポイント・無料かどうか。
+
+    ギフトの一覧はルームごとに少しずつ違う (そのルームだけのギフトがある) ので、rooms (room_url_key)
+    それぞれの一覧を取ってまとめる。取ったルームは 1 日使い回し、1 回に新しく取るのは
+    CATALOG_ROOMS_PER_CALL ルームまで。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = state_dir / "cache" / "gift_catalog.json"
+    now = time.time()
+    with _catalog_lock:
         try:
-            catalog = fetch_catalog(int(room_id))
-        except Exception:  # noqa: BLE001
-            continue
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            gifts = {int(k): v for k, v in cached["gifts"].items()}
+            # 古い表は捨てずに使い、取り直せたルームの分で上書きする
+            fetched = {str(k): float(v) for k, v in (cached.get("rooms") or {}).items()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            gifts, fetched = {}, {}
+        names = room_names(state_dir)
+        room_ids = [names[k]["room_id"] for k in dict.fromkeys(rooms or names)
+                    if (names.get(k) or {}).get("room_id")]
+        if not room_ids and not gifts:  # まだルームを覚えていなければ、配信中のルームを 1 つ使う
+            try:
+                from .gifts import _get
+
+                room_ids = [l["room_id"] for gr in _get("/api/live/onlives").get("onlives", [])
+                            for l in gr.get("lives", []) if l.get("room_id")][:1]
+            except Exception:  # noqa: BLE001
+                room_ids = []
+        todo = [rid for rid in dict.fromkeys(room_ids) if now - fetched.get(str(rid), 0) >= CATALOG_TTL]
+        todo = todo[:CATALOG_ROOMS_PER_CALL]
+        if not todo:
+            return gifts
+
+        def one(room_id: Any) -> dict[int, dict[str, Any]] | None:
+            try:
+                return fetch_catalog(int(room_id))
+            except Exception:  # noqa: BLE001 - 取れなかったルームは 1 日後に取り直す
+                return None
+
+        with ThreadPoolExecutor(min(8, len(todo))) as ex:
+            for room_id, catalog in zip(todo, ex.map(one, todo)):
+                gifts.update(catalog or {})
+                fetched[str(room_id)] = now
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"at": time.time(), "gifts": catalog}, ensure_ascii=False), encoding="utf-8")
-        except OSError:
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"at": now, "gifts": gifts, "rooms": fetched}, ensure_ascii=False),
+                           encoding="utf-8")
+            os.replace(tmp, path)
+        except (OSError, ValueError, TypeError):
             pass
-        return catalog
-    if cached:  # 取り直せなければ古い表を使う
-        return {int(k): v for k, v in cached.get("gifts", {}).items()}
-    return {}
+        return gifts
 
 
 def _points(catalog: dict[int, dict[str, Any]], g: dict[str, Any]) -> tuple[int, bool]:
@@ -449,10 +508,11 @@ def _records(state_dir: Path, room: str | None, since: float | None) -> list[tup
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
     """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。"""
     since = time.time() - days * 86400 if days else None
-    catalog = gift_catalog(state_dir)
+    records = _records(state_dir, room, since)
+    catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in records)))
     names = room_names(state_dir)
     users: dict[Any, dict[str, Any]] = {}
-    for key, g in _records(state_dir, room, since):
+    for key, g in records:
         uid = g.get("user_id")
         if uid is None:
             continue
@@ -489,11 +549,11 @@ def listener_detail(state_dir: Path, user_id: Any, days: float | None = None) ->
     except (TypeError, ValueError):
         raise ValueError("ユーザー ID は数字で指定してください") from None
     since = time.time() - days * 86400 if days else None
-    catalog = gift_catalog(state_dir)
-    names = room_names(state_dir)
     hits = [(key, g) for key, g in _records(state_dir, None, since) if g.get("user_id") == uid]
     if not hits:
         return {"user_id": uid, "found": False}
+    catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in hits)))
+    names = room_names(state_dir)
     hits.sort(key=lambda kg: kg[1]["at"])
     total = {"points": 0, "paid_points": 0, "free_points": 0, "count": 0, "times": 0}
     rooms: dict[str, dict[str, Any]] = {}
