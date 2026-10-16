@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import research
-from .research import PENDING_RANKING, RANKING_RETRIES, Collector, is_missing
+from .research import PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, is_missing
 
 log = logging.getLogger("research")
 
@@ -291,9 +291,9 @@ class Sweeper:
         まだ取っていないルームは、最近配信した → イベントで見つけた → フォロワーの多い順。
         ルーム番号の調べで見つけたフォロワー 0 人のルームは取らない (ギフターがいない)。
         """
-        r = self._take(self._rooms, """SELECT room_id, name, key FROM rooms
+        r = self._take(self._rooms, f"""SELECT room_id, name, key FROM rooms
                WHERE (retry_at IS NULL OR retry_at < ?)
-                 AND ((collected_at IS NULL AND NOT (found_via = 'scan' AND COALESCE(followers, 0) = 0 AND live_at IS NULL))
+                 AND ((collected_at IS NULL AND NOT ({SKIPPED_ROOM}))
                       OR (collected_at < ? AND live_at > ?))
                ORDER BY collected_at IS NOT NULL, COALESCE(live_at, 0) DESC, found_via != 'event', COALESCE(followers, 0) DESC""",
                        (now, now - ROOM_EVERY, now - ACTIVE_DAYS * 86400))

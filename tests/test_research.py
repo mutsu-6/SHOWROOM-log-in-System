@@ -605,6 +605,10 @@ def test_trend_waits_for_older_months(tmp_path):
     assert not next(m for m in cov["months"] if m["pending"])["complete"]
     t = research.analyze(tmp_path, [], max_age=0)["trend"]
     assert t["period"] == 3 and t["falling"] == [] and t["rising"] == []
+    # ルーム番号の調べで見つけた、取らないルーム (フォロワー 0 人・配信の記録なし) は数えない
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": n, "followers": 0} for n in range(100, 150)], "scan", NOW)
+    assert research.coverage(tmp_path, max_age=0)["rooms"] == {"total": 1, "collected": 1, "ok": True}
     # ルームをまだ集め終わっていない時は、どの月も集め終わっていない扱い
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": n} for n in range(2, 10)], "live", NOW)

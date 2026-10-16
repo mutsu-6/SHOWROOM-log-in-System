@@ -1650,7 +1650,7 @@ const ymText = (m) => m ? `${m.slice(0, 4)}年${Number(m.slice(5))}月` : "—";
 function coverageBlock(c) {
   if (!c || !c.months.length) return `<div class="hint">まだイベントの貢献ランキングがありません。</div>`;
   const pctText = (r) => r === null ? "—" : `${Math.floor(r * 1000) / 10}%`;
-  const gate = [`ルームの収集 ${num(c.rooms.collected)} / ${num(c.rooms.total)} (${pctText(c.rooms.total ? c.rooms.collected / c.rooms.total : null)})${c.rooms.ok ? "" : " ・ 95% までは、どの月も「集め終わっていない」扱いです"}`,
+  const gate = [`ルームの収集 (フォロワー 0 人で配信の記録も無い、取らないルームは除く) ${num(c.rooms.collected)} / ${num(c.rooms.total)} (${pctText(c.rooms.total ? c.rooms.collected / c.rooms.total : null)})${c.rooms.ok ? "" : " ・ 95% までは、どの月も「集め終わっていない」扱いです"}`,
     c.read_done ? "過去のイベント: すべて読みました" : `過去のイベント: 新しい方から読んでいるところです${c.read_from && c.read_from <= c.last_full ? ` (${ymText(c.read_from)}より後の分は読みました)` : ""}`];
   const rows = c.years.map((y) => `<span>${y.year}</span><span class="ct"><i class="${y.complete === y.months ? "full" : ""}" style="width:${(y.ratio || 0) * 100}%"></i></span>
     <span class="cv" title="集め終わった月 / その年の月">${pctText(y.ratio)} (${y.complete}/${y.months})</span>`).join("");

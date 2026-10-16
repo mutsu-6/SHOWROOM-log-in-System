@@ -375,6 +375,10 @@ def store_status(state_dir: Path) -> dict[str, Any]:
         }
 
 
+# 全ルームの収集で取らないルーム: ルーム番号の調べで見つけた、フォロワー 0 人で配信の記録も無いもの (ギフターがいない)。
+# 集まり具合の「見つけたルームのうち集めた割合」でも、分子・分母の両方から外す
+SKIPPED_ROOM = "found_via = 'scan' AND COALESCE(followers, 0) = 0 AND live_at IS NULL"
+
 # 終わって 1 時間たち、終わってからはまだ取っていない貢献ランキング (ポイントが 0 のルームは誰も送っていないので除く)
 PENDING_RANKING = """re.final=0 AND (re.ranking_at IS NULL OR re.ranking_at < e.end + 3600) AND e.show_ranking=1
     AND e.end IS NOT NULL AND e.end < ? AND re.failures < ? AND (re.point IS NULL OR re.point > 0)"""
@@ -757,8 +761,8 @@ def _coverage(s: Store, now: float) -> dict[str, Any]:
                      FROM room_events re JOIN events e USING(event_id)
                      WHERE e.end IS NOT NULL AND e.end < ? AND e.show_ranking=1 GROUP BY month ORDER BY month""",
                  (now - 3600, RANKING_RETRIES, now - 3600))
-    rooms_total = s.scalar("SELECT COUNT(*) FROM rooms")
-    rooms_done = s.scalar("SELECT COUNT(*) FROM rooms WHERE collected_at IS NOT NULL")
+    rooms_total = s.scalar(f"SELECT COUNT(*) FROM rooms WHERE NOT ({SKIPPED_ROOM})")
+    rooms_done = s.scalar(f"SELECT COUNT(*) FROM rooms WHERE collected_at IS NOT NULL AND NOT ({SKIPPED_ROOM})")
     rooms_ok = bool(rooms_total) and rooms_done >= rooms_total * ROOMS_RATIO
     # 過去のイベントの読み込み (番号を新しい順にさかのぼる) がどの月まで進んだか。読み終えていれば全部
     nxt, read_done = s.meta("history_next"), s.meta("history_done_at")
