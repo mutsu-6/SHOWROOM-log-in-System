@@ -35,6 +35,7 @@ REQUEST_GAP = 1.0  # SHOWROOM への問い合わせの間隔 (秒)
 PAST_EVENT_PAGES = 10  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
 ROOM_REFRESH = 20 * 3600  # 累計ランキングなどを取り直すまでの時間 (秒)
 WEEKDAYS = "月火水木金土日"
+LEFT_NAMES = {"退会済みユーザー"}  # SHOWROOM をやめたユーザー (誘導できないので候補に出さない)
 
 
 # ------------------------------------------------------------------ 保存先
@@ -303,8 +304,8 @@ def analyze(state_dir: Path, support: list[str], limit: int = 300) -> dict[str, 
     summaries = [_summary(u, names, sup) for u in users.values()]
     fans = sorted((s for s in summaries if s["support_points"] > 0), key=lambda s: -s["support_points"])
     # 誘導の候補: 応援ルームにはまだ送っておらず、ほかのルームに送っている人
-    candidates = sorted((s for s in summaries if s["support_points"] == 0 and s["other_points"] > 0),
-                        key=lambda s: -s["other_points"])
+    candidates = sorted((s for s in summaries if s["support_points"] == 0 and s["other_points"] > 0
+                         and s["name"] not in LEFT_NAMES), key=lambda s: -s["other_points"])
 
     # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか
     givers: dict[str, set[Any]] = defaultdict(set)

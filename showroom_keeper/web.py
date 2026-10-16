@@ -333,6 +333,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._error(404, "見つかりません")
         except (ValueError, LookupError) as e:
             self._error(400, str(e))
+        except (BrokenPipeError, ConnectionResetError):
+            return  # 画面を閉じるなどで、返事を送る前に接続が切れた
         except Exception as e:  # noqa: BLE001
             log.warning("管理画面の処理に失敗: %s %s", url.path, e)
             self._error(502, f"取得できませんでした ({str(e).splitlines()[0] if str(e) else type(e).__name__})")
@@ -382,6 +384,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._error(404, "見つかりません")
         except ValueError as e:
             self._error(400, str(e))
+        except (BrokenPipeError, ConnectionResetError):
+            return  # 画面を閉じるなどで、返事を送る前に接続が切れた
         except Exception as e:  # noqa: BLE001
             log.warning("管理画面の処理に失敗: %s %s", path, e)
             self._error(500, "処理できませんでした")

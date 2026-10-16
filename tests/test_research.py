@@ -44,7 +44,8 @@ class FakeShowroom:
             return {"ranking": [{"user_id": 10, "name": "ファン", "point": 3000, "rank": 1}]}
         if path == "/api/event/contribution_ranking?event_id=100&room_id=2":
             return {"ranking": [{"user_id": 20, "name": "大口", "point": 40000, "rank": 1},
-                                {"user_id": 30, "name": "イベントだけ", "point": 700, "rank": 2}]}
+                                {"user_id": 30, "name": "イベントだけ", "point": 700, "rank": 2},
+                                {"user_id": 40, "name": "退会済みユーザー", "point": 500, "rank": 3}]}
         if path == "/api/event/contribution_ranking?event_id=200&room_id=1":
             return {"ranking": [{"user_id": 10, "name": "ファン", "point": 100, "rank": 1}]}
         raise AssertionError(f"想定していない問い合わせ: {path}")
@@ -94,8 +95,8 @@ def test_analyze_candidates_fans_and_similar_rooms(collected):
     assert big["event_count"] == 1 and big["best_rank"] == 1 and big["habits"]["times"] == 1
     assert big["sources"] == ["cumulative", "events", "recorded"]
     assert [f["user_id"] for f in r["fans"]] == [10] and r["fans"][0]["support_points"] == 5000
-    assert r["similar"] == [{"key": "other", "name": "ほかのルーム", "gifters": 3, "shared": 1,
-                             "overlap": round(1 / 3, 3), "candidates": 2}]
+    assert r["similar"] == [{"key": "other", "name": "ほかのルーム", "gifters": 4, "shared": 1,
+                             "overlap": 0.25, "candidates": 3}]  # 退会したユーザーも重なりの数には入れる
 
 
 def test_gifter_detail_and_habits(collected):
