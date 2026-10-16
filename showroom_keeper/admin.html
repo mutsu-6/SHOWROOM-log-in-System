@@ -574,6 +574,14 @@ function roomCard(r) {
   </div>`;
 }
 
+// SHOWROOM への問い合わせ (全ルームの収集など) を止めている時・24 時間以内に止めた時の知らせ
+function pausePill(p) {
+  if (!p || !p.last) return "";
+  const why = `理由: ${p.last.why} ・ ${tm(p.last.at, true).slice(0, 11)} に止めました (続けて ${p.last.count} 回目)\n視聴とログインの維持は続けています`;
+  return p.paused
+    ? `<a class="pill warn" href="#research" title="${esc(why)}">収集を止めています (あと ${durationText(p.paused)}・${num(p.last.count)} 回目)</a>`
+    : `<a class="pill" href="#research" title="${esc(why)}">収集: 24 時間以内に ${num(p.recent)} 回止めました</a>`;
+}
 function renderOverview() {
   const o = overview;
   const login = o.login || {};
@@ -587,7 +595,7 @@ function renderOverview() {
     ${loginPill}
     <span class="pill ${liveCount ? "live" : ""}">配信中 ${liveCount} / ${o.rooms.length}</span>
     <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>
-    <span class="pill" title="${tm(o.started_at, true)} 起動">稼働 ${duration(o.now - o.started_at)}</span>`;
+    <span class="pill" title="${tm(o.started_at, true)} 起動">稼働 ${duration(o.now - o.started_at)}</span>${pausePill(o.research_pause)}`;
 
   $("#rooms").innerHTML = o.rooms.length ? o.rooms.map(roomCard).join("") : `
     <div class="empty" style="grid-column:1/-1">視聴するルームがありません。<br>
@@ -1483,7 +1491,8 @@ const durationText = (s) => s >= 86400 ? `約 ${Math.round(s / 86400)} 日` : s 
 function sweepStatus(d) {
   const w = d.sweep || {}, s = d.store, t = d.throttle || {};
   if (!w.enabled || !s) return "";
-  const pace = t.paused ? `<b style="color:var(--accent)">SHOWROOM が混んでいるため止めています (あと ${durationText(t.paused)})</b>`
+  const lastPause = (t.pause_log || [])[0];
+  const pace = t.paused ? `<b style="color:var(--accent)">SHOWROOM が混んでいるため止めています (あと ${durationText(t.paused)}・続けて ${num(t.pauses)} 回目${lastPause ? `・${esc(lastPause.why)}` : ""})</b>`
     : t.gap > t.base ? `<b style="color:var(--warn)">混んでいるため間隔を ${num(t.gap)} 秒に広げています</b>` : `${num(t.gap)} 秒に 1 回`;
   const scan = !w.scan ? "しない" : s.scan_done_at ? `済み (${tm(s.scan_done_at, true).slice(0, 11)})`
     : `${num(s.scan_next - 1)} / ${num(s.scan_end || 0)} 番 (${s.scan_end ? Math.floor((s.scan_next - 1) / s.scan_end * 100) : 0}%)`;

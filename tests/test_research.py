@@ -173,6 +173,30 @@ def test_throttle_backs_off_and_pauses():
     assert th.errors == 0  # 無いもの (404) は失敗に数えない
 
 
+def test_throttle_pauses_longer_each_time_and_recovers(tmp_path):
+    th, t = throttle()
+
+    def busy(path):
+        raise http_error(403)
+
+    def pause():
+        for _ in range(research.PAUSE_AFTER):
+            with pytest.raises(urllib.error.HTTPError):
+                th.call(busy, "/x")
+        return th.state()
+
+    assert pause()["paused"] == pytest.approx(research.PAUSE, abs=1)
+    st = pause()  # 再開してすぐにまた止められたら、倍の時間止める
+    assert st["paused"] == pytest.approx(2 * research.PAUSE, abs=60) and st["pauses"] == 2
+    assert [x["count"] for x in st["pause_log"]] == [2, 1] and st["pause_log"][0]["why"] == "HTTP 403"
+    for _ in range(4):
+        st = pause()
+    assert st["paused"] <= research.MAX_PAUSE + 1 and st["next_pause"] == research.MAX_PAUSE  # 上限まで
+    for _ in range(research.RECOVER_AFTER):  # 続けて成功したら、1 時間に戻す
+        th.call(lambda p: {}, "/x")
+    assert th.state()["pauses"] == 0 and th.state()["next_pause"] == research.PAUSE
+
+
 def test_analyze_candidates_fans_and_similar_rooms(collected):
     tmp_path, _, _, _ = collected
     record_gift(tmp_path, "other", 9, {"t": 2, "u": 20, "ac": "大口", "g": 5, "n": 3, "created_at": NOW - 3600})

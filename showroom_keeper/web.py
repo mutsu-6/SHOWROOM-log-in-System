@@ -138,7 +138,17 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
         "recording": recorder.active() if recorder is not None else [],
         "settings": {key: list(getattr(cfg, key)) for key in SETTINGS_KEYS},
         "password": bool(cfg.web_password),
+        "research_pause": _pause_view(),
     }
+
+
+def _pause_view() -> dict[str, Any]:
+    """SHOWROOM への問い合わせ (全ルームの収集など) を止めているか、24 時間以内に止めたか (ダッシュボードに知らせる)。"""
+    from . import research
+
+    st = research.THROTTLE.state()
+    recent = [p for p in st["pause_log"] if p["at"] > time.time() - 86400]
+    return {"paused": st["paused"], "pauses": st["pauses"], "recent": len(recent), "last": recent[0] if recent else None}
 
 
 def live_rooms(keeper: Any) -> dict[str, str]:

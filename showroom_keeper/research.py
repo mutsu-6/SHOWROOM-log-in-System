@@ -37,7 +37,10 @@ log = logging.getLogger("research")
 REQUEST_GAP = 1.0  # SHOWROOM への問い合わせの間隔 (秒)
 MAX_GAP = 60.0  # 混んでいるときに広げる間隔の上限 (秒)
 PAUSE_AFTER = 5  # 続けてこの回数失敗したら、しばらく問い合わせを止める
-PAUSE = 3600.0  # 止める時間 (秒)
+PAUSE = 3600.0  # 1 回目に止める時間 (秒)。続けて止めるたびに倍にする
+MAX_PAUSE = 24 * 3600.0  # 止める時間の上限 (秒)
+RECOVER_AFTER = 200  # 再開したあと、続けてこの回数成功したら、止める時間を 1 回目の長さに戻す
+PAUSE_LOG = 20  # 覚えておく、止めた記録の数
 PAST_EVENT_PAGES = 100  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
 ROOM_REFRESH = 20 * 3600  # 累計ランキングなどを取り直すまでの時間 (秒)
 RANKING_RETRIES = 3  # 貢献ランキングの取得に続けて失敗したら、それ以上は自動で取り直さない
@@ -50,19 +53,24 @@ ANALYSIS_TTL = 600  # 分析の結果を使い回す時間 (秒)。全ルーム�
 class Throttle:
     """SHOWROOM への問い合わせを 1 本ずつ、間隔を空けて流す (スレッドをまたいで共有する)。
 
-    403 / 429 / 5xx / 通信の失敗が続いたら間隔を倍に広げ (MAX_GAP まで)、PAUSE_AFTER 回続いたら PAUSE 秒止める。
+    403 / 429 / 5xx / 通信の失敗が続いたら間隔を倍に広げ (MAX_GAP まで)、PAUSE_AFTER 回続いたら止める。
+    止める時間は 1 時間・2 時間・4 時間… と、続けて止めるたびに倍にする (MAX_PAUSE まで)。再開したあと
+    RECOVER_AFTER 回続けて成功したら 1 時間に戻す (SHOWROOM に止められている時に、何度も試さないように)。
     成功するたびに間隔を少しずつ元に戻す。404 (無いルーム・ランキング) は失敗に数えない。
     """
 
     def __init__(self, gap: float = REQUEST_GAP, sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
         self.base = self.gap = float(gap)
-        self._sleep, self._clock = sleep, clock
+        self._sleep, self._clock, self._wall = sleep, clock, wall
         self._lock = threading.Lock()
         self._next = 0.0
         self.errors = 0
         self.paused_until = 0.0
         self.requests = 0
+        self.pauses = 0  # 続けて止めた回数 (RECOVER_AFTER 回成功すると 0 に戻る)
+        self.ok_streak = 0
+        self.pause_log: list[dict[str, Any]] = []  # 止めた記録 (新しい順。管理画面に出す)
 
     def set_base(self, gap: float) -> None:
         self.base = max(float(gap), 0.2)
@@ -71,7 +79,13 @@ class Throttle:
     def state(self) -> dict[str, Any]:
         left = self.paused_until - self._clock()
         return {"gap": round(self.gap, 2), "base": self.base, "errors": self.errors,
-                "paused": round(left) if left > 0 else 0, "requests": self.requests}
+                "paused": round(left) if left > 0 else 0, "requests": self.requests,
+                "pauses": self.pauses, "next_pause": round(self._pause_length(self.pauses + 1)),
+                "pause_log": list(self.pause_log)}
+
+    @staticmethod
+    def _pause_length(n: int) -> float:
+        return min(MAX_PAUSE, PAUSE * 2 ** max(n - 1, 0))
 
     def call(self, get: Callable[[str], Any], path: str) -> Any:
         with self._lock:
@@ -100,14 +114,26 @@ class Throttle:
     def _ok(self) -> None:
         self.errors = 0
         self.gap = max(self.base, self.gap * 0.8)
+        self.ok_streak += 1
+        if self.pauses and self.ok_streak >= RECOVER_AFTER:
+            log.info("SHOWROOM への問い合わせが続けて成功したので、次に止める時間を %d 分に戻します", PAUSE // 60)
+            self.pauses = 0
 
     def _failed(self, why: str) -> None:
         self.errors += 1
+        self.ok_streak = 0
         self.gap = min(MAX_GAP, max(self.gap * 2, self.base))
         if self.errors >= PAUSE_AFTER:
-            self.paused_until = self._clock() + PAUSE
+            self.pauses += 1
+            length = self._pause_length(self.pauses)
+            self.paused_until = self._clock() + length
             self.errors = 0
-            log.warning("SHOWROOM への問い合わせが続けて失敗したので %d 分止めます (%s)", PAUSE // 60, why)
+            now = self._wall()
+            self.pause_log = [{"at": now, "until": now + length, "seconds": length, "count": self.pauses, "why": why},
+                              *self.pause_log][:PAUSE_LOG]
+            text = f"{length / 3600:g} 時間" if length >= 3600 else f"{length / 60:.0f} 分"
+            log.warning("SHOWROOM への問い合わせが続けて失敗したので、全ルームの収集などを %s止めます (続けて %d 回目。%s)。"
+                        "視聴とログインの維持は続けます", text, self.pauses, why)
 
 
 THROTTLE = Throttle()
