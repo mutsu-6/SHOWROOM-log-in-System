@@ -230,6 +230,7 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 | `SHOWROOM_BROWSER_EXECUTABLE` | 使用するブラウザ実行ファイルのパス |
 | `SHOWROOM_PROXY` (または `HTTPS_PROXY`) | ブラウザが使うプロキシ |
 | `SHOWROOM_VIDEO_QUALITY` | 視聴する画質 (`low` 256x144・約 0.2Mbps / `medium` 640x360・約 0.8Mbps / `original` 配信そのまま・最大 1080p 約 6Mbps / `auto` 再生プレーヤー任せ)。既定は `medium` (再生枠と同じ大きさで、1080p の配信でも映像の処理が軽い。`low` は通信量は最少だが引き伸ばして描くため CPU はかえって増える)。SHOWROOM の再生プレーヤーで選べる画質と同じもの |
+| `SHOWROOM_GIFT_UPDATE_DAYS` / `SHOWROOM_GIFT_UPDATE_TIMES` | ギフトの一覧 (名前・ポイント) を SHOWROOM から取り直す曜日と時刻 (日本時間)。既定は毎週月曜日の `0:00,3:00,12:00,15:00,18:00`。起動時にも取り直し、止めていた間に予定の時刻を過ぎた時も、次に使う時に取り直す。新しいギフトとポイントが変わったギフトはログに出る |
 | `SHOWROOM_BACKGROUND_TABS` | 配信ページを空白のページの裏 (背面のタブ) に開く (既定 `true`)。映像の再生・コメントの受信と投稿はそのままで、画面の描き直しが減り CPU が約 3 割減る |
 | `SHOWROOM_KEEP_OPEN_WHEN_OFFLINE` | 配信していないルームのページも開いておくか (`true` / `false` / `auto`。既定は `auto` でメモリを見て決める) |
 | `SHOWROOM_WEB_PORT` / `SHOWROOM_WEB_HOST` | 管理画面のポート (既定 8080、0 で無効) と待ち受けアドレス (既定 127.0.0.1) |
