@@ -76,6 +76,8 @@ class FakeShowroom:
             return {"ranking": [{"user_id": 20, "name": "大口", "point": 40000, "rank": 1},
                                 {"user_id": 30, "name": "イベントだけ", "point": 700, "rank": 2},
                                 {"user_id": 40, "name": "退会済みユーザー", "point": 500, "rank": 3}]}
+        if path == "/api/event/contribution_ranking?event_id=102&room_id=2":
+            return {"ranking": [{"user_id": 20, "name": "大口", "point": 5000, "rank": 1}]}
         if path == "/api/event/contribution_ranking?event_id=200&room_id=1":
             return {"ranking": [{"user_id": 10, "name": "ファン", "point": 100, "rank": 1}]}
         raise AssertionError(f"想定していない問い合わせ: {path}")
@@ -103,17 +105,17 @@ def quiet_throttle():
 
 def test_collect_rooms_with_gaps_between_requests(collected):
     tmp_path, get, waits, result = collected
-    assert result == {"rooms": 2, "events": 3, "requests": len(get.calls), "failures": 0}
+    assert result == {"rooms": 2, "events": 4, "requests": len(get.calls), "failures": 0}
     assert waits == [1.0] * (len(get.calls) - 1)  # 問い合わせの間は必ず空ける
     assert not any("event_id=101" in c for c in get.calls)  # 順位を公開していないイベントは取らない
-    assert not any("event_id=102" in c for c in get.calls)  # 約 9 か月より前のイベントは SHOWROOM が返さないので取らない
+    assert any("event_id=102" in c for c in get.calls)  # 古いイベントも取る (ギフトの量の移り変わりを見るため)
     rooms = research.load_rooms(tmp_path, ["support", "other"])
     assert rooms["support"]["events"][0] == {"event_id": 200, "name": "開催中", "key": "now_ev", "start": NOW - 86400,
                                              "end": NOW + 86400, "type": None, "show_ranking": True, "current": True}
     assert {r["user_id"]: r["visits"] for r in rooms["other"]["cumulative"]} == {20: 50, 10: 3}
     st = research.status(tmp_path, ["support", "other", "unknown"])
     assert [(r["name"], r["cumulative"], r["events"], r["rankings"]) for r in st] == [
-        ("応援ルーム", 1, 2, 2), ("ほかのルーム", 2, 3, 1), ("unknown", 0, 0, 0)]
+        ("応援ルーム", 1, 2, 2), ("ほかのルーム", 2, 3, 2), ("unknown", 0, 0, 0)]
 
 
 def test_finished_events_are_not_fetched_again(collected):
@@ -176,7 +178,7 @@ def test_analyze_candidates_fans_and_similar_rooms(collected):
     assert [c["user_id"] for c in r["candidates"]] == [20, 30]  # 応援ルームに送っていない人を、多い順に
     big = r["candidates"][0]
     assert big["other_points"] == 90000 and big["top_rooms"][0]["name"] == "ほかのルーム"
-    assert big["event_count"] == 1 and big["best_rank"] == 1 and big["habits"]["times"] == 1
+    assert big["event_count"] == 2 and big["best_rank"] == 1 and big["habits"]["times"] == 1
     assert big["sources"] == ["cumulative", "events", "recorded"]
     assert [f["user_id"] for f in r["fans"]] == [10] and r["fans"][0]["support_points"] == 5000
     assert r["similar"] == [{"key": "other", "name": "ほかのルーム", "gifters": 4, "shared": 1,
@@ -209,6 +211,47 @@ def test_gifter_detail_and_habits(collected):
         research.gifter_detail(tmp_path, "abc", [])
 
 
+def test_cumulative_history_and_monthly_timeline(collected):
+    tmp_path, _, _, _ = collected
+    later = NOW + 40 * 86400
+    with Store(tmp_path) as s:
+        s.set_cumulative(2, [{"user_id": 20, "name": "大口", "point": 93000, "visits": 52, "rank": 1},
+                             {"user_id": 10, "name": "ファン", "point": 800, "visits": 3, "rank": 2}], later)
+        s.set_cumulative(2, [{"user_id": 20, "name": "大口", "point": 95000, "visits": 53, "rank": 1}], later + 86400)
+        # ルームごとに 25 日以上空けて残す (すぐ後の取り直しは残さない)
+        assert [tuple(r) for r in s.all("SELECT user_id, point FROM cumulative_history WHERE room_id=2 ORDER BY user_id, at")] == [
+            (10, 800), (10, 800), (20, 90000), (20, 93000)]
+    record_gift(tmp_path, "other", 9, {"t": 2, "u": 20, "ac": "大口", "g": 5, "n": 2, "created_at": NOW - 3600})
+    t = research.gifter_detail(tmp_path, 20, ["support"])["timeline"]
+    months = {m["month"]: m for m in t["months"]}
+    month = lambda at: research._month(at)  # noqa: E731
+    assert months[month(NOW - 7 * 86400)]["events"] == {"total": 40000, "rooms": {"other": 40000}}
+    assert months[month(NOW - 300 * 86400)]["events"]["total"] == 5000  # 古いイベントの分も
+    assert months[month(NOW - 3600)]["recorded"]["total"] == 200
+    assert months[month(later)]["cumulative"]["total"] == 3000  # 取り直した間に増えた分
+    assert t["rooms"] == ["other"] and t["names"] == {"other": "ほかのルーム"}
+    keys = [m["month"] for m in t["months"]]
+    assert keys == sorted(keys) and len(keys) >= 11  # 送っていない月も並べる
+    assert research.gifter_detail(tmp_path, 30, [])["timeline"]["months"][0]["events"]["total"] == 700
+
+
+def test_older_research_db_gets_new_columns(tmp_path):
+    import sqlite3
+
+    c = sqlite3.connect(tmp_path / "research.db")
+    c.executescript("""CREATE TABLE rooms (room_id INTEGER PRIMARY KEY, key TEXT, name TEXT, followers INTEGER,
+                         found_via TEXT, found_at REAL, live_at REAL, collected_at REAL);
+                       CREATE TABLE events (event_id INTEGER PRIMARY KEY, key TEXT, name TEXT, start REAL, end REAL, type TEXT,
+                         show_ranking INTEGER DEFAULT 1, rooms_at REAL);
+                       CREATE TABLE room_events (room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0,
+                         failures INTEGER DEFAULT 0, PRIMARY KEY (room_id, event_id));""")
+    c.close()
+    with Store(tmp_path) as s:
+        s.set_event_rooms(7, [{"room_id": 1, "key": "a", "point": 10, "rank": 1}], NOW)
+        assert tuple(s.one("SELECT point, rank FROM room_events")) == (10, 1)
+        assert s.room(room_id=1)["retry_at"] is None
+
+
 def test_old_json_files_are_imported(tmp_path):
     folder = tmp_path / "research"
     (folder / "rooms").mkdir(parents=True)
@@ -237,16 +280,24 @@ class FakeAll:
         if path == "/api/live/onlives":
             return {"onlives": [{"lives": [{"room_id": 3, "room_url_key": "live3", "main_name": "配信中", "follower_num": 10}]}]}
         if path.startswith("/api/event/search?status=4&page=1"):
-            return {"event_list": [{"event_id": 300, "event_name": "終わった", "event_url_key": "done_ev",
+            return {"event_list": [{"event_id": 3, "event_name": "終わった", "event_url_key": "done_ev",
                                     "started_at": NOW - 5 * 86400, "ended_at": NOW - 2 * 86400, "show_ranking": True}],
                     "next_page": None}
         if path.startswith("/api/event/search"):
             return {"event_list": [], "next_page": None}
-        if path == "/api/event/done_ev/rooms?page=1":
-            return {"rooms": [{"room_id": 4, "room_url_key": "ev4", "room_name": "参加"}], "next_page": 2}
-        if path == "/api/event/done_ev/rooms?page=2":
-            return {"rooms": [{"room_id": 3, "room_url_key": "live3", "room_name": "配信中"}], "next_page": None}
-        if path.startswith("/api/event/contribution_ranking?event_id=300"):
+        if path == "/api/event/room_list?event_id=3&p=1":
+            return {"list": [{"room_id": 4, "room_url_key": "ev4", "room_name": "参加", "point": 5000, "rank": 1,
+                              "last_lived_at": NOW - 86400}], "next_page": 2}
+        if path == "/api/event/room_list?event_id=3&p=2":
+            return {"list": [{"room_id": 3, "room_url_key": "live3", "room_name": "配信中", "point": 10, "rank": 2},
+                             {"room_id": 5, "room_url_key": "zero5", "room_name": "誰も送っていない", "point": 0}],
+                    "next_page": None}
+        if path == "/api/event/room_list?event_id=2&p=1":  # 過去のイベント (一覧には出てこない)
+            return {"list": [{"room_id": 6, "room_url_key": "old6", "room_name": "昔のルーム", "point": 300, "rank": 1}],
+                    "next_page": None}
+        if path.startswith("/api/event/room_list"):
+            return {"list": [], "next_page": None}
+        if path.startswith("/api/event/contribution_ranking?event_id=3"):
             return {"ranking": [{"user_id": 77, "name": "参加者のファン", "point": 1200, "rank": 1}]}
         if path.startswith("/api/live/summary_ranking"):
             return {"ranking": []}
@@ -271,10 +322,17 @@ def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
         assert steps < 50
     assert get.calls[0] == "/api/live/onlives" and get.calls[1].startswith("/api/event/search")
     st = research.store_status(tmp_path)
-    assert (st["rooms"], st["events"], st["rankings"], st["rankings_waiting"]) == (3, 1, 2, 0)
-    assert st["scan_done_at"] and st["scan_next"] == 7  # 最大の番号 4 + 2 まで調べた
-    assert st["collected"] == 3  # 配信中・イベント参加・番号で見つけたルームの累計ランキングなど
-    assert sum("contribution_ranking" in c for c in get.calls) == 2  # 参加した 2 ルームの分を 1 回ずつ
+    assert (st["rooms"], st["events"], st["rankings"], st["rankings_waiting"]) == (5, 2, 2, 0)
+    assert st["scan_done_at"] and st["scan_next"] == 9  # 最大の番号 6 + 2 まで調べた
+    assert st["collected"] == 5  # 配信中・イベント参加・番号で見つけたルームの累計ランキングなど
+    # 参加した 2 ルームの分を 1 回ずつ (ポイントが 0 のルームは誰も送っていないので取らない)
+    assert sum("contribution_ranking" in c for c in get.calls) == 2
+    assert sum("room_list?event_id=1&" in c for c in get.calls) == 1  # 過去のイベントを番号で 1 までさかのぼる
+    with Store(tmp_path) as s:
+        assert tuple(s.one("SELECT point, rank FROM room_events WHERE room_id=4 AND event_id=3")) == (5000, 1)
+        assert s.one("SELECT point FROM room_events WHERE room_id=6 AND event_id=2")[0] == 300  # 昔のイベントの成績
+        assert s.room(room_id=4)["live_at"] == NOW - 86400  # 最後に配信した日時
+        assert s.meta("history_done_at")
     with Store(tmp_path) as s:
         assert s.room(key="scan1")["found_via"] == "scan" and s.room(room_id=3)["found_via"] == "live"
     assert [c["user_id"] for c in research.analyze(tmp_path, [])["candidates"]] == [77]
@@ -285,7 +343,7 @@ def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
 def test_sweep_puts_off_rooms_and_events_that_keep_failing(tmp_path):
     class Broken(FakeAll):
         def __call__(self, path):
-            if path.startswith("/api/live/summary_ranking?room_id=4") or path.startswith("/api/event/done_ev/rooms"):
+            if path.startswith("/api/live/summary_ranking?room_id=4") or path.startswith("/api/event/room_list?event_id=3&"):
                 self.calls.append(path)
                 raise http_error(500)
             return super().__call__(path)
@@ -298,7 +356,8 @@ def test_sweep_puts_off_rooms_and_events_that_keep_failing(tmp_path):
     while sw.step():
         steps += 1
         assert steps < 20  # 失敗し続けるものを何度も問い合わせない
-    assert sum("room_id=4" in c for c in get.calls) == 1 and sum("done_ev/rooms" in c for c in get.calls) == 1
+    assert sum("summary_ranking?room_id=4" in c for c in get.calls) == 1
+    assert sum("room_list?event_id=3&" in c for c in get.calls) == 1
     assert "500" in sw.last_error
     with Store(tmp_path) as s:
         assert s.room(room_id=4)["retry_at"] > NOW and s.room(room_id=4)["collected_at"] is None
@@ -328,7 +387,7 @@ def test_sweep_takes_turns_between_jobs(tmp_path):
         sw.step()
     kinds = [c.split("?")[0].rsplit("/", 1)[-1] for c in get.calls]
     # 配信中 → イベント一覧のあとは、ルーム → 参加ルーム → ルーム番号 … と順番に回す
-    assert "profile" in kinds and "summary_ranking" in kinds and "rooms" in kinds
+    assert "profile" in kinds and "summary_ranking" in kinds and "room_list" in kinds
 
 
 def test_job_runs_one_at_a_time(tmp_path):

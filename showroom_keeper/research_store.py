@@ -22,28 +22,35 @@ DB_NAME = "research.db"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms (
     room_id INTEGER PRIMARY KEY, key TEXT, name TEXT, followers INTEGER,
-    found_via TEXT, found_at REAL, live_at REAL, collected_at REAL, retry_at REAL);
+    found_via TEXT, found_at REAL, live_at REAL, collected_at REAL, retry_at REAL, history_at REAL);
 CREATE INDEX IF NOT EXISTS rooms_key ON rooms(key);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY, key TEXT, name TEXT, start REAL, end REAL, type TEXT,
     show_ranking INTEGER DEFAULT 1, rooms_at REAL, retry_at REAL);
 CREATE TABLE IF NOT EXISTS room_events (
     room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
-    PRIMARY KEY (room_id, event_id));
+    point INTEGER, rank INTEGER, PRIMARY KEY (room_id, event_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS room_events_event ON room_events(event_id);
 CREATE TABLE IF NOT EXISTS cumulative (
-    room_id INTEGER, user_id INTEGER, point INTEGER, visits INTEGER, rank INTEGER, PRIMARY KEY (room_id, user_id));
+    room_id INTEGER, user_id INTEGER, point INTEGER, visits INTEGER, rank INTEGER, PRIMARY KEY (room_id, user_id))
+    WITHOUT ROWID;
+-- 累計ランキングの、ルームごとにおよそ月 1 回の値 (期間ごとの増え方を出す)
+CREATE TABLE IF NOT EXISTS cumulative_history (
+    room_id INTEGER, user_id INTEGER, at REAL, point INTEGER, visits INTEGER, PRIMARY KEY (user_id, room_id, at))
+    WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS contributions (
     event_id INTEGER, room_id INTEGER, user_id INTEGER, point INTEGER, rank INTEGER,
-    PRIMARY KEY (event_id, room_id, user_id));
+    PRIMARY KEY (event_id, room_id, user_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS contributions_user ON contributions(user_id);
 CREATE TABLE IF NOT EXISTS user_room (
     user_id INTEGER, room_id INTEGER, cumulative INTEGER DEFAULT 0, cumulative_rank INTEGER,
-    visits INTEGER DEFAULT 0, events INTEGER DEFAULT 0, PRIMARY KEY (user_id, room_id));
+    visits INTEGER DEFAULT 0, events INTEGER DEFAULT 0, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS user_room_room ON user_room(room_id);
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
+
+HISTORY_EVERY = 25 * 86400  # 累計ランキングの値を残す間隔 (ルームごと。月ごとの推移に使う)
 
 _ready: set[str] = set()
 _ready_lock = threading.Lock()
@@ -68,10 +75,11 @@ class Store:
             if str(path) not in _ready:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.executescript(SCHEMA)
-                for table in ("rooms", "events"):  # この欄が無かったころの research.db
+                for table, col in (("rooms", "retry_at REAL"), ("rooms", "history_at REAL"), ("events", "retry_at REAL"),
+                                   ("room_events", "point INTEGER"), ("room_events", "rank INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
-                    if "retry_at" not in cols:
-                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN retry_at REAL")
+                    if col.split()[0] not in cols:  # この欄が無かったころの research.db
+                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 _import_json(self)
                 _ready.add(str(path))
 
@@ -122,7 +130,8 @@ class Store:
                 """INSERT INTO rooms(room_id, key, name, followers, found_via, found_at, live_at)
                    VALUES (:room_id, :key, :name, :followers, :via, :now, :live_at)
                    ON CONFLICT(room_id) DO UPDATE SET key=COALESCE(excluded.key, key), name=COALESCE(excluded.name, name),
-                     followers=COALESCE(excluded.followers, followers), live_at=COALESCE(excluded.live_at, live_at)""",
+                     followers=COALESCE(excluded.followers, followers),
+                     live_at=CASE WHEN excluded.live_at > COALESCE(live_at, 0) THEN excluded.live_at ELSE live_at END""",
                 [{"room_id": int(r["room_id"]), "key": r.get("key"), "name": r.get("name"), "followers": r.get("followers"),
                   "live_at": r.get("live_at"), "via": via, "now": now} for r in rooms if r.get("room_id")])
         return self.scalar("SELECT COUNT(*) FROM rooms") - before
@@ -160,10 +169,15 @@ class Store:
         c.executemany("INSERT INTO users(user_id, name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name",
                       [(r["user_id"], r["name"]) for r in rows if r.get("name")])
 
-    def set_cumulative(self, room_id: int, rows: list[dict[str, Any]]) -> None:
+    def set_cumulative(self, room_id: int, rows: list[dict[str, Any]], now: float) -> None:
         """ルームの累計ランキング (上位 30 人) を置き換える。user_room の累計は小さくしない (上位から外れても送った分は残る)。"""
         room_id = int(room_id)
         with self.tx() as c:
+            last = c.execute("SELECT history_at FROM rooms WHERE room_id=?", (room_id,)).fetchone()
+            if rows and (last is None or last[0] is None or now - last[0] >= HISTORY_EVERY):
+                c.executemany("INSERT OR IGNORE INTO cumulative_history(room_id, user_id, at, point, visits) VALUES (?, ?, ?, ?, ?)",
+                              [(room_id, r["user_id"], now, r["point"], r["visits"]) for r in rows])
+                c.execute("UPDATE rooms SET history_at=? WHERE room_id=?", (now, room_id))
             c.execute("DELETE FROM cumulative WHERE room_id=?", (room_id,))
             c.executemany("INSERT OR REPLACE INTO cumulative(room_id, user_id, point, visits, rank) VALUES (?, ?, ?, ?, ?)",
                           [(room_id, r["user_id"], r["point"], r["visits"], r.get("rank")) for r in rows])
@@ -193,6 +207,18 @@ class Store:
                            failures=0""", (room_id, event_id, now, int(final)))
             self._names(c, rows)
 
+    def set_event_rooms(self, event_id: int, rows: list[dict[str, Any]], now: float) -> None:
+        """イベントの参加ルームと、各ルームのイベントのポイント・順位を入れる。"""
+        event_id = int(event_id)
+        self.upsert_rooms(rows, "event", now)
+        with self.tx() as c:
+            if rows:  # 参加ルームの無い番号 (使われていない番号など) は入れない
+                c.execute("INSERT OR IGNORE INTO events(event_id) VALUES (?)", (event_id,))
+            c.executemany("""INSERT INTO room_events(room_id, event_id, point, rank) VALUES (?, ?, ?, ?)
+                             ON CONFLICT(room_id, event_id) DO UPDATE SET point=excluded.point, rank=excluded.rank""",
+                          [(int(r["room_id"]), event_id, r.get("point"), r.get("rank")) for r in rows if r.get("room_id")])
+            c.execute("UPDATE events SET rooms_at=?, retry_at=NULL WHERE event_id=?", (now, event_id))
+
     def ranking_failed(self, event_id: int, room_id: int) -> None:
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, failures) VALUES (?, ?, 1)
                              ON CONFLICT(room_id, event_id) DO UPDATE SET failures = failures + 1""",
@@ -218,7 +244,7 @@ def _import_json(store: Store) -> None:
             continue
         store.upsert_rooms([{"room_id": r["room_id"], "key": r.get("key"), "name": r.get("name")}], "settings", r.get("at") or 0)
         store.conn.execute("UPDATE rooms SET collected_at=? WHERE room_id=?", (r.get("at"), int(r["room_id"])))
-        store.set_cumulative(r["room_id"], [x for x in r.get("cumulative") or [] if x.get("user_id")])
+        store.set_cumulative(r["room_id"], [x for x in r.get("cumulative") or [] if x.get("user_id")], r.get("at") or 0)
         store.upsert_events([{k: e.get(k) for k in ("event_id", "key", "name", "start", "end", "type", "show_ranking")}
                              for e in r.get("events") or []])
         store.link((r["room_id"], e["event_id"]) for e in r.get("events") or [] if e.get("event_id"))

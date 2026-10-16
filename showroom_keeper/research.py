@@ -4,7 +4,8 @@
 - ルームの累計ポイントランキング (上位 30 人の累計ポイントと来場回数) /api/live/summary_ranking
 - ルームの過去のイベント /api/rooms/{room_id}/past_events と、開催中のイベント /api/room/event_and_support
 - イベントごとの貢献ランキング (ルームごとに上位 100 人) /api/event/contribution_ranking
-  (約 9 か月より前のイベントは SHOWROOM が空の一覧を返すので問い合わせない)
+  (2015 年ごろのイベントまで返る。ギフトの量の移り変わりを見るため、古いイベントも取る)
+- 累計ランキングの値をルームごとにおよそ月 1 回残す (cumulative_history。期間ごとの増え方を出す)
 
 問い合わせは 1 件ずつ間隔を空けて行い (Throttle。全ルームの収集 sweep.py とも共有する)、
 SHOWROOM が混んでいる・止められていそうなときは間隔を自動で広げる。
@@ -36,9 +37,8 @@ REQUEST_GAP = 1.0  # SHOWROOM への問い合わせの間隔 (秒)
 MAX_GAP = 60.0  # 混んでいるときに広げる間隔の上限 (秒)
 PAUSE_AFTER = 5  # 続けてこの回数失敗したら、しばらく問い合わせを止める
 PAUSE = 3600.0  # 止める時間 (秒)
-PAST_EVENT_PAGES = 10  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
+PAST_EVENT_PAGES = 100  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
 ROOM_REFRESH = 20 * 3600  # 累計ランキングなどを取り直すまでの時間 (秒)
-RANKING_DAYS = 280  # これより前に終わったイベントの貢献ランキングは SHOWROOM が返さないので取らない (日)
 RANKING_RETRIES = 3  # 貢献ランキングの取得に続けて失敗したら、それ以上は自動で取り直さない
 WEEKDAYS = "月火水木金土日"
 LEFT_NAMES = {"退会済みユーザー"}  # SHOWROOM をやめたユーザー (誘導できないので候補に出さない)
@@ -222,11 +222,10 @@ class Collector:
         """累計ランキング・過去と開催中のイベントを取り直す。"""
         now = self._clock()
         st = self.store
-        st.set_cumulative(room_id, _rows(self.get(f"/api/live/summary_ranking?room_id={room_id}"), cumulative=True))
+        st.set_cumulative(room_id, _rows(self.get(f"/api/live/summary_ranking?room_id={room_id}"), cumulative=True), now)
         row = st.room(room_id=room_id)
         complete = row is not None and row["collected_at"] is not None  # 前回は最後まで読めた
         known = {e["event_id"] for e in st.room_events(room_id)}
-        cutoff = now - RANKING_DAYS * 86400
         events: list[dict[str, Any]] = []
         page: Any = 1
         while page and page <= PAST_EVENT_PAGES:
@@ -235,8 +234,6 @@ class Collector:
             events += got
             if not got or (complete and all(e["event_id"] in known for e in got)):
                 break  # 新しい順なので、ここから先は前に読んだもの
-            if all(e["end"] and float(e["end"]) < cutoff for e in got):
-                break  # ここから先は貢献ランキングを取れない古いイベント
             page = data.get("next_page")
         current = (self.get(f"/api/room/event_and_support?room_id={room_id}") or {}).get("event")
         if isinstance(current, dict) and current.get("event_id"):
@@ -248,12 +245,11 @@ class Collector:
     def fetch_rankings(self, room_id: int, force: bool = False, current: bool = False) -> int:
         """ルームが参加したイベントの貢献ランキングを取る。current なら開催中のものも (取り直しも) 取る。"""
         now = self._clock()
-        cutoff = now - RANKING_DAYS * 86400
         added = 0
         for ev in self.store.room_events(room_id):
             if not ev["show_ranking"] or ev["final"]:
                 continue
-            if (ev["end"] and float(ev["end"]) < cutoff) or (ev["start"] and float(ev["start"]) > now):
+            if ev["start"] and float(ev["start"]) > now:
                 continue
             ended = bool(ev["end"]) and now > float(ev["end"]) + 3600
             if not ended and not current:
@@ -339,16 +335,20 @@ def store_status(state_dir: Path) -> dict[str, Any]:
             "rankings": s.scalar("SELECT COUNT(*) FROM room_events WHERE ranking_at IS NOT NULL"),
             "rankings_waiting": s.scalar(
                 f"SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id) WHERE {PENDING_RANKING}",
-                (now - 3600, now - RANKING_DAYS * 86400, RANKING_RETRIES)),
+                (now - 3600, RANKING_RETRIES)),
             "gifters": s.scalar("SELECT COUNT(*) FROM users"),
             "scan_next": s.meta("scan_next", 1), "scan_end": s.meta("scan_end"), "scan_done_at": s.meta("scan_done_at"),
+            "history_next": s.meta("history_next"), "history_done_at": s.meta("history_done_at"),
+            "event_max": s.scalar("SELECT MAX(event_id) FROM events"),
+            "oldest_ranking": s.scalar("""SELECT MIN(e.end) FROM room_events re JOIN events e USING(event_id)
+                                         WHERE re.ranking_at IS NOT NULL AND e.end IS NOT NULL""", default=None),
             "db_mb": round(size / 1e6, 1),
         }
 
 
-# 終わって 1 時間たち、終わってからはまだ取っていない (取れる期間内の) 貢献ランキング
+# 終わって 1 時間たち、終わってからはまだ取っていない貢献ランキング (ポイントが 0 のルームは誰も送っていないので除く)
 PENDING_RANKING = """re.final=0 AND (re.ranking_at IS NULL OR re.ranking_at < e.end + 3600) AND e.show_ranking=1
-    AND e.end IS NOT NULL AND e.end < ? AND e.end > ? AND re.failures < ?"""
+    AND e.end IS NOT NULL AND e.end < ? AND re.failures < ? AND (re.point IS NULL OR re.point > 0)"""
 
 
 # ------------------------------------------------------------------ 分析
@@ -385,6 +385,7 @@ class _Recorded:
         catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in records)))
         self.gifts: dict[int, list[tuple[float, int, str]]] = defaultdict(list)
         self.points: dict[tuple[int, str], int] = defaultdict(int)
+        self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.names: dict[int, str] = {}
         for key, g in records:
             uid = g.get("user_id")
@@ -395,6 +396,7 @@ class _Recorded:
             if g.get("name"):
                 self.names[uid] = g["name"]  # 後の記録の名前で上書きする
             self.points[(uid, key)] += pt
+            self.by_user[uid][key] += pt
             self.gifts[uid].append((g["at"], pt, key))
 
 
@@ -449,9 +451,10 @@ def _slots(store: Store, rooms: _Rooms, rec: _Recorded, uids: list[int]) -> dict
         for r in store.all(f"SELECT * FROM user_room WHERE user_id IN ({','.join('?' * len(part))})", part):
             out[r["user_id"]][r["room_id"]] = {"recorded": 0, "cumulative": r["cumulative"] or 0, "visits": r["visits"] or 0,
                                                "events": r["events"] or 0, "cumulative_rank": r["cumulative_rank"]}
-    wanted = set(uids)
-    for (uid, key), pt in rec.points.items():
-        if uid in wanted and pt:
+    for uid in uids:
+        for key, pt in rec.by_user.get(uid, {}).items():
+            if not pt:
+                continue
             slot = out[uid].setdefault(rooms.id(key), {"recorded": 0, "cumulative": 0, "visits": 0, "events": 0,
                                                        "cumulative_rank": None})
             slot["recorded"] += pt
@@ -587,9 +590,11 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         pairs = _room_pairs(s, rooms)
 
         uids = list(dict.fromkeys(fan_ids + cand_ids))
-        slots, evs, names = _slots(s, rooms, rec, uids), _event_stats(s, uids), _user_names(s, rec, uids)
+        evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
         sup = set(sup_ids)
-        summary = {u: _summary(u, names.get(u), slots.get(u, {}), evs.get(u), rec.gifts.get(u, []), rooms, sup) for u in uids}
+        # ルームごとの内訳は 1 人ずつ読む (数万ルームに出てくる人もいて、まとめて読むとメモリが足りなくなる)
+        summary = {u: _summary(u, names.get(u), _slots(s, rooms, rec, [u]).get(u, {}), evs.get(u), rec.gifts.get(u, []),
+                               rooms, sup) for u in uids}
         top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
         room_list = []
         for r in room_rows:
@@ -638,6 +643,9 @@ def _room_pairs(s: Store, rooms: _Rooms) -> list[dict[str, Any]]:
     return out[:100]
 
 
+DETAIL_ROWS = 300  # 1 人の詳しい表示で返すルーム・イベントの数 (数万ルームに出てくる人もいる)
+
+
 def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
     """1 人のギフターの詳しい情報 (ルームごとの内訳・イベントの実績・行動のくせ)。"""
     try:
@@ -650,7 +658,8 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         slots = _slots(s, rooms, rec, [uid]).get(uid, {})
         events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end
                                             FROM contributions c LEFT JOIN events e USING(event_id)
-                                            WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC""", (uid,))]
+                                            WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC LIMIT ?""", (uid, DETAIL_ROWS))]
+        event_total = s.scalar("SELECT COUNT(*) FROM contributions WHERE user_id=?", (uid,))
         gifts = rec.gifts.get(uid, [])
         if not slots and not events and not gifts:
             return {"user_id": uid, "found": False}
@@ -661,9 +670,65 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
             e["event"] = e["event"] or str(e["event_id"])
         room_list = sorted(({"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "support": rid in sup,
                              "points": room_score(v), **v} for rid, v in slots.items()), key=lambda r: -r["points"])
-        return {"user_id": uid, "found": True,
+        return {"user_id": uid, "found": True, "room_total": len(room_list), "event_total": event_total,
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup),
-                "rooms": room_list, "events": events, "habits": habits(gifts)}
+                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid)}
+
+
+TIMELINE_ROOMS = 5  # 月ごとの推移で色分けするルームの数 (ほかは「その他」)
+
+
+def _month(at: float) -> str:
+    return datetime.fromtimestamp(float(at), JST).strftime("%Y-%m")
+
+
+def _timeline(s: Store, rooms: _Rooms, gifts: list[tuple[float, int, str]], uid: int) -> dict[str, Any]:
+    """月ごとの支出の推移 (ルーム別)。種類ごとに分ける (重なりがあるので足さない)。
+
+    - events: イベントの貢献ポイント (イベントが終わった月)
+    - recorded: 記録したギフト
+    - cumulative: 累計ランキングの増え (取り直した間に増えた分を、取り直した月に)
+    """
+    data: dict[str, dict[str, dict[int, int]]] = {k: defaultdict(lambda: defaultdict(int)) for k in ("events", "recorded", "cumulative")}
+    for r in s.all("""SELECT c.room_id, strftime('%Y-%m', e.end + 9 * 3600, 'unixepoch') AS month, SUM(c.point) AS point
+                      FROM contributions c JOIN events e USING(event_id)
+                      WHERE c.user_id=? AND e.end IS NOT NULL GROUP BY c.room_id, month""", (uid,)):
+        data["events"][r["month"]][r["room_id"]] += r["point"]
+    for at, pt, key in gifts:
+        if pt > 0:
+            data["recorded"][_month(at)][rooms.id(key)] += pt
+    last: dict[int, int] = {}
+    for r in s.all("SELECT room_id, at, point FROM cumulative_history WHERE user_id=? ORDER BY room_id, at", (uid,)):
+        before = last.get(r["room_id"])
+        if before is not None and r["point"] > before:
+            data["cumulative"][_month(r["at"])][r["room_id"]] += r["point"] - before
+        last[r["room_id"]] = r["point"]
+    months = sorted({m for kind in data.values() for m in kind})
+    if not months:
+        return {"months": [], "rooms": [], "names": {}}
+    totals: dict[int, int] = defaultdict(int)
+    for kind in data.values():
+        for per in kind.values():
+            for rid, pt in per.items():
+                totals[rid] += pt
+    top = [rid for rid, _ in sorted(totals.items(), key=lambda kv: -kv[1])[:TIMELINE_ROOMS]]
+    out = []
+    y, m = map(int, months[0].split("-"))
+    end = _month(time.time())
+    while f"{y:04d}-{m:02d}" <= max(end, months[-1]):  # 送っていない月も 0 として並べる
+        key = f"{y:04d}-{m:02d}"
+        row: dict[str, Any] = {"month": key}
+        for kind, per_month in data.items():
+            per = per_month.get(key, {})
+            parts = {rooms.label(rid)[0]: per.get(rid, 0) for rid in top if per.get(rid)}
+            other = sum(pt for rid, pt in per.items() if rid not in top)
+            if other:
+                parts["_other"] = other
+            row[kind] = {"total": sum(per.values()), "rooms": parts}
+        out.append(row)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return {"months": out, "rooms": [rooms.label(rid)[0] for rid in top],
+            "names": {rooms.label(rid)[0]: rooms.label(rid)[1] for rid in top}}
 
 
 # ------------------------------------------------------------------ 収集の実行 (予定の時刻と管理画面から)
