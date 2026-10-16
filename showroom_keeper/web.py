@@ -320,6 +320,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                             "support_rooms": list(cfg.support_rooms), "research_rooms": list(cfg.research_rooms)})
             elif url.path == "/api/research/status":
                 self._json(self._research_progress())
+            elif url.path == "/api/research/watch":
+                from . import research
+
+                self._json({"watch": research.watch_list(self._state_dir(), self._support(q))})
             elif url.path == "/api/research/gifter":
                 from . import research
 
@@ -396,6 +400,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self.keeper.request_reload()
                 self._start_research(only_new=True)
                 self._json({"ok": True, "settings": values})
+            elif path == "/api/research/watch":
+                from . import research
+
+                research.set_watch(self._state_dir(), data.get("user_id"), bool(data.get("watched", True)), data.get("memo"))
+                self._json({"ok": True})
             elif path == "/api/research/collect":
                 started = self._start_research(only_new=False, force=bool(data.get("force")))
                 self._json({"ok": True, "started": started})

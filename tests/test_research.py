@@ -503,3 +503,24 @@ def test_sweep_records_points_of_ongoing_events_every_hour(tmp_path):
     assert pts == [100, 250]
     st = research.store_status(tmp_path)
     assert st["progress_events"] == 1 and st["progress_rows"] == 2
+
+
+def test_watch_list_with_memo(collected):
+    tmp_path, _, _, _ = collected
+    assert research.watch_list(tmp_path, []) == []
+    research.set_watch(tmp_path, "20", True, "月末に大きく送る")
+    research.set_watch(tmp_path, 10, True)
+    w = {x["user_id"]: x for x in research.watch_list(tmp_path, ["support"])}
+    assert w[20]["memo"] == "月末に大きく送る" and w[20]["other_points"] == 90000 and w[20]["name"] == "大口"
+    assert w[10]["memo"] == "" and w[10]["support_points"] == 5000
+    research.set_watch(tmp_path, 20, True)  # メモを渡さない時はメモを変えない
+    assert research.gifter_detail(tmp_path, 20, [])["watch"]["memo"] == "月末に大きく送る"
+    research.set_watch(tmp_path, 20, True, "")
+    assert research.gifter_detail(tmp_path, 20, [])["watch"]["memo"] == ""
+    research.set_watch(tmp_path, 20, False)
+    assert research.gifter_detail(tmp_path, 20, [])["watch"] is None
+    assert [x["user_id"] for x in research.watch_list(tmp_path, [])] == [10]
+    with pytest.raises(ValueError):
+        research.set_watch(tmp_path, "abc", True)
+    with pytest.raises(ValueError):
+        research.set_watch(tmp_path, 1, True, "あ" * 501)

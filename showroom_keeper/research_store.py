@@ -27,6 +27,7 @@ CREATE INDEX IF NOT EXISTS rooms_key ON rooms(key);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY, key TEXT, name TEXT, start REAL, end REAL, type TEXT,
     show_ranking INTEGER DEFAULT 1, rooms_at REAL, retry_at REAL);
+CREATE TABLE IF NOT EXISTS watch (user_id INTEGER PRIMARY KEY, memo TEXT, added_at REAL, updated_at REAL);
 CREATE TABLE IF NOT EXISTS event_progress (
     event_id INTEGER, room_id INTEGER, at REAL, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, room_id, at));
 CREATE INDEX IF NOT EXISTS event_progress_at ON event_progress(event_id, at);
@@ -221,6 +222,20 @@ class Store:
                              ON CONFLICT(room_id, event_id) DO UPDATE SET point=excluded.point, rank=excluded.rank""",
                           [(int(r["room_id"]), event_id, r.get("point"), r.get("rank")) for r in rows if r.get("room_id")])
             c.execute("UPDATE events SET rooms_at=?, retry_at=NULL WHERE event_id=?", (now, event_id))
+
+    # ---------------------------------------------------------------- 気になるギフター
+    def set_watch(self, user_id: int, watched: bool, memo: str | None, now: float) -> None:
+        """気になるギフターに入れる (メモつき)・外す。memo が None ならメモは変えない。"""
+        uid = int(user_id)
+        if not watched:
+            self.conn.execute("DELETE FROM watch WHERE user_id=?", (uid,))
+            return
+        self.conn.execute("""INSERT INTO watch(user_id, memo, added_at, updated_at) VALUES (?, COALESCE(?, ''), ?, ?)
+                             ON CONFLICT(user_id) DO UPDATE SET memo=COALESCE(?, memo), updated_at=excluded.updated_at""",
+                          (uid, memo, now, now, memo))
+
+    def watch_rows(self) -> list[sqlite3.Row]:
+        return self.all("SELECT * FROM watch ORDER BY added_at DESC")
 
     def add_progress(self, event_id: int, rows: list[dict[str, Any]], now: float) -> int:
         """開催中のイベントの、今のルームごとのポイントと順位を残す (ポイントの推移)。戻り値は残したルームの数。"""

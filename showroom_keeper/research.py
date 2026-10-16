@@ -745,10 +745,52 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
             e["event"] = e["event"] or str(e["event_id"])
         room_list = sorted(({"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "support": rid in sup,
                              "points": room_score(v), **v} for rid, v in slots.items()), key=lambda r: -r["points"])
+        w = s.one("SELECT memo, added_at FROM watch WHERE user_id=?", (uid,))
         return {"user_id": uid, "found": True, "room_total": len(room_list), "event_total": event_total,
+                "watch": {"memo": w["memo"] or "", "added_at": w["added_at"]} if w else None,
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).at(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid)}
+
+
+MEMO_MAX = 500  # 気になるギフターのメモの長さの上限 (文字)
+
+
+def set_watch(state_dir: Path, user_id: Any, watched: bool, memo: Any = None) -> None:
+    """気になるギフターに入れる・外す (メモつき)。"""
+    try:
+        uid = int(str(user_id).strip())
+    except (TypeError, ValueError):
+        raise ValueError("ユーザー ID は数字で指定してください") from None
+    if memo is not None:
+        memo = str(memo).strip()
+        if len(memo) > MEMO_MAX:
+            raise ValueError(f"メモは {MEMO_MAX} 文字までです")
+    with Store(state_dir) as s:
+        s.set_watch(uid, bool(watched), memo, time.time())
+
+
+def watch_list(state_dir: Path, support: list[str]) -> list[dict[str, Any]]:
+    """気になるギフターの一覧 (メモと、分析と同じ要約つき)。新しく入れた順。"""
+    with Store(state_dir) as s:
+        rows = [dict(r) for r in s.watch_rows()]
+        if not rows:
+            return []
+        rec = _Recorded(state_dir)
+        rooms = _Rooms(s, state_dir)
+        uids = [r["user_id"] for r in rows]
+        slots = _slots(s, rooms, rec, uids)
+        stats = _event_stats(s, uids)
+        names = _user_names(s, rec, uids)
+        sup = {rooms.id(k) for k in support}
+        signup = _signup(s, rec)
+        out = []
+        for r in rows:
+            uid = r["user_id"]
+            summary = _summary(uid, names.get(uid), slots.get(uid, {}), stats.get(uid), rec.gifts.get(uid, []), rooms, sup,
+                               signup.at(uid))
+            out.append({**summary, "memo": r["memo"] or "", "added_at": r["added_at"], "updated_at": r["updated_at"]})
+        return out
 
 
 TIMELINE_ROOMS = 5  # 月ごとの推移で色分けするルームの数 (ほかは「その他」)
