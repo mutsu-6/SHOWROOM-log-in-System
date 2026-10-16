@@ -329,7 +329,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                             **self._research_progress(),
                             "support_rooms": list(cfg.support_rooms), "research_rooms": list(cfg.research_rooms)})
             elif url.path == "/api/research/status":
-                self._json(self._research_progress())
+                from . import research
+
+                out = self._research_progress()
+                if q.get("coverage") == "1":  # 月ごとの集まり具合 (数えるのに数秒かかるので、10 分使い回す)
+                    out["coverage"] = research.coverage(self._state_dir())
+                self._json(out)
             elif url.path == "/api/research/watch":
                 from . import research
 
@@ -338,6 +343,18 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import research
 
                 self._json(research.gifter_detail(self._state_dir(), q.get("user"), self._support(q)))
+            elif url.path in ("/api/search", "/api/room", "/api/events", "/api/event"):
+                from . import explore
+
+                state_dir = self._state_dir()
+                if url.path == "/api/search":
+                    self._json(explore.search(state_dir, q.get("q", "")))
+                elif url.path == "/api/room":
+                    self._json(explore.room_detail(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
+                elif url.path == "/api/events":
+                    self._json(explore.event_list(state_dir, q.get("state", "ongoing")))
+                else:
+                    self._json(explore.event_detail(state_dir, q.get("event", "")))
             elif url.path == "/api/lookup/user":
                 from .listing import lookup_user
 

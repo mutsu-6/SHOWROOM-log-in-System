@@ -238,3 +238,13 @@ def test_research_endpoints(admin, monkeypatch):
     code, _ = call(base + "/api/settings", {"rooms": ["c"], "support_rooms": ["sup", "new", "newer"]}, POST)
     assert code == 200 and keeper.reloads == 1 and started[-1] == (["sup", "new", "newer"], False)
     assert call(base + "/api/research/gifter?user=x")[0] == 400
+
+
+def test_explore_endpoints(admin):
+    _, base = admin
+    for path in ("/api/search?q=abc", "/api/room?room=abc", "/api/events?state=ended", "/api/event?event=5"):
+        code, body = call(base + path)
+        assert code == 200, path
+    assert json.loads(call(base + "/api/room?room=abc")[1]) == {"key": "abc", "found": False}
+    assert call(base + "/api/events?state=bad")[0] == 400
+    assert call(base + "/api/room?room=not%20a%20room!")[0] == 400

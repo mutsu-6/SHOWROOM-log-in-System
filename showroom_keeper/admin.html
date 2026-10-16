@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SHOWROOM keeper 管理画面</title>
+<title>SHOWROOM keeper</title>
 <link rel="icon" href="data:,">
 <style>
 :root {
@@ -244,146 +244,284 @@ details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; 
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .badges { margin-left: 0; width: 100%; }
 }
+/* ---- 作り直した画面 (2026-10-17) ---- */
+section[data-page] { display: none; }
+section[data-page].active { display: block; }
+.bar { gap: 10px 14px; }
+.gsearch { position: relative; flex: 1 1 260px; max-width: 420px; }
+.gsearch input { width: 100%; padding-left: 30px; }
+.gsearch::before { content: "⌕"; position: absolute; left: 10px; top: 50%; transform: translateY(-52%); color: var(--muted); font-size: 15px; pointer-events: none; }
+.gresults { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); max-height: min(520px, 70vh); overflow-y: auto; padding: 6px; min-width: min(420px, calc(100vw - 32px)); }
+.gresults .grp { color: var(--muted); font-size: 11px; font-weight: 700; padding: 8px 8px 2px; }
+.gresults a { display: flex; gap: 8px; align-items: baseline; padding: 7px 8px; border-radius: 8px; color: var(--text); }
+.gresults a:hover, .gresults a.hl { background: var(--panel2); text-decoration: none; }
+.gresults a .s { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.gresults .none { color: var(--muted); padding: 10px 8px; font-size: 13px; }
+#offline { background: var(--warn-soft); color: var(--warn); font-weight: 600; text-align: center; padding: 6px 12px; font-size: 13px; }
+.page-head { display: flex; align-items: flex-start; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 14px; }
+.page-head .grow { flex: 1 1 300px; min-width: 0; }
+.page-head h2 { word-break: break-word; }
+.crumb { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.crumb a { color: var(--muted); }
+.subnav { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 14px; }
+.subnav a { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-weight: 600; font-size: 13px; background: var(--panel); }
+.subnav a:hover { text-decoration: none; color: var(--text); }
+.subnav a.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.subnav a .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: block; color: var(--text); min-width: 0; }
+a.tile:hover { text-decoration: none; border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
+.tile .l { color: var(--muted); font-size: 12px; font-weight: 600; }
+.tile .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .v small { font-size: 12px; color: var(--muted); font-weight: 600; }
+.tile .s { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.tile.ok { border-left: 4px solid var(--ok); } .tile.warn { border-left: 4px solid var(--warn); } .tile.bad { border-left: 4px solid var(--accent); }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.cols .card h3:first-child { margin-top: 0; }
+.mini { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.mini li { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.mini li:last-child { border-bottom: 0; }
+.mini .t { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini .s { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mini .memo { color: var(--muted); font-size: 12px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.note-box { background: var(--info-soft); color: var(--text); border-radius: 10px; padding: 8px 12px; font-size: 12px; margin: 8px 0 12px; }
+.dt-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 6px; }
+.dt-foot .grow { flex: 1; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--text); }
+th.sortable .arr { opacity: .35; margin-left: 3px; }
+th.sortable.on .arr { opacity: 1; color: var(--text); }
+td a.name-link, td a { word-break: break-word; }
+.section-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 22px 0 10px; }
+.section-title h3 { margin: 0; }
+.section-title .grow { flex: 1; }
+.sub-panel[hidden] { display: none; }
+@media (max-width: 760px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 560px) {
+  .gsearch { max-width: none; order: 3; flex-basis: 100%; }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile .v { font-size: 17px; }
+}
+.chart-head { flex-wrap: wrap; }
+.chart-head .seg { flex: 0 1 auto; min-width: 0; }
+.cols > div { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.cols > div > h3 { margin-bottom: -4px; }
+
 </style>
 </head>
 <body>
 <header>
+  <div id="offline" hidden>サーバーにつながっていません。つなぎ直しています…</div>
   <div class="bar">
     <div class="brand"><span class="dot"></span>SHOWROOM keeper</div>
+    <div class="gsearch" id="gsearch">
+      <input type="search" id="q" placeholder="ギフター・ルーム・イベントを探す (名前・ID)" autocomplete="off" aria-label="探す">
+      <div class="gresults" id="q-results" hidden></div>
+    </div>
     <div class="badges" id="badges"><span class="pill">読み込み中…</span></div>
   </div>
   <nav id="nav">
-    <a href="#dashboard" data-tab="dashboard">ダッシュボード</a>
-    <a href="#comment" data-tab="comment">コメント</a>
-    <a href="#gifts" data-tab="gifts">ギフト</a>
-    <a href="#listeners" data-tab="listeners">リスナー</a>
-    <a href="#research" data-tab="research">分析</a>
-    <a href="#settings" data-tab="settings">ルーム設定</a>
-    <a href="#logs" data-tab="logs">ログ</a>
+    <a href="#home" data-nav="home">ホーム</a>
+    <a href="#gifters" data-nav="gifters">ギフター</a>
+    <a href="#rooms" data-nav="rooms">ルーム</a>
+    <a href="#events" data-nav="events">イベント</a>
+    <a href="#live" data-nav="live">ライブ</a>
+    <a href="#collect" data-nav="collect">収集</a>
+    <a href="#settings" data-nav="settings">設定</a>
   </nav>
 </header>
 
 <main>
-  <!-- ダッシュボード -->
-  <section data-tab="dashboard">
-    <h2>ダッシュボード</h2>
-    <p class="sub">視聴しているルームの状況です。15 秒ごとに自動で更新します。</p>
-    <div id="rooms" class="grid"></div>
-    <h3>ギフトを記録中のルーム <span class="pill" id="rec-count">0</span></h3>
-    <div id="recording"></div>
-  </section>
-
-  <!-- コメント -->
-  <section data-tab="comment">
-    <h2>コメント</h2>
-    <p class="sub">開いている配信ページのコメント欄から 1 件ずつ投稿します。投稿と投稿の間は 3 秒以上空きます。</p>
-    <div class="card">
-      <div class="row" style="margin-bottom:10px">
-        <label for="c-room" style="color:var(--muted)">投稿先</label>
-        <select id="c-room" class="grow"></select>
+  <!-- ホーム -->
+  <section data-page="home">
+    <h2>ホーム</h2>
+    <p class="sub">今の状態と、今日見ておくとよいことです。</p>
+    <div class="tiles" id="home-tiles"></div>
+    <div class="cols">
+      <div>
+        <div class="card"><h3>気になるギフター</h3><div id="home-watch"><div class="loading"><span class="spinner"></span>読み込み中…</div></div></div>
+        <div class="card"><h3>ギフターの動き</h3><div id="home-trend"></div></div>
+        <div class="card"><h3>情報の集まり具合</h3><div id="home-collect"></div></div>
       </div>
-      <form class="composer" id="c-form" autocomplete="off">
-        <input type="text" id="c-text" placeholder="コメントを入力して Enter" maxlength="200">
-        <span class="counter" id="c-count">0/50</span>
-        <button class="btn primary" id="c-send" type="submit">投稿</button>
-      </form>
-      <div class="hint" id="c-hint"></div>
-    </div>
-    <ul class="history" id="c-history"></ul>
-  </section>
-
-  <!-- ギフト -->
-  <section data-tab="gifts">
-    <h2>ギフト</h2>
-    <p class="sub">リスナー別のランキングと最近のギフトを表示します。名前をクリックするとそのリスナーの履歴を表示します。</p>
-    <div class="card">
-      <div class="row" style="margin-bottom:12px">
-        <div class="seg" id="g-mode">
-          <button type="button" data-mode="room" class="active">ルーム</button>
-          <button type="button" data-mode="event">イベント</button>
-        </div>
+      <div>
+        <div class="card"><h3>もうすぐ終わるイベント</h3><div id="home-events"><div class="loading"><span class="spinner"></span>読み込み中…</div></div></div>
       </div>
-      <form id="g-form" class="row">
-        <span id="g-room-wrap" class="row grow">
-          <input type="text" id="g-room" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名・URL で SHOWROOM 全体から検索 (クリックで一覧)">
-          <button type="button" class="btn" data-pick="g-room">一覧から選ぶ</button>
-          <select id="g-hours">
-            <option value="">今回の配信</option>
-            <option value="24">直近 24 時間</option>
-            <option value="168">直近 7 日</option>
-            <option value="100000000">記録のすべて</option>
-          </select>
-        </span>
-        <span id="g-event-wrap" class="row grow" hidden>
-          <input type="text" id="g-event" class="grow" autocomplete="off" data-suggest="event" placeholder="イベント名・URL で検索 (クリックで一覧)">
-          <button type="button" class="btn" data-pick="g-event">一覧から選ぶ</button>
-          <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="g-official" checked> 公式の貢献ランキング</label>
-        </span>
-        <input type="search" id="g-user" autocomplete="off" data-suggest="user" placeholder="リスナー名・ID で検索 (クリックで一覧)" style="flex:0 1 260px">
-        <button class="btn primary" type="submit">表示</button>
-      </form>
     </div>
-    <div id="g-result"></div>
   </section>
 
-  <!-- リスナー -->
-  <section data-tab="listeners">
-    <h2>リスナー</h2>
-    <p class="sub">記録したギフトのリスナー一覧です。行をクリックすると、記録したすべてのルームでの履歴を表示します。</p>
-    <div class="card">
+  <!-- ギフター -->
+  <section data-page="gifters">
+    <div class="page-head">
+      <div class="grow"><h2>ギフター</h2>
+        <p class="sub" style="margin:0">集めた情報 (累計ランキング・イベントの貢献ランキング・記録したギフト) で分かったギフターです。名前をクリックすると、その人のページを開きます。</p></div>
       <div class="row">
-        <input type="search" id="l-q" class="grow" placeholder="名前の一部かユーザー ID で絞り込む (記録に無い ID は SHOWROOM で調べます)">
-        <select id="l-days" title="期間">
-          <option value="1">直近 24 時間</option>
-          <option value="7">直近 7 日</option>
-          <option value="30" selected>直近 30 日</option>
-          <option value="0">記録のすべて</option>
-        </select>
-        <input type="search" id="l-room" autocomplete="off" data-suggest="room" placeholder="ルームで絞り込む (空ならすべて)" style="flex:0 1 240px">
-        <select id="l-sort" title="並び順">
-          <option value="points">ポイントの多い順</option>
-          <option value="paid">有料ポイントの多い順</option>
-          <option value="times">回数の多い順</option>
-          <option value="last">最近ギフトを送った順</option>
-          <option value="rooms">送ったルームの多い順</option>
-        </select>
-        <label class="row" style="gap:4px;color:var(--muted)">最低 <input type="number" id="l-min" min="0" step="100" value="0" style="width:90px"> pt</label>
-      </div>
-      <div class="filters" id="l-filters" style="margin-top:10px">
-        <button type="button" class="fchip active" data-f="all">すべて</button>
-        <button type="button" class="fchip" data-f="paid">有料ギフトあり</button>
-        <button type="button" class="fchip" data-f="multi">複数のルームに送っている</button>
-        <button type="button" class="fchip" data-f="today">今日送った</button>
-      </div>
-    </div>
-    <div id="l-detail"></div>
-    <div id="l-list"></div>
-  </section>
-
-  <!-- 分析 -->
-  <section data-tab="research">
-    <h2>分析</h2>
-    <p class="sub">応援しているルームへ誘導する作戦の参考データです。ルーム設定の「応援しているルーム」「調べるルーム」(全ルームの収集を有効にしていれば SHOWROOM の全ルーム) の累計ポイントランキングと、過去・開催中のイベントの貢献ランキング、記録したギフトから作ります。</p>
-    <div class="card">
-      <div class="row">
-        <label class="row" style="gap:6px;color:var(--muted)">応援ルーム <select id="r-support" style="max-width:280px"></select></label>
-        <button type="button" class="btn" id="r-collect">今すぐ集める</button>
-        <span class="hint" id="r-job" style="margin:0"></span>
-      </div>
-      <div id="r-status" class="hint"></div>
-      <div id="r-sweep"></div>
-      <div class="row" style="margin-top:8px">
-        <span class="hint" id="r-analyzed" style="margin:0"></span>
+        <label class="row" style="gap:6px;color:var(--muted)" id="r-support-wrap">応援ルーム <select id="r-support" style="max-width:240px"></select></label>
         <button type="button" class="btn small" id="r-refresh">集計し直す</button>
       </div>
     </div>
-    <div id="r-detail"></div>
-    <div id="r-body"></div>
+    <nav class="subnav" id="gf-tabs">
+      <a href="#gifters" data-sub="list">一覧</a>
+      <a href="#gifters/trend" data-sub="trend">離れつつある・伸びている</a>
+      <a href="#gifters/watch" data-sub="watch">気になる</a>
+    </nav>
+    <div class="hint" id="r-analyzed" style="margin:-6px 0 10px"></div>
+    <div id="gf-body"></div>
+  </section>
+
+  <!-- ギフターのページ -->
+  <section data-page="gifter"><div id="gp"></div></section>
+
+  <!-- ルーム -->
+  <section data-page="rooms">
+    <div class="page-head"><div class="grow"><h2>ルーム</h2>
+      <p class="sub" style="margin:0">ギフターの分かったルームです。名前をクリックすると、そのルームのギフターとイベントの成績を開きます。ほかのルームは上の検索欄で探せます。</p></div></div>
+    <div id="rm-body"></div>
+  </section>
+
+  <!-- ルームのページ -->
+  <section data-page="room"><div id="rp"></div></section>
+
+  <!-- イベント -->
+  <section data-page="events">
+    <div class="page-head"><div class="grow"><h2>イベント</h2>
+      <p class="sub" style="margin:0">集めたイベントです。名前をクリックすると、参加ルームの順位・ポイントの推移・貢献者を開きます。</p></div></div>
+    <nav class="subnav" id="ev-tabs">
+      <a href="#events" data-sub="ongoing">開催中</a>
+      <a href="#events/upcoming" data-sub="upcoming">これから</a>
+      <a href="#events/ended" data-sub="ended">終わった</a>
+    </nav>
+    <div id="ev-body"></div>
+  </section>
+
+  <!-- イベントのページ -->
+  <section data-page="event"><div id="ep"></div></section>
+
+  <!-- ライブ (視聴・ギフトの記録・コメント) -->
+  <section data-page="live">
+    <div class="page-head"><div class="grow"><h2>ライブ</h2>
+      <p class="sub" style="margin:0">視聴しているルームと、このシステムで記録したギフトです。</p></div></div>
+    <nav class="subnav" id="lv-tabs">
+      <a href="#live" data-sub="watch">視聴中</a>
+      <a href="#live/gifts" data-sub="gifts">記録したギフト</a>
+      <a href="#live/listeners" data-sub="listeners">記録したリスナー</a>
+      <a href="#live/comment" data-sub="comment">コメント</a>
+    </nav>
+
+    <div class="sub-panel" data-panel="watch">
+      <p class="sub">視聴しているルームの状況です。15 秒ごとに自動で更新します。</p>
+      <div id="rooms" class="grid"></div>
+      <h3>ギフトを記録中のルーム <span class="pill" id="rec-count">0</span></h3>
+      <div id="recording"></div>
+    </div>
+
+    <div class="sub-panel" data-panel="gifts">
+      <p class="sub">記録したギフトの、リスナー別のランキングと最近のギフトです。名前をクリックするとそのリスナーだけに絞り、「ページ ›」でその人のページを開きます。</p>
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <div class="seg" id="g-mode">
+            <button type="button" data-mode="room" class="active">ルーム</button>
+            <button type="button" data-mode="event">イベント</button>
+          </div>
+        </div>
+        <form id="g-form" class="row">
+          <span id="g-room-wrap" class="row grow">
+            <input type="text" id="g-room" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名・URL で SHOWROOM 全体から検索 (クリックで一覧)">
+            <button type="button" class="btn" data-pick="g-room">一覧から選ぶ</button>
+            <select id="g-hours">
+              <option value="">今回の配信</option>
+              <option value="24">直近 24 時間</option>
+              <option value="168">直近 7 日</option>
+              <option value="100000000">記録のすべて</option>
+            </select>
+          </span>
+          <span id="g-event-wrap" class="row grow" hidden>
+            <input type="text" id="g-event" class="grow" autocomplete="off" data-suggest="event" placeholder="イベント名・URL で検索 (クリックで一覧)">
+            <button type="button" class="btn" data-pick="g-event">一覧から選ぶ</button>
+            <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="g-official" checked> 公式の貢献ランキング</label>
+          </span>
+          <input type="search" id="g-user" autocomplete="off" data-suggest="user" placeholder="リスナー名・ID で検索 (クリックで一覧)" style="flex:0 1 260px">
+          <button class="btn primary" type="submit">表示</button>
+        </form>
+      </div>
+      <div id="g-result"></div>
+    </div>
+
+    <div class="sub-panel" data-panel="listeners">
+      <p class="sub">記録したギフトのリスナー一覧です。行をクリックすると、その人のページを開きます。</p>
+      <div class="card">
+        <div class="row">
+          <input type="search" id="l-q" class="grow" placeholder="名前の一部かユーザー ID で絞り込む (記録に無い ID は SHOWROOM で調べます)">
+          <select id="l-days" title="期間">
+            <option value="1">直近 24 時間</option>
+            <option value="7">直近 7 日</option>
+            <option value="30" selected>直近 30 日</option>
+            <option value="0">記録のすべて</option>
+          </select>
+          <input type="search" id="l-room" autocomplete="off" data-suggest="room" placeholder="ルームで絞り込む (空ならすべて)" style="flex:0 1 240px">
+          <select id="l-sort" title="並び順">
+            <option value="points">ポイントの多い順</option>
+            <option value="paid">有料ポイントの多い順</option>
+            <option value="times">回数の多い順</option>
+            <option value="last">最近ギフトを送った順</option>
+            <option value="rooms">送ったルームの多い順</option>
+          </select>
+          <label class="row" style="gap:4px;color:var(--muted)">最低 <input type="number" id="l-min" min="0" step="100" value="0" style="width:90px"> pt</label>
+        </div>
+        <div class="filters" id="l-filters" style="margin-top:10px">
+          <button type="button" class="fchip active" data-f="all">すべて</button>
+          <button type="button" class="fchip" data-f="paid">有料ギフトあり</button>
+          <button type="button" class="fchip" data-f="multi">複数のルームに送っている</button>
+          <button type="button" class="fchip" data-f="today">今日送った</button>
+        </div>
+      </div>
+      <div id="l-list"></div>
+    </div>
+
+    <div class="sub-panel" data-panel="comment">
+      <p class="sub">開いている配信ページのコメント欄から 1 件ずつ投稿します。投稿と投稿の間は 3 秒以上空きます。</p>
+      <div class="card">
+        <div class="row" style="margin-bottom:10px">
+          <label for="c-room" style="color:var(--muted)">投稿先</label>
+          <select id="c-room" class="grow"></select>
+        </div>
+        <form class="composer" id="c-form" autocomplete="off">
+          <input type="text" id="c-text" placeholder="コメントを入力して Enter" maxlength="200">
+          <span class="counter" id="c-count">0/50</span>
+          <button class="btn primary" id="c-send" type="submit">投稿</button>
+        </form>
+        <div class="hint" id="c-hint"></div>
+      </div>
+      <ul class="history" id="c-history"></ul>
+    </div>
+  </section>
+
+  <!-- 収集 -->
+  <section data-page="collect">
+    <div class="page-head"><div class="grow"><h2>収集</h2>
+      <p class="sub" style="margin:0">SHOWROOM から情報を集める仕組みの状態です。問い合わせは 1 秒に 1 回までで、混んでいる時は自動で間隔を広げます。視聴とログインの維持を、収集より優先します。</p></div></div>
+    <div class="card">
+      <div class="row">
+        <b style="flex:1">調べるルーム・応援しているルーム</b>
+        <button type="button" class="btn small" id="r-collect">今すぐ集める</button>
+      </div>
+      <div class="hint" id="r-job"></div>
+      <div id="r-status" class="hint"></div>
+      <div id="r-sweep"></div>
+      <div class="hint" id="r-backup"></div>
+    </div>
+    <h3>月ごとの集まり具合</h3>
+    <div id="c-coverage"><div class="loading"><span class="spinner"></span>数えています…</div></div>
+    <div class="section-title"><h3>ログ</h3><span class="grow"></span>
+      <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="l-warn"> 警告とエラーだけ</label>
+      <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="l-follow" checked> 最新を追う</label>
+    </div>
+    <div class="logs" id="logs"></div>
   </section>
 
   <!-- 設定 -->
-  <section data-tab="settings">
-    <h2>ルーム設定</h2>
+  <section data-page="settings">
+    <h2>設定</h2>
     <p class="sub">入力欄をクリックすると、SHOWROOM のルーム・イベントを名前で検索して選べます (URL の貼り付けも使えます)。保存すると、視聴とギフト記録をやり直して反映します。</p>
     <div class="settings">
       <div class="card" data-list="rooms">
@@ -400,7 +538,7 @@ details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; 
       </div>
       <div class="card" data-list="record_rooms">
         <h3 style="margin-top:0">ギフトだけ記録するルーム</h3>
-        <div class="hint" style="margin-top:0">ブラウザを使わず、配信中のギフトを受信して記録します。件数の上限はありません。</div>
+        <div class="hint" style="margin-top:0">ブラウザを使わず、配信中のギフトを受信して記録します。件数の上限はありません。ギフターの曜日・時間帯などのくせは、ここで記録したギフトから分かります。</div>
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
@@ -412,13 +550,13 @@ details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; 
       </div>
       <div class="card" data-list="support_rooms">
         <h3 style="margin-top:0">応援しているルーム</h3>
-        <div class="hint" style="margin-top:0">「分析」の基準にするルームです (無くても使えます)。累計ランキングとイベントの貢献ランキングを毎日集めます (視聴はしません)。</div>
+        <div class="hint" style="margin-top:0">「ギフター」の基準にするルームです (無くても使えます)。累計ランキングとイベントの貢献ランキングを毎日集めます (視聴はしません)。</div>
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
       <div class="card" data-list="research_rooms">
         <h3 style="margin-top:0">調べるルーム</h3>
-        <div class="hint" style="margin-top:0">ギフターを調べたいルーム (誘導したいギフターがいそうなルーム) です。応援ルームと同じ情報を毎日集めます。</div>
+        <div class="hint" style="margin-top:0">ギフターを特に調べたいルームです。応援ルームと同じ情報を毎日集めます (全ルームの収集が有効なら、指定しなくても全ルームを集めます)。</div>
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
@@ -428,18 +566,6 @@ details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; 
       <button class="btn" id="s-reset" type="button">元に戻す</button>
       <button class="btn primary" id="s-save" type="button">保存して反映</button>
     </div>
-  </section>
-
-  <!-- ログ -->
-  <section data-tab="logs">
-    <h2>ログ</h2>
-    <div class="row" style="margin-bottom:10px">
-      <p class="sub" style="margin:0" >最近の動作記録です (最大 500 件)。</p>
-      <span class="grow"></span>
-      <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="l-warn"> 警告とエラーだけ</label>
-      <label class="row" style="gap:4px;color:var(--muted)"><input type="checkbox" id="l-follow" checked> 最新を追う</label>
-    </div>
-    <div class="logs" id="logs"></div>
   </section>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -502,21 +628,137 @@ async function api(path, body) {
   return data;
 }
 
-/* ------------------------------------------------------------ タブ */
-function showTab() {
-  const tab = (location.hash || "#dashboard").slice(1).split("?")[0];
-  const known = $$("section[data-tab]").map((s) => s.dataset.tab);
-  const name = known.includes(tab) ? tab : "dashboard";
-  $$("section[data-tab]").forEach((s) => s.classList.toggle("active", s.dataset.tab === name));
-  $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
-  if (name === "logs") loadLogs();
-  if (name === "listeners") loadListeners();
-  if (name === "research") loadResearch();
-  if (name === "comment") setTimeout(() => $("#c-text").focus(), 0);
-}
-window.addEventListener("hashchange", showTab);
 
-/* ------------------------------------------------------------ ダッシュボード */
+/* ------------------------------------------------------------ ページの切り替え (アドレスの # で開く) */
+// #ページ/引数 (例: #gifter/123、#room/abc、#event/456、#gifters/trend)。前の画面のアドレスも開けるようにする
+const OLD_PAGES = { dashboard: "home", research: "gifters", logs: "collect", comment: "live/comment", gifts: "live/gifts", listeners: "live/listeners" };
+const NAV_OF = { gifter: "gifters", room: "rooms", event: "events" };
+const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
+const openListener = (uid) => go(`#gifter/${encodeURIComponent(uid)}`);
+let page = { name: "", arg: "" };
+function parseHash() {
+  let h = decodeURIComponent((location.hash || "#home").slice(1)).split("?")[0];
+  const first = h.split("/")[0];
+  if (OLD_PAGES[first]) h = OLD_PAGES[first] + h.slice(first.length);
+  const i = h.indexOf("/");
+  return i < 0 ? { name: h || "home", arg: "" } : { name: h.slice(0, i), arg: h.slice(i + 1) };
+}
+function route() {
+  let { name, arg } = parseHash();
+  if (!PAGES[name]) { name = "home"; arg = ""; }
+  const changed = name !== page.name || arg !== page.arg;
+  page = { name, arg };
+  $$("section[data-page]").forEach((s) => s.classList.toggle("active", s.dataset.page === name));
+  $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === (NAV_OF[name] || name)));
+  closeSearch();
+  PAGES[name](arg);
+  if (changed) window.scrollTo({ top: 0 });
+}
+window.addEventListener("hashchange", route);
+// 小さなタブ (ページの中の切り替え)
+function setSub(navSel, sub) {
+  $$(`${navSel} a`).forEach((a) => a.classList.toggle("active", a.dataset.sub === sub));
+}
+// data-go の付いた行・ボタンは、そのページを開く (表の行をクリックした時など)
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-go]");
+  if (t && !ev.target.closest("a[href], button:not([data-go]), input, select, textarea")) { ev.preventDefault(); go(t.dataset.go); return; }
+  // 前の画面の部品 (分析の表など) の行
+  const r = ev.target.closest("tr[data-ruid], [data-ruid-btn]");
+  if (r && !ev.target.closest("a[href]")) go(`#gifter/${r.dataset.ruid || r.dataset.ruidBtn}`);
+});
+const gifterLink = (uid, name) => `<a href="#gifter/${encodeURIComponent(uid)}">${esc(name || "(名前なし)")}</a>`;
+const roomLink = (key, name) => key ? `<a href="#room/${encodeURIComponent(key)}">${esc(name || key)}</a>` : esc(name || "");
+const eventLink = (id, name) => `<a href="#event/${encodeURIComponent(id)}">${esc(name || `イベント ${id}`)}</a>`;
+const loadingHtml = (msg = "読み込み中…") => `<div class="loading"><span class="spinner"></span>${esc(msg)}</div>`;
+const errorHtml = (e) => `<div class="empty">取得できませんでした: ${esc(e.message || e)}</div>`;
+const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+const tile = (label, value, sub = "", cls = "", href = "") => `<${href ? `a href="${href}"` : "div"} class="tile ${cls}"><div class="l">${label}</div><div class="v">${value}</div>${sub ? `<div class="s">${sub}</div>` : ""}</${href ? "a" : "div"}>`;
+const ago = (sec) => { if (!sec) return "—"; const s = Date.now() / 1000 - sec; return s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分前` : s < 86400 ? `${Math.round(s / 3600)} 時間前` : `${Math.round(s / 86400)} 日前`; };
+const leftText = (sec) => { const s = sec - Date.now() / 1000; return s <= 0 ? "終了" : s < 3600 ? `あと ${Math.max(1, Math.round(s / 60))} 分` : s < 86400 * 2 ? `あと ${Math.round(s / 3600)} 時間` : `あと ${Math.round(s / 86400)} 日`; };
+const STATE_TAG = { ongoing: '<span class="tag live">開催中</span>', upcoming: '<span class="tag warn">これから</span>', ended: '<span class="tag">終了</span>', unknown: '<span class="tag">日付不明</span>' };
+const period = (e) => e.start || e.end ? `${e.start ? ymd(e.start) : "?"} 〜 ${e.end ? ymd(e.end) : "?"}` : "日付不明";
+
+/* ------------------------------------------------------------ 並べ替えと CSV ができる表 */
+// cols: [{label, value: (r) => 並べ替え・CSV の値, html: (r) => セルの中身, num: 数字の列か, sort: false で並べ替えない}]
+const DT = {};
+function dataTable(id, cols, rows, o = {}) {
+  const prev = DT[id];
+  DT[id] = { cols, rows, o, sort: prev ? prev.sort : (o.sort ?? null), desc: prev ? prev.desc : (o.desc ?? true), shown: o.limit || 100 };
+  return `<div data-dt="${esc(id)}">${dtInner(id)}</div>`;
+}
+function dtRows(t) {
+  if (t.sort === null) return t.rows;
+  const f = t.cols[t.sort].value || (() => 0), dir = t.desc ? -1 : 1;
+  return t.rows.map((r, i) => [f(r), i, r]).sort((a, b) => {
+    const x = a[0], y = b[0];
+    if (x === y) return a[1] - b[1];
+    if (x === null || x === undefined || x === "") return 1;
+    if (y === null || y === undefined || y === "") return -1;
+    return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "ja")) * dir;
+  }).map((x) => x[2]);
+}
+function dtInner(id) {
+  const t = DT[id], rows = dtRows(t);
+  if (!t.rows.length) return `<div class="empty">${esc(t.o.empty || "まだありません")}</div>`;
+  const head = t.cols.map((c, i) => `<th class="${c.num ? "num " : ""}${c.sort === false ? "" : "sortable"}${t.sort === i ? " on" : ""}" ${c.sort === false ? "" : `data-dt-sort="${i}" title="クリックで並べ替え"`}>${esc(c.label)}${c.sort === false ? "" : `<span class="arr">${t.sort === i ? (t.desc ? "▼" : "▲") : "↕"}</span>`}</th>`).join("");
+  const body = rows.slice(0, t.shown).map((r, n) => `<tr ${t.o.rowAttr ? t.o.rowAttr(r) : ""}>${t.cols.map((c) => `<td class="${c.num ? "num" : c.cls || ""}">${c.html ? c.html(r, n) : esc(c.value(r) ?? "")}</td>`).join("")}</tr>`).join("");
+  return `<div class="table-wrap" ${t.o.maxHeight ? `style="max-height:${t.o.maxHeight}px;overflow-y:auto"` : ""}><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
+    <div class="dt-foot"><span class="grow">${num(rows.length)} 件${t.o.total && t.o.total > rows.length ? ` (全 ${num(t.o.total)} 件のうち)` : ""}${t.o.note ? ` ・ ${t.o.note}` : ""}</span>
+      ${rows.length > t.shown ? `<button type="button" class="btn small" data-dt-more>さらに表示 (${num(rows.length - t.shown)} 件)</button>` : ""}
+      <button type="button" class="btn small" data-dt-csv title="表を CSV で書き出す (Excel・スプレッドシートで開けます)">CSV</button></div>`;
+}
+document.addEventListener("click", (ev) => {
+  const box = ev.target.closest("[data-dt]");
+  if (!box) return;
+  const id = box.dataset.dt, t = DT[id];
+  if (!t) return;
+  const th = ev.target.closest("[data-dt-sort]");
+  if (th) {
+    const i = Number(th.dataset.dtSort);
+    if (t.sort === i) t.desc = !t.desc; else { t.sort = i; t.desc = !!t.cols[i].num; }
+    box.innerHTML = dtInner(id);
+  } else if (ev.target.closest("[data-dt-more]")) {
+    t.shown += t.o.limit || 100; box.innerHTML = dtInner(id);
+  } else if (ev.target.closest("[data-dt-csv]")) {
+    const cell = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [t.cols.map((c) => cell(c.label)), ...dtRows(t).map((r) => t.cols.map((c) => cell(c.csv ? c.csv(r) : c.value ? c.value(r) : "")))];
+    const blob = new Blob(["﻿" + lines.map((l) => l.join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${t.o.csvName || id}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+});
+
+/* ------------------------------------------------------------ 折れ線グラフ (イベントのポイントの推移) */
+function lineChart(times, series, { width = 720, height = 230, unit = "pt" } = {}) {
+  const W = Math.round(width), left = 46, right = 8, top = 10, bottom = 22, plot = height - top - bottom, plotW = W - left - right;
+  const max = niceMax(Math.max(1, ...series.flatMap((s) => s.values.filter((v) => v !== null))));
+  const t0 = times[0], t1 = times[times.length - 1], span = Math.max(t1 - t0, 1);
+  const xOf = (t) => left + (times.length > 1 ? ((t - t0) / span) * plotW : plotW / 2), yOf = (v) => top + plot - (v / max) * plot;
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line class="${f ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${yOf(max * f).toFixed(1)}" y2="${yOf(max * f).toFixed(1)}"></line>`
+    + ((f * 2) % 1 === 0 ? `<text x="${left - 5}" y="${(yOf(max * f) + 3.5).toFixed(1)}" text-anchor="end">${shortNum(max * f)}${f === 1 ? ` ${esc(unit)}` : ""}</text>` : "")).join("");
+  const nLabels = Math.max(2, Math.min(times.length, Math.floor(plotW / 90)));
+  const labels = Array.from({ length: nLabels }, (_, i) => times[Math.round((i * (times.length - 1)) / Math.max(nLabels - 1, 1))])
+    .filter((t, i, a) => a.indexOf(t) === i)
+    .map((t, i, a) => `<text x="${xOf(t).toFixed(1)}" y="${top + plot + 14}" text-anchor="${i === 0 ? "start" : i === a.length - 1 ? "end" : "middle"}">${esc(day(t).slice(0, 8))}</text>`).join("");
+  const lines = series.map((s) => {
+    const pts = times.map((t, i) => (s.values[i] === null ? null : [xOf(t), yOf(s.values[i])]));
+    let d = "", pen = false;
+    pts.forEach((p) => { if (!p) { pen = false; return; } d += `${pen ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`; pen = true; });
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"></path>`
+      + (times.length <= 80 ? pts.map((p) => (p ? `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.4" fill="${s.color}"></circle>` : "")).join("") : "");
+  }).join("");
+  // 時刻ごとの縦の帯にカーソルを合わせると、その時の各ルームのポイントと順位を出す
+  const slot = plotW / Math.max(times.length, 1);
+  const hits = times.map((t, i) => `<rect class="hit" data-tip="${esc(`${tm(t, true)}\n${series.map((s) => `${s.name}: ${s.values[i] === null ? "—" : `${num(s.values[i])} pt`}${s.ranks && s.ranks[i] ? ` (${s.ranks[i]} 位)` : ""}`).join("\n")}`)}"
+      x="${(xOf(t) - slot / 2).toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plot}"></rect>`).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img">${grid}${labels}${lines}<g class="col">${hits}</g></svg>`;
+}
+
+/* ------------------------------------------------------------ 視聴中のルーム */
 let overview = null;
 
 function stateBadge(r) {
@@ -579,62 +821,9 @@ function pausePill(p) {
   if (!p || !p.last) return "";
   const why = `理由: ${p.last.why} ・ ${tm(p.last.at, true).slice(0, 11)} に止めました (続けて ${p.last.count} 回目)\n視聴とログインの維持は続けています`;
   return p.paused
-    ? `<a class="pill warn" href="#research" title="${esc(why)}">収集を止めています (あと ${durationText(p.paused)}・${num(p.last.count)} 回目)</a>`
-    : `<a class="pill" href="#research" title="${esc(why)}">収集: 24 時間以内に ${num(p.recent)} 回止めました</a>`;
+    ? `<a class="pill warn" href="#collect" title="${esc(why)}">収集を止めています (あと ${durationText(p.paused)}・${num(p.last.count)} 回目)</a>`
+    : `<a class="pill" href="#collect" title="${esc(why)}">収集: 24 時間以内に ${num(p.recent)} 回止めました</a>`;
 }
-function renderOverview() {
-  const o = overview;
-  const login = o.login || {};
-  const loginPill = login.checked_at == null ? `<span class="pill">ログイン確認待ち</span>`
-    : login.logged_in === true ? `<span class="pill ok">ログイン中</span>`
-    : login.logged_in === false ? `<span class="pill warn" title="ルーム設定ではなく、login コマンドか ID・パスワードの設定でログインしてください">未ログイン</span>`
-    : `<span class="pill">ログイン状態不明</span>`;
-  const liveCount = o.rooms.filter((r) => r.is_live).length;
-  const browserCls = o.browser === "動作中" ? "ok" : o.browser.startsWith("障害") ? "warn" : "";
-  $("#badges").innerHTML = `
-    ${loginPill}
-    <span class="pill ${liveCount ? "live" : ""}">配信中 ${liveCount} / ${o.rooms.length}</span>
-    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>
-    <span class="pill" title="${tm(o.started_at, true)} 起動">稼働 ${duration(o.now - o.started_at)}</span>${pausePill(o.research_pause)}`;
-
-  $("#rooms").innerHTML = o.rooms.length ? o.rooms.map(roomCard).join("") : `
-    <div class="empty" style="grid-column:1/-1">視聴するルームがありません。<br>
-      <a class="btn primary" href="#settings">ルームを追加する</a></div>`;
-
-  $("#rec-count").textContent = o.recording.length;
-  const targets = o.settings.record_rooms.length + o.settings.events.length;
-  $("#recording").innerHTML = o.recording.length
-    ? `<div class="chips">${o.recording.map((r) => `<span class="chip" title="${esc(r.source)}">${esc(r.name)}</span>`).join("")}</div>`
-    : `<div class="hint">${targets ? "設定したルーム・イベントで配信が始まると、ここに表示されます (2 分ごとに確認)。" : "ギフトだけ記録するルーム・イベントは設定されていません。"}</div>`;
-
-  // コメント・ギフトの選択肢
-  const sel = $("#c-room"), cur = sel.value;
-  const live = o.rooms.filter((r) => r.watcher && r.watcher.can_comment);
-  sel.innerHTML = live.length ? live.map((r) => `<option value="${esc(r.key)}">${esc(r.name || r.key)}</option>`).join("")
-    : `<option value="">配信中のルームがありません</option>`;
-  if (live.some((r) => r.key === cur)) sel.value = cur;
-  $("#c-send").disabled = !live.length;
-  $("#c-hint").textContent = live.length ? "" : "視聴中のルームで配信が始まると投稿できます。";
-  const keys = [...new Set([...o.settings.rooms, ...o.settings.record_rooms, ...o.recording.map((r) => r.room)])];
-  if (!settingsDirty) loadSettings(o.settings);
-}
-
-async function refresh() {
-  try {
-    overview = await api("/api/overview");
-    renderOverview();
-  } catch (e) {
-    $("#badges").innerHTML = `<span class="pill warn">keeper に接続できません (${esc(e.message)})</span>`;
-  }
-}
-
-$("#rooms").addEventListener("click", (ev) => {
-  const b = ev.target.closest("button[data-act]");
-  if (!b) return;
-  if (b.dataset.act === "comment") { location.hash = "#comment"; $("#c-room").value = b.dataset.room; }
-  if (b.dataset.act === "gifts") { setGiftMode("room"); setPicked($("#g-room"), b.dataset.room, roomName(b.dataset.room)); location.hash = "#gifts"; loadGifts(); }
-});
-
 /* ------------------------------------------------------------ コメント */
 const MAX = 50;
 function countText() {
@@ -696,7 +885,7 @@ const splitBar = (u) => {
   if (!t) return "";
   return `<div class="splitbar" title="有料 ${num(u.paid_points)} / 無料 ${num(u.free_points)}"><div class="p" style="width:${(u.paid_points / t) * 100}%"></div><div class="f" style="width:${(u.free_points / t) * 100}%"></div></div>`;
 };
-const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="記録したすべてのルームでの履歴">全ルーム ›</button></td>`;
+const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="この人のページを開く">ページ ›</button></td>`;
 const legend = `<div class="legend"><span><i style="background:var(--accent)"></i>有料</span><span><i style="background:var(--info)"></i>無料 (星・種など)</span></div>`;
 
 function rankingTable(rows, opts = {}) {
@@ -1390,103 +1579,7 @@ document.addEventListener("mousemove", (ev) => {
   chartTip.style.top = `${ev.clientY + 16 + r.height > window.innerHeight ? ev.clientY - r.height - 10 : ev.clientY + 16}px`;
 });
 
-async function openListener(uid) {
-  location.hash = "#listeners";
-  listeners.selected = uid;
-  const box = $("#l-detail");
-  box.innerHTML = `<div class="loading"><span class="spinner"></span>履歴を読み込み中…</div>`;
-  try {
-    const d = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=${encodeURIComponent($("#l-days").value)}`);
-    if (!d.found) { box.innerHTML = `<div class="empty">この期間の記録はありません (ID ${esc(uid)})</div>`; return; }
-    const t = d.total;
-    box.innerHTML = `<div class="card" style="margin:14px 0">
-      <div class="card-head"><div><div class="card-title">${esc(d.names.join(" / "))}</div><div class="card-key">ユーザー ID ${esc(d.user_id)} ・ ${tm(d.first_at, true).slice(0, 11)} 〜 ${tm(d.last_at, true).slice(0, 11)}</div></div>
-        <button class="btn small" id="l-close">閉じる</button></div>
-      <div class="summary">
-        <div class="stat"><div class="v">${num(t.points)} pt</div><div class="l">合計 (有料 ${num(t.paid_points)} / 無料 ${num(t.free_points)})</div></div>
-        <div class="stat"><div class="v">${num(t.times)}</div><div class="l">回数 (${num(t.count)} 個)</div></div>
-        <div class="stat"><div class="v">${num(d.rooms.length)}</div><div class="l">ルーム</div></div>
-      </div>
-      <h3>ルーム別${d.room_total > d.rooms.length ? ` <span class="hint">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</span>` : ""}</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">有料</th><th class="num">回数</th><th class="num">最後</th><th></th></tr></thead>
-      <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}</td><td class="num"><b>${num(r.points)}</b></td><td class="num">${num(r.paid_points)}</td><td class="num">${num(r.times)}</td><td class="num">${tm(r.last_at, true).slice(0, 11)}</td>
-        <td><button class="linkish" data-room-gifts="${esc(r.key)}">ギフト画面で見る ›</button></td></tr>`).join("")}</tbody></table></div>
-      <div id="l-charts"></div>
-      <h3>履歴 (新しい順)</h3><div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>日時</th><th>ルーム</th><th>ギフト</th><th class="num">個数</th><th class="num">pt</th></tr></thead>
-      <tbody>${d.history.map((h) => `<tr><td>${tm(h.at, true)}</td><td>${esc(h.room_name)}</td><td>${esc(h.gift)}</td><td class="num">${num(h.num)}</td><td class="num">${num(h.points)}</td></tr>`).join("")}</tbody></table></div>
-    </div>`;
-    renderListenerCharts(d);
-    renderListeners();
-    box.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (e) {
-    box.innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
-  }
-}
-$("#l-list").addEventListener("click", (ev) => {
-  if (ev.target.id === "l-more") { listeners.shown += 200; return renderListeners(); }
-  const tr = ev.target.closest("tr[data-uid]");
-  if (tr) openListener(tr.dataset.uid);
-});
-$("#l-detail").addEventListener("click", (ev) => {
-  if (ev.target.id === "l-close") { $("#l-detail").innerHTML = ""; listeners.selected = null; return renderListeners(); }
-  const b = ev.target.closest("[data-room-gifts]");
-  if (b) {
-    setGiftMode("room"); setPicked($("#g-room"), b.dataset.roomGifts, roomName(b.dataset.roomGifts)); $("#g-hours").value = "100000000";
-    const u = listeners.rows.find((x) => String(x.user_id) === String(listeners.selected));
-    setPicked($("#g-user"), String(listeners.selected || ""), u ? u.name : ""); location.hash = "#gifts"; loadGifts();
-  }
-});
-$("#l-filters").addEventListener("click", (ev) => {
-  const f = ev.target.closest("[data-f]");
-  if (!f) return;
-  $$("#l-filters .fchip").forEach((x) => x.classList.toggle("active", x === f));
-  listeners.shown = 200; renderListeners();
-});
-["#l-q", "#l-min"].forEach((id) => $(id).addEventListener("input", () => { listeners.shown = 200; renderListeners(); }));
-$("#l-sort").addEventListener("change", renderListeners);
-$("#l-days").addEventListener("change", () => { loadListeners(); if (listeners.selected) openListener(listeners.selected); });
-// ルームの絞り込みを消した時 (× や空にした時) は、すべてのルームに戻す
-$("#l-room").addEventListener("input", () => { if (!$("#l-room").value.trim()) { setPicked($("#l-room"), "", ""); loadListeners(); } });
-
-/* ------------------------------------------------------------ 分析 */
-const research = { data: null, filter: "all", sort: "other", signup: "all", shown: 100, selected: null, timer: null };
-const hourText = (hs) => hs && hs.length ? hs.map((h) => `${h}時`).join("・") : "";
-const researchActive = () => $("section[data-tab=research]").classList.contains("active");
-async function loadResearch(refresh = false) {
-  const sel = $("#r-support"), cur = sel.value;
-  const q = new URLSearchParams();
-  if (cur) q.set("support", cur);
-  if (refresh) q.set("refresh", "1");
-  try {
-    if (refresh) $("#r-analyzed").innerHTML = `<span class="spinner"></span> 集計しています…`;
-    const [d] = await Promise.all([api(`/api/research${q.toString() ? `?${q}` : ""}`), loadWatch()]);
-    research.data = d;
-    d.status.forEach((r) => { if (r.name && r.name !== r.key) names.room[r.key] = r.name; });
-    const many = d.support_rooms.length > 1;
-    sel.innerHTML = (many ? `<option value="">すべての応援ルーム</option>` : "")
-      + (d.support_rooms.map((k) => `<option value="${esc(k)}">${esc(roomName(k))}</option>`).join("") || `<option value="">設定なし (すべてのルーム)</option>`);
-    if (d.support_rooms.includes(cur)) sel.value = cur;
-    renderResearch();
-    pollResearch(d.job.running);
-  } catch (e) {
-    $("#r-body").innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
-  }
-}
-// 集めている間は進み具合だけを 10 秒ごとに見る (分析は数え直さない)。指定のルームを集め終えたら 1 回だけ集計し直す
-function pollResearch(wasRunning) {
-  clearTimeout(research.timer);
-  const d = research.data;
-  if (!d || !(d.job.running || (d.sweep && d.sweep.running))) return;
-  research.timer = setTimeout(async () => {
-    if (!researchActive()) return;
-    try {
-      const p = await api("/api/research/status");
-      Object.assign(research.data, p);
-      researchStatus(research.data);
-      if (wasRunning && !p.job.running) return loadResearch(true);
-    } catch (e) { /* 次の回にまた見る */ }
-    pollResearch(research.data.job.running);
-  }, 10000);
-}
+/* ------------------------------------------------------------ 分析の部品 */
 const durationText = (s) => s >= 86400 ? `約 ${Math.round(s / 86400)} 日` : s >= 3600 ? `約 ${Math.round(s / 3600)} 時間` : `約 ${Math.max(1, Math.round(s / 60))} 分`;
 function sweepStatus(d) {
   const w = d.sweep || {}, s = d.store, t = d.throttle || {};
@@ -1507,20 +1600,6 @@ function sweepStatus(d) {
       ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
     <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest}${anchor} ・ ルーム番号の調べ ${scan}
       ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}</div>`;
-}
-function researchStatus(d) {
-  const j = d.job, last = j.last;
-  $("#r-job").textContent = j.running ? `集めています… ${j.progress || ""}`
-    : last ? `前回 ${tm(last.at, true)} (${last.reason}): ${num(last.rooms)} ルーム / 新しい貢献ランキング ${num(last.events)} 件${last.failures ? ` / 失敗 ${last.failures} 件` : ""}` : "";
-  $("#r-collect").disabled = j.running || !d.status.length;
-  $("#r-sweep").innerHTML = sweepStatus(d);
-  const b = d.backup;
-  const backupText = !b ? "" : b.ok ? ` ・ バックアップ ${tm(b.at, true).slice(0, 11)} (${num(b.mb)} MB)`
-    : ` ・ <b style="color:var(--accent)">バックアップに失敗 (${esc(tm(b.at, true).slice(0, 11))}): ${esc(b.reason || "")}</b>`;
-  $("#r-analyzed").innerHTML = (d.analyzed_at ? `集計 ${tm(d.analyzed_at, true).slice(0, 11)}${d.analysis_seconds >= 1 ? ` (${num(d.analysis_seconds)} 秒)` : ""} ・ 10 分間は同じ集計を使います` : "") + backupText;
-  $("#r-status").innerHTML = d.status.length ? `<div class="chips" style="margin-top:8px">${d.status.map((r) => `<span class="chip" title="${esc(r.key)}">
-      ${d.support_rooms.includes(r.key) ? "★ " : ""}${esc(r.name)}　${r.at ? `累計 ${num(r.cumulative)} 人・イベント ${num(r.events)} 件・ランキング ${num(r.rankings)} 件 (${tm(r.at, true).slice(0, 11)})` : "まだ集めていません"}</span>`).join("")}</div>
-      <div class="hint">累計ランキングは各ルームの上位 30 人、貢献ランキングはイベントごとに上位 100 人です (2015 年ごろからのイベントがあります)。毎日 4:30 に集め直します。</div>` : "";
 }
 const R_FILTERS = [["all", "すべて"], ["recorded", "行動がわかる (ギフトの記録あり)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
 const R_SORTS = [["other", "ほかのルームへのポイント順"], ["event", "イベントでのポイント順"], ["events", "参加イベントの多い順"], ["visits", "来場回数の多い順"], ["rooms", "送るルームの多い順"], ["last", "最近ギフトを送った順"]];
@@ -1552,65 +1631,6 @@ function researchRows(rows) {
 const habitCell = (u) => u.habits ? `${esc(u.habits.top_weekday)}曜 ${esc(hourText(u.habits.top_hours))}<div class="uid">1 回 平均 ${num(u.habits.avg_point)} pt ・ ${num(u.habits.times)} 回</div>` : `<span class="uid">記録なし</span>`;
 const roomsCell = (u) => esc(u.top_rooms.map((r) => `${r.name} ${num(r.points)}`).join("、")) + (u.room_count > u.top_rooms.length + (u.support_points ? 1 : 0) ? ` ほか` : "");
 const eventCell = (u) => u.event_count ? `${num(u.event_count)} 件<div class="uid">最高 ${num(u.best_rank)} 位・${num(u.event_points)} pt</div>` : `<span class="uid">-</span>`;
-function renderResearch() {
-  const d = research.data, all = d.mode === "all";
-  researchStatus(d);
-  if (!d.status.length && !(d.sweep && d.sweep.enabled)) {
-    $("#r-body").innerHTML = `<div class="empty">「ルーム設定」の「調べるルーム」にルームを追加してください (応援しているルームは無くても使えます)。保存するとすぐに情報を集め始めます。全ルームの収集 (SHOWROOM_RESEARCH_ALL) を有効にすれば、指定しなくても SHOWROOM の全ルームを集めます。</div>`;
-    return;
-  }
-  const rows = researchRows(research.signup === "all" ? d.candidates : d.candidates.concat(d.signup_candidates || []));
-  const years = d.signup_years || [];
-  if (research.signup !== "all" && !research.signup.startsWith("within") && !years.some((y) => String(y.year) === research.signup)) research.signup = "all";
-  const signupSelect = years.length ? `<select id="r-signup" title="ユーザー ID から推測した登録時期で絞り込む">${[["all", "すべての登録時期"], ["within1", "ここ 1 年以内に登録"], ["within3", "ここ 3 年以内に登録"],
-    ...years.map((y) => [String(y.year), `${y.year} 年ごろに登録 (${y.rough ? "大まか・" : ""}${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
-  const stat = (v, l) => `<div class="stat"><div class="v">${num(v)}</div><div class="l">${l}</div></div>`;
-  let html = watchSection() + trendSection(d);
-  html += `<div class="summary">${all
-    ? stat(d.gifter_count, "分かったギフター (人)") + stat(d.multi_count, "複数のルームに送る人") + stat(d.room_count, "ギフターの分かったルーム")
-    : stat(d.candidate_count, "誘導の候補 (人)") + stat(d.fan_count, "応援ルームのギフター (人)") + stat(d.gifter_count, "分かったギフター (人)")}</div>`;
-  const sorts = R_SORTS.map(([v, l]) => [v, v === "other" && all ? "分かったポイント順" : l]);
-  html += `<div class="row"><h3 style="flex:1">${all ? "ギフター一覧" : "誘導の候補"}</h3>${signupSelect}<select id="r-sort" title="並び順">${sorts.map(([v, l]) => `<option value="${v}" ${v === research.sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-    <div class="hint" style="margin-top:0">${all ? "調べるルームなどで分かったギフターです。" : "応援ルームにはまだ送っていないが、ほかのルームに送っているギフターです。"}ポイントは集めた情報で分かった分 (少なくともこれだけ送っている) です。登録時期はユーザー ID から推測したものです (カーソルを合わせると幅が出ます)。行をクリックすると詳しく表示します。</div>
-    <div class="filters" id="r-filters" style="margin:8px 0">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div>`;
-  html += rows.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">${all ? "分かった pt" : "ほかのルームへ"}</th><th>主なルーム</th><th class="num">イベント</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
-    <tbody>${rows.slice(0, research.shown).map((u, i) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
-      <td class="rank">${i + 1}</td><td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
-      <td class="num"><b>${num(u.other_points)}</b> pt</td><td>${roomsCell(u)}</td><td class="num">${eventCell(u)}</td><td class="num">${u.visits ? num(u.visits) : "-"}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`
-      + (rows.length > research.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="r-more">さらに表示 (${num(rows.length - research.shown)} 人)</button></div>` : "")
-    : `<div class="empty">当てはまるギフターはいません</div>`;
-  const pct = (x) => `${(x * 100).toFixed(1)}%`;
-  const researchTag = (k) => d.research_rooms.includes(k) ? ' <span class="tag info">調べるルーム</span>' : "";
-  if (all) {
-    html += `<h3>ルーム同士の重なり</h3><div class="hint" style="margin-top:0">同じギフターが送っているルームの組です。重なりが大きいほど、ギフターの好みが近いルームと考えられます (共通のギフターが ${2} 人以上の組)。</div>`
-      + (d.pairs.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th>ルーム</th><th class="num">共通のギフター</th><th class="num">重なり</th></tr></thead>
-        <tbody>${d.pairs.map((p) => `<tr><td class="name">${esc(p.a_name)}${researchTag(p.a)}</td><td class="name">${esc(p.b_name)}${researchTag(p.b)}</td>
-          <td class="num"><b>${num(p.shared)}</b> 人</td><td class="num">${pct(p.overlap)}</td></tr>`).join("")}</tbody></table></div>`
-        : `<div class="empty">まだありません (調べるルームを増やすと、重なるルームが見つかりやすくなります)</div>`);
-  } else {
-    html += `<h3>応援ルームとギフターが重なるルーム</h3><div class="hint" style="margin-top:0">応援ルームのギフターが、ほかに送っているルームです。重なりが大きいルームほど、ギフターの好みが近いと考えられます。</div>`
-      + (d.similar.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">共通のギフター</th><th class="num">そのルームのギフター</th><th class="num">重なり</th><th class="num">誘導の候補</th></tr></thead>
-        <tbody>${d.similar.map((r) => `<tr><td class="name">${esc(r.name)}${researchTag(r.key)}</td><td class="num"><b>${num(r.shared)}</b> 人</td><td class="num">${num(r.gifters)} 人</td>
-          <td class="num">${pct(r.overlap)}</td><td class="num">${num(r.candidates)} 人</td></tr>`).join("")}</tbody></table></div>`
-        : `<div class="empty">まだありません (応援ルームのギフターが、集めたほかのルームに見つかると出ます)</div>`);
-  }
-  html += `<h3>ルームごとのまとめ</h3><div class="hint" style="margin-top:0">集めた情報と記録したギフトで分かった分です。</div>`
-    + (d.rooms.length ? `<div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">ギフター</th><th class="num">分かった pt</th><th class="num">掛け持ち</th><th class="num">イベント</th><th>いちばん多いギフター</th></tr></thead>
-      <tbody>${d.rooms.slice(0, 100).map((r) => `<tr><td class="name">${esc(r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}${researchTag(r.key)}</td>
-        <td class="num">${num(r.gifters)} 人</td><td class="num"><b>${num(r.points)}</b></td><td class="num" title="ほかのルームにも送っているギフター">${num(r.multi)} 人</td>
-        <td class="num">${r.researched ? `${num(r.events)} 件` : "-"}</td><td>${r.top ? `<button class="linkish" data-ruid-btn="${esc(r.top.user_id)}">${esc(r.top.name)}</button> <span class="uid">${num(r.top.points)} pt</span>` : ""}</td></tr>`).join("")}</tbody></table></div>`
-      + (d.room_count > 100 ? `<div class="hint">ほか ${num(d.room_count - 100)} ルーム</div>` : "")
-      : `<div class="empty">まだありません</div>`);
-  if (!all) {
-    const fans = d.fans.filter((u) => signupMatch(u));
-    html += `<h3>応援ルームのギフター${research.signup === "all" ? "" : ` <span class="hint">(登録時期で絞り込み中)</span>`}</h3>` + (fans.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>ギフター</th><th class="num">応援ルームへ</th><th class="num">ほかのルームへ</th><th>ほかの主なルーム</th><th class="num">来場</th><th>よく送る時間</th></tr></thead>
-      <tbody>${fans.slice(0, 200).map((u, i) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}"><td class="rank">${i + 1}</td>
-        <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}</td><td class="num"><b>${num(u.support_points)}</b> pt</td><td class="num">${num(u.other_points)} pt</td>
-        <td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td><td class="num">${u.visits ? num(u.visits) : "-"}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`
-      : `<div class="empty">まだ分かっていません</div>`);
-  }
-  $("#r-body").innerHTML = html;
-}
 // ランキング (累計ランキング・イベントの貢献ランキング) から分かることのグラフ。送った日時が無くても描ける
 const RANK_BUCKETS = [[1, 1, "1"], [2, 3, "2〜3"], [4, 10, "4〜10"], [11, 30, "11〜30"], [31, 100, "31〜"]];
 const ymd = (sec) => new Date(sec * 1000).toLocaleDateString("ja-JP", { timeZone: "Asia/Tokyo" });  // "2026/10/16"
@@ -1708,98 +1728,598 @@ function watchSection() {
       <td class="num"><b>${num(u.total_points)}</b> pt</td><td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td>
       <td class="num">${eventCell(u)}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`;
 }
+
+/* ------------------------------------------------------------ 上の状態の表示と、つなぎ道 */
+function renderOverview() {
+  const o = overview;
+  const login = o.login || {};
+  const loginPill = login.checked_at == null ? `<span class="pill">ログイン確認待ち</span>`
+    : login.logged_in === true ? `<span class="pill ok">ログイン中</span>`
+    : login.logged_in === false ? `<span class="pill warn" title="login コマンドか ID・パスワードの設定でログインしてください">未ログイン</span>`
+    : `<span class="pill">ログイン状態不明</span>`;
+  const liveCount = o.rooms.filter((r) => r.is_live).length;
+  const browserCls = o.browser === "動作中" ? "ok" : o.browser.startsWith("障害") ? "warn" : "";
+  $("#badges").innerHTML = `${loginPill}
+    <a class="pill ${liveCount ? "live" : ""}" href="#live">配信中 ${liveCount} / ${o.rooms.length}</a>
+    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>${pausePill(o.research_pause)}`;
+  $("#rooms").innerHTML = o.rooms.length ? o.rooms.map(roomCard).join("") : `
+    <div class="empty" style="grid-column:1/-1">視聴するルームがありません。<br><a class="btn primary" href="#settings">ルームを追加する</a></div>`;
+  $("#rec-count").textContent = o.recording.length;
+  const targets = o.settings.record_rooms.length + o.settings.events.length;
+  $("#recording").innerHTML = o.recording.length
+    ? `<div class="chips">${o.recording.map((r) => `<a class="chip" href="#room/${encodeURIComponent(r.room)}" title="${esc(r.source)}">${esc(r.name)}</a>`).join("")}</div>`
+    : `<div class="hint">${targets ? "設定したルーム・イベントで配信が始まると、ここに表示されます (2 分ごとに確認)。" : "ギフトだけ記録するルーム・イベントは設定されていません。"}</div>`;
+  const sel = $("#c-room"), cur = sel.value;
+  const live = o.rooms.filter((r) => r.watcher && r.watcher.can_comment);
+  sel.innerHTML = live.length ? live.map((r) => `<option value="${esc(r.key)}">${esc(r.name || r.key)}</option>`).join("") : `<option value="">配信中のルームがありません</option>`;
+  if (live.some((r) => r.key === cur)) sel.value = cur;
+  $("#c-send").disabled = !live.length;
+  $("#c-hint").textContent = live.length ? "" : "視聴中のルームで配信が始まると投稿できます。";
+  if (!settingsDirty) loadSettings(o.settings);
+  if (page.name === "home") renderHomeTiles();
+}
+let offline = false;
+async function refresh() {
+  try {
+    overview = await api("/api/overview");
+    renderOverview();
+    if (offline) { offline = false; $("#offline").hidden = true; toast("つながりました。読み直します"); route(); }
+  } catch (e) {
+    offline = true;
+    $("#offline").hidden = false;
+    $("#offline").textContent = `サーバーにつながっていません (${e.message})。つなぎ直しています… (Mac のスリープのあとは「管理画面を開く」をもう一度)`;
+  }
+}
+$("#rooms").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  if (b.dataset.act === "comment") { go("#live/comment"); $("#c-room").value = b.dataset.room; }
+  if (b.dataset.act === "gifts") { setGiftMode("room"); setPicked($("#g-room"), b.dataset.room, roomName(b.dataset.room)); go("#live/gifts"); loadGifts(); }
+});
+
+/* ------------------------------------------------------------ ライブ */
+function showLive(sub) {
+  sub = ["watch", "gifts", "listeners", "comment"].includes(sub) ? sub : "watch";
+  setSub("#lv-tabs", sub);
+  $$("#lv-tabs ~ .sub-panel").forEach((p) => { p.hidden = p.dataset.panel !== sub; });
+  if (sub === "listeners") loadListeners();
+  if (sub === "comment") setTimeout(() => $("#c-text").focus(), 0);
+}
+$("#l-list").addEventListener("click", (ev) => {
+  if (ev.target.id === "l-more") { listeners.shown += 200; return renderListeners(); }
+  const tr = ev.target.closest("tr[data-uid]");
+  if (tr) openListener(tr.dataset.uid);
+});
+$("#l-filters").addEventListener("click", (ev) => {
+  const f = ev.target.closest("[data-f]");
+  if (!f) return;
+  $$("#l-filters .fchip").forEach((x) => x.classList.toggle("active", x === f));
+  listeners.shown = 200; renderListeners();
+});
+["#l-q", "#l-min"].forEach((id) => $(id).addEventListener("input", () => { listeners.shown = 200; renderListeners(); }));
+$("#l-sort").addEventListener("change", renderListeners);
+$("#l-days").addEventListener("change", () => loadListeners());
+$("#l-room").addEventListener("input", () => { if (!$("#l-room").value.trim()) { setPicked($("#l-room"), "", ""); loadListeners(); } });
+// 記録したギフトの画面を、ルームかイベントを選んだ状態で開く
+function openRecorded(kind, key, label) {
+  setGiftMode(kind);
+  setPicked($(kind === "room" ? "#g-room" : "#g-event"), key, label || key);
+  if (kind === "room") $("#g-hours").value = "100000000";
+  setPicked($("#g-user"), "", "");
+  go("#live/gifts");
+  loadGifts();
+}
+
+/* ------------------------------------------------------------ 分析 (ギフター・ルームの一覧で使う集計) */
+const research = { data: null, filter: "all", signup: "all", selected: null, watch: [], loading: null };
+const hourText = (hs) => hs && hs.length ? hs.map((h) => `${h}時`).join("・") : "";
+const currentSupport = () => $("#r-support").value;
+// 全ルーム分の集計は重いので、サーバーで 10 分使い回す。画面でも、読み込んだものを使う
+async function loadAnalysis(refresh = false) {
+  if (research.loading && !refresh) return research.loading;
+  const q = new URLSearchParams();
+  if (currentSupport()) q.set("support", currentSupport());
+  if (refresh) q.set("refresh", "1");
+  $("#r-analyzed").innerHTML = `<span class="spinner" style="display:inline-block;vertical-align:-4px;width:14px;height:14px"></span> ${refresh ? "集計し直しています…" : "集計を読み込んでいます…"}`;
+  research.loading = (async () => {
+    const [d] = await Promise.all([api(`/api/research${q.toString() ? `?${q}` : ""}`), loadWatch()]);
+    research.data = d;
+    d.status.forEach((r) => { if (r.name && r.name !== r.key) names.room[r.key] = r.name; });
+    const sel = $("#r-support"), cur = sel.value, many = d.support_rooms.length > 1;
+    sel.innerHTML = (many ? `<option value="">すべての応援ルーム</option>` : "")
+      + (d.support_rooms.map((k) => `<option value="${esc(k)}">${esc(roomName(k))}</option>`).join("") || `<option value="">設定なし</option>`);
+    if (d.support_rooms.includes(cur)) sel.value = cur;
+    $("#r-support-wrap").hidden = !d.support_rooms.length;
+    $("#r-analyzed").innerHTML = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true).slice(0, 11)}${d.analysis_seconds >= 1 ? ` (${num(d.analysis_seconds)} 秒)` : ""} ・ 10 分間は同じ集計を使います` : "";
+    return d;
+  })();
+  try { return await research.loading; } finally { research.loading = null; }
+}
+const noResearch = (d) => !d.status.length && !(d.sweep && d.sweep.enabled);
+const NO_RESEARCH = `<div class="empty">まだ集めた情報がありません。「設定」の「調べるルーム」にルームを追加するか、全ルームの収集 (SHOWROOM_RESEARCH_ALL) を有効にしてください。</div>`;
+const SCOPE_NOTE = `<div class="note-box">見えている範囲: 累計ランキングは各ルームの上位 30 人、イベントの貢献ランキングは各ルームの上位 100 人までです。ポイントは「少なくともこれだけ送っている」分で、少額のギフターはほとんど見えません。</div>`;
+$("#r-refresh").addEventListener("click", async () => { try { await loadAnalysis(true); route(); } catch (e) { toast(`集計できませんでした: ${e.message}`); } });
+$("#r-support").addEventListener("change", async () => { research.data = null; route(); });
+
+/* ------------------------------------------------------------ ギフター (一覧) */
+async function showGifters(sub) {
+  sub = ["list", "trend", "watch"].includes(sub) ? sub : "list";
+  setSub("#gf-tabs", sub);
+  const box = $("#gf-body");
+  if (!research.data) box.innerHTML = loadingHtml("集計しています (全ルーム分だと、初めは数十秒かかることがあります)…");
+  let d;
+  try { d = research.data || await loadAnalysis(); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "gifters") return;
+  if (noResearch(d)) { box.innerHTML = NO_RESEARCH; return; }
+  const w = research.watch || [];
+  $("#gf-tabs [data-sub=watch]").innerHTML = `気になる${w.length ? `<span class="n">${num(w.length)}</span>` : ""}`;
+  if (sub === "trend") { box.innerHTML = trendSection(d) || `<div class="empty">まだありません</div>`; return; }
+  if (sub === "watch") {
+    box.innerHTML = w.length ? watchTable(w) : `<div class="empty">まだいません。ギフターのページの「☆ 気になる」で印を付けると、ここに並びます (メモも残せます)。</div>`;
+    return;
+  }
+  box.innerHTML = gifterList(d);
+}
+function gifterList(d) {
+  const all = d.mode === "all";
+  const rows = (research.signup === "all" ? d.candidates : d.candidates.concat(d.signup_candidates || [])).filter((u) => {
+    const f = research.filter;
+    return signupMatch(u) && (f === "all" || (f === "recorded" ? u.habits : f === "events" ? u.best_rank && u.best_rank <= 10
+      : f === "multi" ? u.room_count > 1 : u.focus !== null && u.focus < 0.7));
+  });
+  const years = d.signup_years || [];
+  if (research.signup !== "all" && !research.signup.startsWith("within") && !years.some((y) => String(y.year) === research.signup)) research.signup = "all";
+  const signupSelect = years.length ? `<select id="r-signup" title="ユーザー ID から推測した登録時期で絞り込む">${[["all", "すべての登録時期"], ["within1", "ここ 1 年以内に登録"], ["within3", "ここ 3 年以内に登録"],
+    ...years.map((y) => [String(y.year), `${y.year} 年ごろに登録 (${y.rough ? "大まか・" : ""}${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
+  let html = `<div class="summary">${all
+    ? stat(num(d.gifter_count), "分かったギフター (人)") + stat(num(d.multi_count), "複数のルームに送る人") + stat(num(d.room_count), "ギフターの分かったルーム")
+    : stat(num(d.candidate_count), "誘導の候補 (人)") + stat(num(d.fan_count), "応援ルームのギフター (人)") + stat(num(d.gifter_count), "分かったギフター (人)")}</div>${SCOPE_NOTE}`;
+  html += `<div class="row" style="margin:8px 0"><div class="filters grow" id="r-filters">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div>${signupSelect}</div>`;
+  const cols = [
+    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
+    ...(all ? [{ label: "分かった pt", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]
+      : [{ label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]),
+    { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
+    { label: "ルーム", num: true, value: (u) => u.room_count, html: (u) => num(u.room_count) },
+    { label: "イベント", num: true, value: (u) => u.event_count, html: (u) => u.event_count ? num(u.event_count) : "-" },
+    { label: "最高順位", num: true, value: (u) => u.best_rank || null, html: (u) => u.best_rank ? `${num(u.best_rank)} 位` : "-" },
+    { label: "来場", num: true, value: (u) => u.visits || 0, html: (u) => u.visits ? num(u.visits) : "-" },
+    { label: "登録 (推測)", value: (u) => u.signup_at || null, csv: (u) => u.signup_at ? signupText(u) : "", html: (u) => u.signup_at ? esc(signupText(u)) : "-" },
+    { label: "よく送る時間", sort: false, value: (u) => u.habits ? `${u.habits.top_weekday}曜 ${hourText(u.habits.top_hours)}` : "", html: habitCell },
+  ];
+  html += dataTable("gifters", cols, rows, { sort: 1, csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
+    rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`,
+    note: research.signup === "all" ? `集計で上位 ${num(d.candidates.length)} 人を出しています` : "登録時期で絞り込み中" });
+  if (!all) {
+    const fans = d.fans.filter((u) => signupMatch(u));
+    html += `<h3>応援ルームのギフター</h3>` + dataTable("fans", [
+      { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
+      { label: "応援ルームへ", num: true, value: (u) => u.support_points, html: (u) => `<b>${num(u.support_points)}</b>` },
+      { label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => num(u.other_points) },
+      { label: "ほかの主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
+      { label: "来場", num: true, value: (u) => u.visits || 0, html: (u) => u.visits ? num(u.visits) : "-" },
+      { label: "よく送る時間", sort: false, value: (u) => "", html: habitCell },
+    ], fans, { sort: 1, csvName: "応援ルームのギフター", rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`, empty: "まだ分かっていません" });
+  }
+  return html;
+}
+function watchTable(w) {
+  return dataTable("watch", [
+    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
+    { label: "メモ", value: (u) => u.memo, html: (u) => u.memo ? `<span style="white-space:pre-wrap">${esc(u.memo)}</span>` : '<span class="uid">メモなし</span>' },
+    { label: "分かった pt", num: true, value: (u) => u.total_points, html: (u) => `<b>${num(u.total_points)}</b>` },
+    { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
+    { label: "イベント", num: true, value: (u) => u.event_count, html: eventCell },
+    { label: "印を付けた日", num: true, value: (u) => u.added_at, html: (u) => ymd(u.added_at) },
+  ], w, { sort: 5, csvName: "気になるギフター", rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"` });
+}
+$("#gf-body").addEventListener("click", (ev) => {
+  const f = ev.target.closest("[data-rf]");
+  if (f) { research.filter = f.dataset.rf; delete DT.gifters; showGifters("list"); }
+});
+$("#gf-body").addEventListener("change", (ev) => {
+  if (ev.target.id === "r-signup") { research.signup = ev.target.value; showGifters("list"); }
+});
 async function saveWatch(uid, watched, memo) {
   await api("/api/research/watch", memo === undefined ? { user_id: uid, watched } : { user_id: uid, watched, memo });
   await loadWatch();
-  renderResearch();
 }
-$("#r-detail").addEventListener("click", async (ev) => {
-  const star = ev.target.closest("#r-watch");
-  if (star) {
-    const on = star.dataset.on === "1";
-    try {
-      await saveWatch(star.dataset.uid, !on);
-      toast(on ? "気になるギフターから外しました" : "気になるギフターに入れました。メモも残せます");
-      openGifter(star.dataset.uid);
-    } catch (e) { toast(`保存できませんでした: ${e.message}`); }
+
+/* ------------------------------------------------------------ ギフターのページ */
+async function showGifter(uid) {
+  const box = $("#gp");
+  research.selected = uid;
+  box.innerHTML = loadingHtml();
+  if (!/^\d{1,12}$/.test(uid)) { box.innerHTML = `<div class="empty">ユーザー ID は数字です</div>`; return; }
+  const sup = currentSupport();
+  const [d, l] = await Promise.all([
+    api(`/api/research/gifter?user=${encodeURIComponent(uid)}${sup ? `&support=${encodeURIComponent(sup)}` : ""}`).catch((e) => ({ found: false, error: e.message })),
+    api(`/api/listener?user=${encodeURIComponent(uid)}&days=0`).catch(() => null),
+  ]);
+  if (page.name !== "gifter" || page.arg !== uid) return;
+  const rec = l && l.found ? l : null;
+  if (!d.found && !rec) {
+    const p = await lookupUser(uid);
+    box.innerHTML = `<div class="crumb"><a href="#gifters">ギフター</a> ›</div><h2>ユーザー ID ${esc(uid)}</h2>
+      <div class="empty">${p ? `${esc(p.name)} さん (SHOWROOM にいるユーザー${p.level ? `・ファンレベル ${num(p.level)}` : ""}) ですが、集めた情報にも記録したギフトにもまだ出ていません。` : "集めた情報にも、記録したギフトにも見つかりません。"}${d.error ? `<br>${esc(d.error)}` : ""}</div>`;
     return;
   }
-  const save = ev.target.closest("#r-memo-save");
-  if (save) {
-    try { await saveWatch(save.dataset.uid, true, $("#r-memo").value); toast("メモを保存しました"); }
+  const s = d.found ? d.summary : null;
+  const name = (s && s.name) || (rec && rec.names[0]) || `ID ${uid}`;
+  const watch = d.watch;
+  let html = `<div class="crumb"><a href="#gifters">ギフター</a> ›</div>
+    <div class="page-head"><div class="grow"><h2>${esc(name)}</h2>
+      <div class="card-key">ユーザー ID ${esc(uid)}${s && s.signup_at ? ` ・ <span title="${esc(signupRange(s))}">登録 ${signupText(s)} (ID から推測)</span>` : ""}${rec && rec.names.length > 1 ? ` ・ 前の名前: ${esc(rec.names.slice(1, 4).join("、"))}` : ""}</div></div>
+      <div class="row"><button class="btn small ${watch ? "primary" : ""}" id="gp-watch" data-on="${watch ? 1 : 0}">${watch ? "★ 気になる (外す)" : "☆ 気になる"}</button></div></div>
+    ${watch ? `<div class="row" style="margin:-4px 0 12px"><textarea id="gp-memo" class="grow" rows="2" maxlength="500" placeholder="メモ (例: 月末に大きく送る、歌の配信が好き)">${esc(watch.memo)}</textarea>
+      <button class="btn small" id="gp-memo-save">メモを保存</button></div>` : ""}`;
+  const tiles = [];
+  if (s) {
+    tiles.push(tile("分かったポイント", `${shortNum(s.total_points)} <small>pt</small>`, `${num(s.room_count)} ルーム`));
+    if (s.support_points) tiles.push(tile("応援ルームへ", `${shortNum(s.support_points)} <small>pt</small>`));
+    tiles.push(tile("参加したイベント", `${num(s.event_count)} <small>件</small>`, s.best_rank ? `最高 ${num(s.best_rank)} 位 ・ ${shortNum(s.event_points)} pt` : ""));
+    tiles.push(tile("いちばん多いルームの割合", s.focus === null ? "—" : `${Math.round(s.focus * 100)}<small>%</small>`, s.top_rooms[0] ? esc(s.top_rooms[0].name) : ""));
+    if (s.visits) tiles.push(tile("来場 (いちばん多いルーム)", `${num(s.visits)} <small>回</small>`));
+  }
+  if (rec) tiles.push(tile("記録したギフト", `${shortNum(rec.total.points)} <small>pt</small>`, `有料 ${shortNum(rec.total.paid_points)} ・ ${num(rec.total.times)} 回 ・ 最後 ${ago(rec.last_at)}`));
+  html += `<div class="tiles">${tiles.join("")}</div>`;
+  if (s) html += SCOPE_NOTE;
+  html += `<div id="r-timeline"></div>`;
+  if (d.found) {
+    html += `<h3>ルーム別${d.room_total > d.rooms.length ? ` <small class="muted">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</small>` : ""}</h3>` + dataTable("gp-rooms", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}`, cls: "name" },
+      { label: "分かった pt", num: true, value: (r) => r.points, html: (r) => `<b>${num(r.points)}</b>` },
+      { label: "累計ランキング", num: true, value: (r) => r.cumulative || 0, html: (r) => r.cumulative ? `${num(r.cumulative)}${r.cumulative_rank ? ` (${num(r.cumulative_rank)} 位)` : ""}` : "-" },
+      { label: "イベント", num: true, value: (r) => r.events || 0, html: (r) => r.events ? num(r.events) : "-" },
+      { label: "記録したギフト", num: true, value: (r) => r.recorded || 0, html: (r) => r.recorded ? num(r.recorded) : "-" },
+      { label: "来場", num: true, value: (r) => r.visits || 0, html: (r) => r.visits ? num(r.visits) : "-" },
+    ], d.rooms, { sort: 1, limit: 20, csvName: `ギフター_${uid}_ルーム別`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
+    html += `<div id="r-rank-charts"></div>`;
+  }
+  html += `<div id="r-charts">${rec ? loadingHtml("行動のグラフを描いています…") : `<h3>行動のくせ</h3><div class="hint" style="margin-top:0">曜日・時間帯・1 回の大きさなどは、記録したギフトから分かります。この人のギフトはまだ記録していません (送っているルームを「設定」の「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)。</div>`}</div>`;
+  if (d.found) {
+    html += `<h3>イベントの実績</h3>` + dataTable("gp-events", [
+      { label: "イベント", value: (e) => e.event, html: (e) => eventLink(e.event_id, e.event), cls: "name" },
+      { label: "ルーム", value: (e) => e.room_name, html: (e) => roomLink(e.room, e.room_name) },
+      { label: "順位", num: true, value: (e) => e.rank || null, html: (e) => e.rank ? `${num(e.rank)} 位` : "-" },
+      { label: "pt", num: true, value: (e) => e.point, html: (e) => num(e.point) },
+      { label: "終了", num: true, value: (e) => e.end || null, html: (e) => e.end ? ymd(e.end) : "" },
+    ], d.events, { sort: 4, limit: 30, total: d.event_total, csvName: `ギフター_${uid}_イベント`, empty: "集めたイベントの貢献ランキングには出ていません" });
+  }
+  if (rec) {
+    html += `<h3>記録したギフトの履歴</h3>` + dataTable("gp-history", [
+      { label: "日時", num: true, value: (h) => h.at, html: (h) => tm(h.at, true), csv: (h) => tm(h.at, true) },
+      { label: "ルーム", value: (h) => h.room_name, html: (h) => esc(h.room_name) },
+      { label: "ギフト", value: (h) => h.gift },
+      { label: "個数", num: true, value: (h) => h.num, html: (h) => num(h.num) },
+      { label: "pt", num: true, value: (h) => h.points, html: (h) => num(h.points) },
+    ], rec.history, { sort: 0, limit: 50, csvName: `ギフター_${uid}_記録したギフト`, maxHeight: 520 });
+  }
+  box.innerHTML = html;
+  if (d.found) { renderTimeline({ ...d.timeline, coverage: d.coverage }); renderRankingCharts(d, "#r-rank-charts"); }
+  if (rec) renderListenerCharts(rec, "#r-charts", "記録したギフトすべて");
+}
+$("#gp").addEventListener("click", async (ev) => {
+  const uid = page.arg;
+  if (ev.target.closest("#gp-watch")) {
+    const on = ev.target.closest("#gp-watch").dataset.on === "1";
+    try { await saveWatch(uid, !on); toast(on ? "気になるギフターから外しました" : "気になるギフターに入れました。メモも残せます"); showGifter(uid); }
+    catch (e) { toast(`保存できませんでした: ${e.message}`); }
+  }
+  if (ev.target.closest("#gp-memo-save")) {
+    try { await saveWatch(uid, true, $("#gp-memo").value); toast("メモを保存しました"); }
     catch (e) { toast(`保存できませんでした: ${e.message}`); }
   }
 });
-async function openGifter(uid) {
-  research.selected = uid;
-  const box = $("#r-detail");
-  box.innerHTML = `<div class="loading"><span class="spinner"></span>読み込み中…</div>`;
-  try {
-    const sup = $("#r-support").value;
-    const d = await api(`/api/research/gifter?user=${encodeURIComponent(uid)}${sup ? `&support=${encodeURIComponent(sup)}` : ""}`);
-    if (!d.found) { box.innerHTML = `<div class="empty">情報がありません (ID ${esc(uid)})</div>`; return; }
-    const s = d.summary, h = d.habits;
-    box.innerHTML = `<div class="card" style="margin:14px 0">
-      <div class="card-head"><div><div class="card-title">${esc(s.name)}</div><div class="card-key">ユーザー ID ${esc(d.user_id)}${s.signup_at ? ` ・ <span title="${esc(signupRange(s))}">登録 ${signupText(s)} (ID から推測)</span>` : ""}</div></div>
-        <div class="row" style="gap:6px"><button class="btn small ${d.watch ? "primary" : ""}" id="r-watch" data-uid="${esc(d.user_id)}" data-on="${d.watch ? 1 : 0}">${d.watch ? "★ 気になる (外す)" : "☆ 気になる"}</button><button class="btn small" id="r-close">閉じる</button></div></div>
-      ${d.watch ? `<div class="row" style="margin:-4px 0 12px"><textarea id="r-memo" class="grow" rows="2" maxlength="500" placeholder="メモ (例: 月末に大きく送る、歌の配信が好き)">${esc(d.watch.memo)}</textarea>
-        <button class="btn small" id="r-memo-save" data-uid="${esc(d.user_id)}">メモを保存</button></div>` : ""}
-      <div class="summary">
-        ${research.data && research.data.mode === "all"
-          ? `<div class="stat"><div class="v">${num(s.total_points)} pt</div><div class="l">分かったポイント (${num(s.room_count)} ルーム)</div></div>`
-          : `<div class="stat"><div class="v">${num(s.support_points)} pt</div><div class="l">応援ルームへ</div></div>
-        <div class="stat"><div class="v">${num(s.other_points)} pt</div><div class="l">ほかのルームへ (${num(s.room_count)} ルーム)</div></div>`}
-        <div class="stat"><div class="v">${num(s.event_count)}</div><div class="l">参加したイベント${s.best_rank ? ` (最高 ${num(s.best_rank)} 位)` : ""}</div></div>
-        <div class="stat"><div class="v">${s.focus === null ? "-" : `${Math.round(s.focus * 100)}%`}</div><div class="l">いちばん多いルームの割合</div></div>
-      </div>
-      <h3>ルーム別${d.room_total > d.rooms.length ? ` <span class="hint">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</span>` : ""}</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">分かった pt</th><th class="num">累計ランキング</th><th class="num">イベント</th><th class="num">記録したギフト</th><th class="num">来場</th></tr></thead>
-      <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}</td><td class="num"><b>${num(r.points)}</b></td>
-        <td class="num">${r.cumulative ? `${num(r.cumulative)}${r.cumulative_rank ? ` (${num(r.cumulative_rank)} 位)` : ""}` : "-"}</td><td class="num">${r.events ? num(r.events) : "-"}</td>
-        <td class="num">${r.recorded ? num(r.recorded) : "-"}</td><td class="num">${r.visits ? num(r.visits) : "-"}</td></tr>`).join("")}</tbody></table></div>
-      <div id="r-timeline"></div>
-      <div id="r-rank-charts"></div>
-      <div id="r-charts">${h ? `<div class="loading"><span class="spinner"></span>行動のグラフを読み込み中…</div>`
-        : `<h3>行動のグラフ</h3><div class="hint" style="margin-top:0">曜日・時間帯などの行動のグラフは、記録したギフトから作ります。このギフターのギフトはまだ記録していません (送っているルームを「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)。</div>`}</div>
-      <h3>イベントの実績 (新しい順)${d.event_total > d.events.length ? ` <span class="hint">(${num(d.events.length)} / ${num(d.event_total)} 件)</span>` : ""}</h3>${d.events.length ? `<div class="table-wrap" style="max-height:360px;overflow-y:auto"><table><thead><tr><th>イベント</th><th>ルーム</th><th class="num">順位</th><th class="num">pt</th><th class="num">終了</th></tr></thead>
-        <tbody>${d.events.map((e) => `<tr><td>${esc(e.event)}</td><td>${esc(e.room_name)}</td><td class="num">${e.rank ? num(e.rank) : "-"}</td><td class="num">${num(e.point)}</td><td class="num">${e.end ? day(e.end) : ""}</td></tr>`).join("")}</tbody></table></div>`
-        : `<div class="empty">集めたイベントの貢献ランキングには出ていません</div>`}
-    </div>`;
-    renderRankingCharts(d, "#r-rank-charts");
-    renderResearch();
-    renderTimeline({ ...d.timeline, coverage: d.coverage });
-    box.scrollIntoView({ behavior: "smooth", block: "start" });
-    if (h) {  // 行動のグラフは、リスナーの履歴と同じもの (記録したギフトすべてから)
-      const l = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=0`);
-      if (research.selected == uid && l.found && $("#r-charts")) renderListenerCharts(l, "#r-charts", "記録したギフトすべて");
-    }
-  } catch (e) {
-    box.innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
+
+
+/* ------------------------------------------------------------ ルーム (一覧) */
+async function showRooms() {
+  const box = $("#rm-body");
+  if (!research.data) box.innerHTML = loadingHtml("集計しています…");
+  let d;
+  try { d = research.data || await loadAnalysis(); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "rooms") return;
+  if (noResearch(d)) { box.innerHTML = NO_RESEARCH; return; }
+  const pct = (x) => `${(x * 100).toFixed(1)}%`;
+  let html = `<div class="summary">${stat(num(d.room_count), "ギフターの分かったルーム")}${stat(num(d.gifter_count), "分かったギフター (人)")}</div>${SCOPE_NOTE}`;
+  html += `<h3>ルームごとのまとめ <small class="muted">分かったポイントの多い順に ${num(d.rooms.length)} ルーム</small></h3>` + dataTable("rooms", [
+    { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}${d.research_rooms.includes(r.key) ? ' <span class="tag info">調べるルーム</span>' : ""}`, cls: "name" },
+    { label: "ギフター", num: true, value: (r) => r.gifters, html: (r) => `${num(r.gifters)} 人` },
+    { label: "分かった pt", num: true, value: (r) => r.points, html: (r) => `<b>${num(r.points)}</b>` },
+    { label: "掛け持ち", num: true, value: (r) => r.multi, html: (r) => `<span title="ほかのルームにも送っているギフター">${num(r.multi)} 人</span>` },
+    { label: "イベント", num: true, value: (r) => r.researched ? r.events : null, html: (r) => r.researched ? `${num(r.events)} 件` : "-" },
+    { label: "いちばん多いギフター", sort: false, value: (r) => r.top ? r.top.name : "", html: (r) => r.top ? `${gifterLink(r.top.user_id, r.top.name)} <span class="uid">${num(r.top.points)} pt</span>` : "" },
+  ], d.rooms, { sort: 2, limit: 50, total: d.room_count, csvName: "ルーム一覧", rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
+  if (d.mode === "all") {
+    html += `<h3>ルーム同士の重なり</h3><div class="hint" style="margin-top:0">同じギフターが送っているルームの組です。重なりが大きいほど、ギフターの好みが近いルームと考えられます (共通のギフターが 2 人以上の組)。</div>` + dataTable("pairs", [
+      { label: "ルーム", value: (p) => p.a_name, html: (p) => roomLink(p.a, p.a_name), cls: "name" },
+      { label: "ルーム", value: (p) => p.b_name, html: (p) => roomLink(p.b, p.b_name), cls: "name" },
+      { label: "共通のギフター", num: true, value: (p) => p.shared, html: (p) => `<b>${num(p.shared)}</b> 人` },
+      { label: "重なり", num: true, value: (p) => p.overlap, html: (p) => pct(p.overlap) },
+    ], d.pairs, { sort: 2, limit: 30, csvName: "ルーム同士の重なり", empty: "まだありません" });
+  } else {
+    html += `<h3>応援ルームとギフターが重なるルーム</h3>` + dataTable("similar", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+      { label: "共通のギフター", num: true, value: (r) => r.shared, html: (r) => `<b>${num(r.shared)}</b> 人` },
+      { label: "そのルームのギフター", num: true, value: (r) => r.gifters, html: (r) => `${num(r.gifters)} 人` },
+      { label: "重なり", num: true, value: (r) => r.overlap, html: (r) => pct(r.overlap) },
+      { label: "誘導の候補", num: true, value: (r) => r.candidates, html: (r) => `${num(r.candidates)} 人` },
+    ], d.similar, { sort: 1, csvName: "重なるルーム", empty: "まだありません" });
+  }
+  box.innerHTML = html;
+}
+
+/* ------------------------------------------------------------ ルームのページ */
+async function showRoom(key) {
+  const box = $("#rp");
+  box.innerHTML = loadingHtml();
+  let d;
+  try { d = await api(`/api/room?room=${encodeURIComponent(key)}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "room" || page.arg !== key) return;
+  const crumb = `<div class="crumb"><a href="#rooms">ルーム</a> ›</div>`;
+  const recordBtn = `<button class="btn small" data-recorded-room="${esc(key)}">記録したギフトを見る</button>`;
+  if (!d.found) {
+    box.innerHTML = `${crumb}<h2>${esc(roomName(key))}</h2><div class="empty">このルームの情報はまだ集めていません。<br>
+      <a href="${roomUrl(key)}" target="_blank" rel="noopener noreferrer">SHOWROOM で開く ↗</a></div><div class="row" style="margin-top:10px">${recordBtn}</div>`;
+    return;
+  }
+  names.room[d.key] = d.name;
+  const st = d.event_stats;
+  let html = `${crumb}<div class="page-head"><div class="grow"><h2>${esc(d.name)}</h2>
+      <div class="card-key"><a href="${roomUrl(d.key)}" target="_blank" rel="noopener noreferrer">${esc(d.key)} ↗</a> ・ room_id ${esc(d.room_id)}${d.collected_at ? ` ・ 情報を集めた日 ${ymd(d.collected_at)}` : " ・ まだ集めていません"}</div></div>
+      <div class="row">${recordBtn}</div></div>
+    <div class="tiles">
+      ${tile("フォロワー", d.followers == null ? "—" : num(d.followers))}
+      ${tile("最後の配信", d.live_at ? ago(d.live_at) : "—", d.live_at ? ymd(d.live_at) : "")}
+      ${tile("分かったギフター", `${num(d.gifter_total)} <small>人</small>`)}
+      ${tile("参加したイベント", `${num(d.event_total)} <small>件</small>`, st.n ? `1 位 ${num(st.wins)} 回 ・ 3 位以内 ${num(st.top3)} 回` : "")}
+      ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
+    </div>${SCOPE_NOTE}
+    <div id="rp-chart"></div>`;
+  html += `<div class="cols">
+    <div><h3>累計ランキング <small class="muted">上位 30 人</small></h3>${dataTable("rp-cum", [
+      { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)}` : "-" },
+      { label: "ギフター", value: (c) => c.name, html: (c) => gifterLink(c.user_id, c.name), cls: "name" },
+      { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
+      { label: "来場", num: true, value: (c) => c.visits, html: (c) => num(c.visits) },
+    ], d.cumulative, { sort: 0, desc: false, csvName: `${d.key}_累計ランキング`, rowAttr: (c) => `class="clickable" data-go="#gifter/${esc(c.user_id)}"`, empty: "まだ取っていません" })}</div>
+    <div><h3>ギフターが重なるルーム</h3>${dataTable("rp-overlap", [
+      { label: "ルーム", value: (o) => o.name, html: (o) => roomLink(o.key || String(o.room_id), o.name), cls: "name" },
+      { label: "共通のギフター", num: true, value: (o) => o.shared, html: (o) => `<b>${num(o.shared)}</b> 人` },
+      { label: "その人たちの pt", num: true, value: (o) => o.points, html: (o) => shortNum(o.points) },
+    ], d.overlap, { sort: 1, csvName: `${d.key}_重なるルーム`, rowAttr: (o) => `class="clickable" data-go="#room/${esc(o.key || o.room_id)}"`, empty: "まだありません",
+      note: "このルームの上位 300 人が、ほかに送っているルーム" })}</div></div>`;
+  html += `<h3>このルームに送っているギフター</h3>` + dataTable("rp-gifters", [
+    { label: "ギフター", value: (g) => g.name, html: (g) => `${gifterLink(g.user_id, g.name)} <span class="uid">ID ${esc(g.user_id)}</span>`, cls: "name" },
+    { label: "分かった pt", num: true, value: (g) => g.points, html: (g) => `<b>${num(g.points)}</b>` },
+    { label: "累計ランキング", num: true, value: (g) => g.cumulative || 0, html: (g) => g.cumulative ? `${num(g.cumulative)}${g.cumulative_rank ? ` (${num(g.cumulative_rank)} 位)` : ""}` : "-" },
+    { label: "イベント", num: true, value: (g) => g.events || 0, html: (g) => g.events ? num(g.events) : "-" },
+    { label: "来場", num: true, value: (g) => g.visits || 0, html: (g) => g.visits ? num(g.visits) : "-" },
+    { label: "送るルーム", num: true, value: (g) => g.rooms, html: (g) => num(g.rooms) },
+  ], d.gifters, { sort: 1, limit: 50, total: d.gifter_total, csvName: `${d.key}_ギフター`, rowAttr: (g) => `class="clickable" data-go="#gifter/${esc(g.user_id)}"` });
+  html += `<h3>イベントの成績</h3>` + dataTable("rp-events", [
+    { label: "イベント", value: (e) => e.name, html: (e) => `${eventLink(e.event_id, e.name)} ${e.state === "ongoing" ? STATE_TAG.ongoing : ""}`, cls: "name" },
+    { label: "終了", num: true, value: (e) => e.end || null, html: (e) => e.end ? ymd(e.end) : "-" },
+    { label: "順位", num: true, value: (e) => e.rank || null, html: (e) => e.rank ? `${num(e.rank)} 位` : "-" },
+    { label: "pt", num: true, value: (e) => e.point, html: (e) => num(e.point) },
+    { label: "参加ルーム", num: true, value: (e) => e.rooms, html: (e) => num(e.rooms) },
+    { label: "貢献者", num: true, value: (e) => e.contributors, html: (e) => e.ranking ? `${num(e.contributors)} 人` : '<span class="uid">まだ</span>' },
+  ], d.events, { sort: 1, limit: 30, total: d.event_total, csvName: `${d.key}_イベント`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"` });
+  box.innerHTML = html;
+  // イベントごとのポイント (終わったイベント、古い順に 60 件)。1 位は赤
+  const done = d.events.filter((e) => e.end && e.state === "ended" && e.point).sort((a, b) => a.end - b.end).slice(-60);
+  const chart = $("#rp-chart");
+  if (done.length > 1) {
+    const full = Math.max(260, (chart.clientWidth || 720) - 30);
+    chart.innerHTML = `<div class="charts one"><div class="chart-card wide"><div class="chart-head"><div><b>イベントごとのポイント</b><div class="chart-sub">終わったイベントのポイント (古い順。赤は 1 位、オレンジは 2〜3 位)</div></div></div>
+      ${stackedBars(done.map((e) => ({ label: ymd(e.end).slice(2, 7), tip: `${e.name}\n${ymd(e.end)} 終了\n${num(e.point)} pt${e.rank ? ` (${e.rank} 位)` : ""}`,
+        parts: [{ v: e.point, color: e.rank === 1 ? "var(--accent)" : e.rank && e.rank <= 3 ? "var(--warn)" : "var(--info)" }] })),
+        { width: full, maxBar: 28, labelEvery: Math.max(1, Math.ceil(done.length / Math.max(2, Math.floor((full - 52) / 52)))) })}</div></div>`;
   }
 }
-$("#r-body").addEventListener("click", (ev) => {
-  if (ev.target.id === "r-more") { research.shown += 100; return renderResearch(); }
-  const f = ev.target.closest("[data-rf]");
-  if (f) { research.filter = f.dataset.rf; research.shown = 100; return renderResearch(); }
-  const top = ev.target.closest("[data-ruid-btn]");
-  if (top) return openGifter(top.dataset.ruidBtn);
-  const tr = ev.target.closest("tr[data-ruid]");
-  if (tr) openGifter(tr.dataset.ruid);
+document.addEventListener("click", (ev) => {
+  const r = ev.target.closest("[data-recorded-room]");
+  if (r) openRecorded("room", r.dataset.recordedRoom, roomName(r.dataset.recordedRoom));
+  const e = ev.target.closest("[data-recorded-event]");
+  if (e) openRecorded("event", e.dataset.recordedEvent, e.dataset.label);
 });
-$("#r-body").addEventListener("change", (ev) => {
-  if (ev.target.id === "r-sort") { research.sort = ev.target.value; renderResearch(); }
-  if (ev.target.id === "r-signup") { research.signup = ev.target.value; research.shown = 100; renderResearch(); }
-});
-$("#r-detail").addEventListener("click", (ev) => { if (ev.target.id === "r-close") { $("#r-detail").innerHTML = ""; research.selected = null; renderResearch(); } });
-$("#r-support").addEventListener("change", () => { $("#r-detail").innerHTML = ""; research.selected = null; loadResearch(); });
+
+/* ------------------------------------------------------------ イベント (一覧) */
+const eventLists = {};
+async function showEvents(sub) {
+  sub = ["ongoing", "upcoming", "ended"].includes(sub) ? sub : "ongoing";
+  setSub("#ev-tabs", sub);
+  const box = $("#ev-body");
+  box.innerHTML = loadingHtml();
+  let d;
+  try { d = await api(`/api/events?state=${sub}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "events") return;
+  eventLists[sub] = d;
+  const cols = [
+    { label: "イベント", value: (e) => e.name, html: (e) => eventLink(e.event_id, e.name), cls: "name" },
+    { label: "期間", sort: false, value: (e) => period(e), html: (e) => `<span class="uid">${esc(period(e))}</span>` },
+    sub === "ongoing" ? { label: "終わりまで", num: true, value: (e) => e.end, html: (e) => leftText(e.end) }
+      : sub === "upcoming" ? { label: "始まりまで", num: true, value: (e) => e.start, html: (e) => leftText(e.start).replace("あと", "") + " 後" }
+      : { label: "終了", num: true, value: (e) => e.end, html: (e) => ymd(e.end) },
+    { label: "参加ルーム", num: true, value: (e) => e.rooms, html: (e) => num(e.rooms) },
+    { label: "1 位", value: (e) => e.leader || "", html: (e) => esc(e.leader || "-") },
+    ...(sub === "ended" ? [{ label: "貢献ランキング", num: true, value: (e) => e.rankings, html: (e) => `${num(e.rankings)} / ${num(e.rooms)}` }]
+      : [{ label: "推移を残した回数", num: true, value: (e) => e.snapshots, html: (e) => e.snapshots ? `${num(e.snapshots)} 回` : "-" }]),
+  ];
+  box.innerHTML = (sub === "ongoing" ? `<div class="hint" style="margin-top:0">開催中のイベントは、参加ルームのポイントと順位を 1 時間ごとに残しています。</div>` : "")
+    + dataTable(`events-${sub}`, cols, d.events, { sort: 2, desc: sub === "ended", limit: 50, total: d.total, csvName: `イベント_${sub}`,
+      rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"`, empty: "当てはまるイベントはありません" });
+}
+
+/* ------------------------------------------------------------ イベントのページ */
+async function showEvent(id) {
+  const box = $("#ep");
+  box.innerHTML = loadingHtml();
+  let d;
+  try { d = await api(`/api/event?event=${encodeURIComponent(id)}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "event" || page.arg !== id) return;
+  const crumb = `<div class="crumb"><a href="#events">イベント</a> ›</div>`;
+  if (!d.found) { box.innerHTML = `${crumb}<h2>イベント ${esc(id)}</h2><div class="empty">このイベントの情報はまだ集めていません。</div>`; return; }
+  const p = d.progress;
+  let html = `${crumb}<div class="page-head"><div class="grow"><h2>${esc(d.name)} ${STATE_TAG[d.state] || ""}</h2>
+      <div class="card-key">${esc(period(d))}${d.state === "ongoing" ? ` ・ ${leftText(d.end)}` : ""} ・ イベント番号 ${esc(d.event_id)}${d.key ? ` ・ <a href="https://www.showroom-live.com/event/${encodeURIComponent(d.key)}" target="_blank" rel="noopener noreferrer">SHOWROOM で開く ↗</a>` : ""}</div></div>
+      ${d.key ? `<div class="row"><button class="btn small" data-recorded-event="${esc(d.key)}" data-label="${esc(d.name)}">記録したギフトを見る</button></div>` : ""}</div>
+    <div class="tiles">
+      ${tile("参加ルーム", `${num(d.room_total)} <small>ルーム</small>`, d.rooms[0] && d.rooms[0].rank === 1 ? `1 位 ${esc(d.rooms[0].name)}` : "")}
+      ${tile("分かった貢献者", `${num(d.contributor_total)} <small>人</small>`, "各ルームの上位 100 人まで")}
+      ${tile("貢献ランキング", `${num(d.rankings)} <small>/ ${num(d.room_total)}</small>`, d.rankings_pending ? `取る予定 ${num(d.rankings_pending)} ルーム` : d.state === "ended" ? "取れる分は取りました" : "終わってから取ります", d.rankings_pending ? "warn" : "")}
+      ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
+    </div>
+    <div id="ep-chart"></div>`;
+  html += `<div class="cols"><div><h3>参加ルームの順位</h3>${dataTable("ep-rooms", [
+      { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
+      { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
+      { label: "pt", num: true, value: (r) => r.point, html: (r) => `<b>${num(r.point)}</b>` },
+      { label: "貢献者", num: true, value: (r) => r.contributors, html: (r) => r.final ? `${num(r.contributors)} 人` : '<span class="uid">まだ</span>' },
+    ], d.rooms, { sort: 0, desc: false, limit: 50, total: d.room_total, csvName: `イベント_${d.event_id}_順位`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"` })}</div>
+    <div><h3>貢献者 <small class="muted">イベント全体の合計</small></h3>${dataTable("ep-contrib", [
+      { label: "ギフター", value: (c) => c.name, html: (c) => gifterLink(c.user_id, c.name), cls: "name" },
+      { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
+      { label: "ルーム", num: true, value: (c) => c.rooms, html: (c) => num(c.rooms) },
+      { label: "最高順位", num: true, value: (c) => c.best_rank, html: (c) => c.best_rank ? `${num(c.best_rank)} 位` : "-" },
+      { label: "いちばん送ったルーム", value: (c) => c.top_room || "", html: (c) => esc(c.top_room || "") },
+    ], d.contributors, { sort: 1, limit: 30, total: d.contributor_total, csvName: `イベント_${d.event_id}_貢献者`, rowAttr: (c) => `class="clickable" data-go="#gifter/${esc(c.user_id)}"`,
+      empty: d.state === "ended" ? "貢献ランキングをまだ取っていません" : "貢献ランキングは、イベントが終わってから取ります" })}</div></div>`;
+  box.innerHTML = html;
+  const chart = $("#ep-chart");
+  if (p.times.length) {
+    const full = Math.max(260, (chart.clientWidth || 720) - 30);
+    const series = p.rooms.map((r, i) => ({ name: r.name, color: ROOM_COLORS[i] || ["#2f5bd3", "#b4580f", "#18794e", "#e5484d", "#667085"][i - ROOM_COLORS.length] || OTHER_COLOR, values: r.points, ranks: r.ranks }));
+    chart.innerHTML = `<div class="charts one"><div class="chart-card wide"><div class="chart-head"><div><b>ポイントの推移</b><div class="chart-sub">今のポイントの多い ${num(series.length)} ルーム (1 時間ごと。終わったイベントは、最後の点が最終結果)</div></div></div>
+      ${lineChart(p.times, series, { width: full })}${chartLegend(series.map((s) => [s.name, s.color]))}</div></div>`;
+  }
+}
+
+/* ------------------------------------------------------------ 収集 */
+let collectTimer = null;
+async function showCollect() {
+  loadLogs();
+  clearTimeout(collectTimer);
+  try {
+    const d = await api("/api/research/status?coverage=1");
+    if (page.name !== "collect") return;
+    renderCollect(d);
+  } catch (e) { $("#r-sweep").innerHTML = errorHtml(e); }
+  collectTimer = setTimeout(() => { if (page.name === "collect" && !document.hidden) showCollect(); }, 15000);
+}
+function renderCollect(d) {
+  const j = d.job, last = j.last;
+  $("#r-job").textContent = j.running ? `集めています… ${j.progress || ""}`
+    : last ? `前回 ${tm(last.at, true)} (${last.reason}): ${num(last.rooms)} ルーム / 新しい貢献ランキング ${num(last.events)} 件${last.failures ? ` / 失敗 ${last.failures} 件` : ""}` : "";
+  $("#r-collect").disabled = j.running || !d.status.length;
+  $("#r-status").innerHTML = d.status.length ? `<div class="chips" style="margin-top:8px">${d.status.map((r) => `<a class="chip" href="#room/${encodeURIComponent(r.key)}" title="${esc(r.key)}">
+      ${esc(r.name)}　${r.at ? `累計 ${num(r.cumulative)} 人・イベント ${num(r.events)} 件・ランキング ${num(r.rankings)} 件 (${tm(r.at, true).slice(0, 11)})` : "まだ集めていません"}</a>`).join("")}</div>` : "調べるルーム・応援しているルームは設定されていません (「設定」で追加できます)。";
+  $("#r-sweep").innerHTML = sweepStatus(d) || `<div class="hint">全ルームの収集は有効になっていません (SHOWROOM_RESEARCH_ALL)。</div>`;
+  const b = d.backup, t = d.throttle || {};
+  const pauses = (t.pause_log || []).slice(0, 5).map((p) => `${tm(p.at, true).slice(0, 11)} から ${durationText(p.seconds)} (${esc(p.why)}・続けて ${p.count} 回目)`);
+  $("#r-backup").innerHTML = (!b ? "バックアップ: まだありません" : b.ok ? `バックアップ: ${tm(b.at, true).slice(0, 11)} (${num(b.mb)} MB・毎日 4:00)`
+    : `<b style="color:var(--accent)">バックアップに失敗 (${esc(tm(b.at, true).slice(0, 11))}): ${esc(b.reason || "")}</b>`)
+    + (pauses.length ? `<br>問い合わせを止めた記録: ${pauses.join(" / ")}` : "");
+  $("#c-coverage").innerHTML = d.coverage ? coverageBlock(d.coverage).replace('<details class="more">', '<details class="more" open>') : "";
+}
 $("#r-collect").addEventListener("click", async () => {
   $("#r-collect").disabled = true;
   try {
     const r = await api("/api/research/collect", { force: true });
     toast(r.started ? "情報を集め始めました (ルーム数によって数分かかります)" : "すでに集めています");
   } catch (e) { toast(`集められませんでした: ${e.message}`); }
-  setTimeout(() => loadResearch(), 1000);
+  setTimeout(showCollect, 1000);
 });
-$("#r-refresh").addEventListener("click", () => loadResearch(true));
+
+/* ------------------------------------------------------------ ホーム */
+let homeStatus = null;
+function renderHomeTiles() {
+  const o = overview, s = homeStatus;
+  if (!o) return;
+  const login = o.login || {}, liveCount = o.rooms.filter((r) => r.is_live).length;
+  const t = s && s.throttle, store = s && s.store, b = s && s.backup, w = s && s.sweep;
+  const tiles = [
+    tile("ログイン", login.logged_in === true ? "ログイン中" : login.logged_in === false ? "未ログイン" : "確認待ち", login.checked_at ? `確認 ${ago(login.checked_at)}` : "2 時間ごとに確認",
+      login.logged_in === true ? "ok" : login.logged_in === false ? "bad" : ""),
+    tile("視聴", `${num(liveCount)} <small>/ ${num(o.rooms.length)} 配信中</small>`, `ブラウザ: ${esc(o.browser)}`, o.browser.startsWith("障害") ? "warn" : "", "#live"),
+    tile("ギフトの記録", `${num(o.recording.length)} <small>ルーム記録中</small>`, `設定 ${num(o.settings.record_rooms.length)} ルーム・${num(o.settings.events.length)} イベント`, "", "#live/gifts"),
+  ];
+  if (s) {
+    tiles.push(tile("全ルームの収集", !w || !w.enabled ? "無効" : t && t.paused ? "止めています" : w.running ? "集めています" : "止まっています",
+      t && t.paused ? `あと ${durationText(t.paused)}` : store ? `ルーム ${num(store.collected)} / ${num(store.rooms)}` : "", t && t.paused ? "warn" : w && w.running ? "ok" : "", "#collect"));
+    tiles.push(tile("バックアップ", !b ? "まだ" : b.ok ? ymd(b.at).slice(5) : "失敗", b && b.ok ? `${num(b.mb)} MB` : b ? esc(b.reason || "") : "毎日 4:00", b && !b.ok ? "bad" : b ? "ok" : "", "#collect"));
+  }
+  $("#home-tiles").innerHTML = tiles.join("");
+}
+async function showHome() {
+  renderHomeTiles();
+  const [st, w, ev] = await Promise.allSettled([api("/api/research/status"), loadWatch().then(() => research.watch), api("/api/events?state=ongoing")]);
+  if (page.name !== "home") return;
+  if (st.status === "fulfilled") { homeStatus = st.value; renderHomeTiles(); }
+  const watch = w.status === "fulfilled" ? w.value : [];
+  $("#home-watch").innerHTML = watch.length ? `<ul class="mini">${watch.slice(0, 8).map((u) => `<li><span class="t">${gifterLink(u.user_id, u.name)}${u.memo ? `<span class="memo">${esc(u.memo)}</span>` : ""}</span><span class="s">${shortNum(u.total_points)} pt</span></li>`).join("")}</ul>
+    ${watch.length > 8 ? `<div class="hint"><a href="#gifters/watch">すべて見る (${num(watch.length)} 人) ›</a></div>` : ""}`
+    : `<div class="hint" style="margin-top:0">まだいません。ギフターのページの「☆ 気になる」で印を付けると、ここに出ます。</div>`;
+  const evs = ev.status === "fulfilled" ? ev.value.events : [];
+  $("#home-events").innerHTML = evs.length ? `<ul class="mini">${evs.slice(0, 8).map((e) => `<li><span class="t">${eventLink(e.event_id, e.name)}${e.leader ? `<span class="memo">1 位 ${esc(e.leader)}</span>` : ""}</span><span class="s">${leftText(e.end)}</span></li>`).join("")}</ul>
+    <div class="hint"><a href="#events">開催中のイベント (${num(ev.value.total)} 件) ›</a></div>` : `<div class="hint" style="margin-top:0">${ev.status === "fulfilled" ? "開催中のイベントは見つかっていません" : "読み込めませんでした"}</div>`;
+  const d = research.data;
+  $("#home-trend").innerHTML = d && d.trend ? (d.trend.period
+    ? `<ul class="mini"><li><span class="t"><a href="#gifters/trend">離れつつある人</a></span><span class="s">${num(d.trend.falling_count)} 人</span></li>
+        <li><span class="t"><a href="#gifters/trend">伸びている人</a></span><span class="s">${num(d.trend.rising_count)} 人</span></li></ul>
+        <div class="hint">最近 ${d.trend.period} か月とその前の ${d.trend.period} か月の比べ (集め終わった月だけ)</div>`
+    : `<div class="hint" style="margin-top:0">まだ比べられません。集め終わった月が 6 か月以上続くと、離れつつある人・伸びている人が出ます。</div>`)
+    + `<div class="hint">分かったギフター ${num(d.gifter_count)} 人 ・ <a href="#gifters">一覧 ›</a></div>`
+    : `<div class="hint" style="margin-top:0">集計は「ギフター」を開いた時に作ります (全ルーム分は数十秒かかることがあります)。<br><a href="#gifters">ギフターを開く ›</a></div>`;
+  const s = homeStatus && homeStatus.store;
+  $("#home-collect").innerHTML = s ? `<ul class="mini">
+      <li><span class="t">集めたルーム</span><span class="s">${num(s.collected)} / ${num(s.rooms)} (${s.rooms ? Math.floor((s.collected / s.rooms) * 100) : 0}%)</span></li>
+      <li><span class="t">貢献ランキング</span><span class="s">${num(s.rankings)} 件 (取る予定 ${num(s.rankings_waiting)})</span></li>
+      <li><span class="t">分かったギフター</span><span class="s">${num(s.gifters)} 人</span></li>
+      ${s.anchor_total && !s.anchor_done_at ? `<li><span class="t">登録時期の目印</span><span class="s">${Math.floor((Math.min(s.anchor_pos, s.anchor_total) / s.anchor_total) * 100)}%</span></li>` : ""}
+      <li><span class="t">保存先の大きさ</span><span class="s">${num(s.db_mb)} MB</span></li></ul><div class="hint"><a href="#collect">くわしく ›</a></div>`
+    : `<div class="hint" style="margin-top:0">全ルームの収集は有効になっていません。<a href="#collect">収集 ›</a></div>`;
+}
+
+/* ------------------------------------------------------------ 上の検索欄 */
+const qs = { seq: 0, timer: null, items: [], hl: -1 };
+function closeSearch() { $("#q-results").hidden = true; qs.hl = -1; }
+async function runSearch() {
+  const q = $("#q").value.trim(), seq = ++qs.seq, box = $("#q-results");
+  if (!q) { closeSearch(); return; }
+  box.hidden = false;
+  box.innerHTML = `<div class="none"><span class="spinner" style="display:inline-block;vertical-align:-4px;width:14px;height:14px"></span> 探しています…</div>`;
+  let r;
+  try { r = await api(`/api/search?q=${encodeURIComponent(q)}`); } catch (e) { if (seq === qs.seq) box.innerHTML = `<div class="none">探せませんでした: ${esc(e.message)}</div>`; return; }
+  if (seq !== qs.seq) return;
+  const items = [];
+  if (/^\d{1,12}$/.test(q) && !r.gifters.some((g) => String(g.user_id) === q)) items.push({ grp: "ギフター", href: `#gifter/${q}`, t: `ユーザー ID ${q} のページを開く`, s: "" });
+  r.gifters.forEach((g) => items.push({ grp: "ギフター", href: `#gifter/${g.user_id}`, t: g.name || "(名前なし)", s: `ID ${g.user_id}${g.points ? ` ・ ${shortNum(g.points)} pt` : ""}` }));
+  r.rooms.forEach((x) => items.push({ grp: "ルーム", href: `#room/${encodeURIComponent(x.key || x.room_id)}`, t: x.name || x.key, s: x.followers != null ? `フォロワー ${shortNum(x.followers)}` : "" }));
+  r.events.forEach((e) => items.push({ grp: "イベント", href: `#event/${e.event_id}`, t: e.name, s: e.state === "ongoing" ? "開催中" : e.end ? ymd(e.end) : "" }));
+  qs.items = items; qs.hl = items.length ? 0 : -1;
+  let grp = "";
+  box.innerHTML = items.length ? items.map((it, i) => `${it.grp !== grp ? `<div class="grp">${(grp = it.grp)}</div>` : ""}<a href="${esc(it.href)}" class="${i === qs.hl ? "hl" : ""}" data-i="${i}"><span>${esc(it.t)}</span><span class="s">${esc(it.s)}</span></a>`).join("")
+    : `<div class="none">集めた情報には見つかりません。視聴・記録の設定は「設定」で SHOWROOM 全体から探せます。</div>`;
+}
+$("#q").addEventListener("input", () => { clearTimeout(qs.timer); qs.timer = setTimeout(runSearch, 300); });
+$("#q").addEventListener("focus", () => { if ($("#q").value.trim()) runSearch(); });
+$("#q").addEventListener("keydown", (ev) => {
+  if ($("#q-results").hidden) return;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    qs.hl = Math.max(0, Math.min(qs.items.length - 1, qs.hl + (ev.key === "ArrowDown" ? 1 : -1)));
+    $$("#q-results a").forEach((a) => a.classList.toggle("hl", Number(a.dataset.i) === qs.hl));
+  } else if (ev.key === "Enter" && qs.items[qs.hl]) { ev.preventDefault(); go(qs.items[qs.hl].href); $("#q").blur(); }
+  else if (ev.key === "Escape") closeSearch();
+});
+document.addEventListener("mousedown", (ev) => { if (!ev.target.closest("#gsearch")) closeSearch(); });
+$("#q-results").addEventListener("click", () => setTimeout(closeSearch, 0));
+
+/* ------------------------------------------------------------ 起動 */
+const PAGES = { home: showHome, gifters: showGifters, gifter: showGifter, rooms: showRooms, room: showRoom, events: showEvents, event: showEvent,
+  live: showLive, collect: showCollect, settings: () => {} };
 
 /* ------------------------------------------------------------ 設定 */
 let saved = { rooms: [], record_rooms: [], events: [], enter_rooms: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;
@@ -1911,11 +2431,10 @@ function applyLogFilter() {
 }
 $("#l-warn").addEventListener("change", applyLogFilter);
 
-/* ------------------------------------------------------------ 起動 */
-showTab();
+route();
 refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 15000);
-setInterval(() => { if (!document.hidden && $("section[data-tab=logs]").classList.contains("active")) loadLogs(); }, 3000);
+setInterval(() => { if (!document.hidden && page.name === "collect") loadLogs(); }, 3000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>
