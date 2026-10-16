@@ -620,7 +620,8 @@ def _behavior(state_dir: Path, hits: list[tuple[str, dict[str, Any]]], catalog: 
         d[kind] += pt
         d["rooms"][key if key in top_rooms else "_other"] += pt
         heat[kind][t.weekday()][t.hour] += pt
-        start = live_start.get((key, g.get("live_id")))
+        # live_id の無い記録 (イベントのルームで配信が分かる前の分) は、どの配信か分からないので数えない
+        start = live_start.get((key, g.get("live_id"))) if g.get("live_id") is not None else None
         if start is not None:
             timing[min(int((g["at"] - start) // 60), TIMING_MAX_MIN) // TIMING_BIN_MIN][kind] += 1
         if pt > 0:

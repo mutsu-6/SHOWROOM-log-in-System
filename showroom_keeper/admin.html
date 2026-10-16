@@ -172,23 +172,43 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--pane
 tr.selected td { background: var(--info-soft); }
 #l-detail { scroll-margin-top: 110px; }
 .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 720px) { .charts { grid-template-columns: minmax(0, 1fr); } }
-.chart-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.charts.one { grid-template-columns: minmax(0, 1fr); }
+.chart-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 10px; min-width: 0; background: var(--panel); }
 .chart-card.wide { grid-column: 1 / -1; }
-.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-svg.chart { width: 100%; height: auto; display: block; }
-svg.chart text { font-size: 10px; fill: var(--muted); }
-svg.chart line { stroke: var(--line); }
-svg.chart text.max { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
-svg.chart g:hover rect[fill="transparent"] { fill: var(--panel2); }
-.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
-.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.seg button { border: 0; background: transparent; color: var(--muted); padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.chart-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.chart-summary { margin: 4px 0 12px; }
+.chart-summary .stat .v { font-size: 18px; }
+.chart-summary .stat .v small, h3 small.muted { font-size: 12px; font-weight: 400; color: var(--muted); }
+svg.chart { max-width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+svg.chart text.unit, svg.chart text.xt { font-size: 10px; }
+svg.chart line.grid { stroke: var(--line); stroke-dasharray: 2 3; }
+svg.chart line.axis { stroke: var(--muted); stroke-opacity: .5; }
+svg.chart rect.hit { fill: transparent; }
+svg.chart rect.hit.shade { fill: var(--panel2); fill-opacity: .7; }
+svg.chart g.col:hover rect.hit { fill: var(--text); fill-opacity: .07; }
+svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.chart-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 36px 8px; background: var(--panel2); border-radius: 8px; }
+.seg { display: inline-flex; flex: none; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--muted); padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
 .seg button.active { background: var(--panel2); color: var(--text); font-weight: 600; }
-.heat { display: grid; grid-template-columns: 20px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 10px; color: var(--muted); }
-.heat .hc { aspect-ratio: 1.6; border-radius: 2px; min-height: 10px; }
-.heat .hh { text-align: left; } .heat .hd { text-align: center; line-height: 1.6; }
+.heat { display: grid; grid-template-columns: 22px repeat(24, minmax(0, 1fr)) 44px; gap: 2px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.heat .hc { aspect-ratio: 1.5; border-radius: 3px; min-height: 10px; }
+.heat .hc:hover { outline: 2px solid var(--text); outline-offset: -1px; }
+.heat .hh { text-align: left; } .heat .hd { text-align: center; align-self: center; } .heat .hd.we { color: var(--text); font-weight: 600; } .heat .hd.ft { align-self: end; }
+.heat .hs { align-self: center; height: 8px; margin-left: 4px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+.heat .hs i, .heat .hf i { display: block; height: 100%; border-radius: 4px; opacity: .75; }
+.heat .hf { height: 22px; display: flex; align-items: flex-end; margin-top: 2px; }
+.heat .hf i { width: 100%; border-radius: 2px 2px 0 0; }
+.heat-scale { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); margin-top: 8px; }
+.heat-scale i { width: 18px; height: 10px; border-radius: 2px; } .heat-scale i:first-of-type { margin-left: 4px; } .heat-scale i:last-of-type { margin-right: 4px; }
+.heat-scale span { margin-left: auto; }
+#chart-tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre-line; max-width: 280px; padding: 7px 10px; border-radius: 8px;
+  background: var(--text); color: var(--panel); font-size: 12px; line-height: 1.5; box-shadow: 0 4px 14px rgba(0,0,0,.18); font-variant-numeric: tabular-nums; }
 /* 入力欄の下に出る候補 */
 .suggest { position: fixed; z-index: 15; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18);
   max-height: min(460px, 60vh); display: flex; flex-direction: column; overflow: hidden; }
@@ -1079,34 +1099,78 @@ function renderListeners() {
     + (rows.length > listeners.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="l-more">さらに表示 (${num(rows.length - listeners.shown)} 人)</button></div>` : "");
 }
 /* ------------------------------------------------------------ リスナーの行動のグラフ */
-const ROOM_COLORS = ["#e5484d", "#2f5bd3", "#18794e", "#d9822b", "#8e4ec6"], OTHER_COLOR = "#98a2b3";
+// ルームの色は、有料 (赤)・無料 (青) と見分けがつくように別の色にする
+const ROOM_COLORS = ["#12a594", "#8e4ec6", "#e38a1e", "#d6409f", "#5b8a3a"], OTHER_COLOR = "#a0a8b8";
 const PAID_COLOR = "var(--accent)", FREE_COLOR = "var(--info)";
-// 積み上げ棒グラフ。bars: [{label, tip, parts: [{v, color}]}]、labelEvery 本ごとに下に目盛りを書く
-function stackedBars(bars, { width = 720, height = 150, labelEvery = 1, unit = "pt" } = {}) {
-  const W = width, top = 8, bottom = 22, plot = height - top - bottom, gap = bars.length > 60 ? 0.5 : 2;
-  const max = Math.max(1, ...bars.map((b) => b.parts.reduce((t, p) => t + p.v, 0)));
-  const bw = W / Math.max(bars.length, 1);
+const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
+// 目盛りの上限を 1・2・5 の切りのよい数にする
+const niceMax = (v) => { const p = 10 ** Math.floor(Math.log10(Math.max(v, 1))), m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; };
+const shortNum = (v) => v >= 10000 ? `${+(v / 10000).toFixed(v >= 100000 ? 0 : 1)}万` : num(v);
+// 積み上げ棒グラフ。bars: [{label, tip, shade, parts: [{v, color}]}]。labelEvery 本ごとに下に目盛りを書く
+function stackedBars(bars, { width = 720, height = 170, labelEvery = 1, unit = "pt", xTitle = "", maxBar = 40 } = {}) {
+  const W = Math.round(width), left = 46, right = 6, top = 10, bottom = xTitle ? 34 : 20, plot = height - top - bottom, plotW = W - left - right;
+  const total = (b) => b.parts.reduce((t, p) => t + p.v, 0);
+  const max = niceMax(Math.max(1, ...bars.map(total)));
+  const slot = Math.min(plotW / Math.max(bars.length, 1), maxBar), x0 = left + (plotW - slot * bars.length) / 2;
+  const gap = slot > 8 ? Math.min(slot * 0.18, 6) : slot > 3 ? 1 : 0.3;
+  const yOf = (v) => top + plot - (v / max) * plot;
+  // 目盛りの数字は 0・半分・上限 (整数にならない半分は書かない)。単位は上限の数字に付ける
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line class="${f ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${yOf(max * f).toFixed(1)}" y2="${yOf(max * f).toFixed(1)}"></line>`
+    + ((f * 2) % 1 === 0 && Number.isInteger(max * f) ? `<text x="${left - 5}" y="${(yOf(max * f) + 3.5).toFixed(1)}" text-anchor="end">${shortNum(max * f)}${f === 1 ? ` ${esc(unit)}` : ""}</text>` : "")).join("");
   const cols = bars.map((b, i) => {
+    const x = x0 + i * slot;
     let y = top + plot;
     const rects = b.parts.filter((p) => p.v > 0).map((p) => {
-      const h = (p.v / max) * plot;
+      const h = Math.max((p.v / max) * plot, 1);
       y -= h;
-      return `<rect x="${(i * bw + gap / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(bw - gap, 0.5).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${p.color}"></rect>`;
+      return `<rect x="${(x + gap / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(slot - gap, 0.6).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${p.color}"></rect>`;
     }).join("");
-    const x = i * bw + bw / 2, anchor = x < 20 ? "start" : x > W - 20 ? "end" : "middle";  // 両端の目盛りが切れないように
-    const label = i % labelEvery === 0 ? `<text x="${(anchor === "start" ? 0 : anchor === "end" ? W : x).toFixed(1)}" y="${height - 6}" text-anchor="${anchor}">${esc(b.label)}</text>` : "";
-    return `<g><title>${esc(b.tip)}</title><rect x="${(i * bw).toFixed(1)}" y="${top}" width="${bw.toFixed(1)}" height="${plot}" fill="transparent"></rect>${rects}</g>${label}`;
+    const cx = x + slot / 2, anchor = cx < left + 14 ? "start" : cx > W - right - 14 ? "end" : "middle";  // 両端の目盛りが切れないように
+    const tx = anchor === "start" ? x : anchor === "end" ? x + slot : cx;
+    const label = i % labelEvery === 0 && b.label ? `<text x="${tx.toFixed(1)}" y="${top + plot + 13}" text-anchor="${anchor}">${esc(b.label)}</text>` : "";
+    return `<g class="col" data-tip="${esc(b.tip)}"><rect class="hit${b.shade ? " shade" : ""}" x="${x.toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plot}"></rect>${rects}</g>${label}`;
   }).join("");
-  return `<svg class="chart" viewBox="0 0 ${W} ${height}" role="img"><line x1="0" x2="${W}" y1="${top + plot}" y2="${top + plot}"></line>${cols}
-    <text x="${W - 2}" y="${top + 8}" text-anchor="end" class="max">最大 ${num(max)} ${unit}</text></svg>`;
+  const title = xTitle ? `<text x="${left + plotW / 2}" y="${height - 4}" text-anchor="middle" class="xt">${esc(xTitle)}</text>` : "";
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img">${grid}${cols}${title}</svg>`;
 }
 const chartLegend = (items) => `<div class="chart-legend">${items.map(([name, color]) => `<span><i style="background:${color}"></i>${esc(name)}</span>`).join("")}</div>`;
-const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
+const chartEmpty = (msg) => `<div class="chart-empty">${esc(msg)}</div>`;
+// 曜日 × 時間帯。少ない値も見えるよう、濃さは平方根で付ける。右に曜日ごと、下に時間帯ごとの合計
 function heatmap(matrix, color) {
   const max = Math.max(1, ...matrix.flat());
+  const rowSum = matrix.map((r) => r.reduce((t, v) => t + v, 0)), colSum = matrix[0].map((_, h) => matrix.reduce((t, r) => t + r[h], 0));
+  const rowMax = Math.max(1, ...rowSum), colMax = Math.max(1, ...colSum);
+  const shade = (v) => v ? `color-mix(in srgb, ${color} ${Math.round(12 + Math.sqrt(v / max) * 88)}%, var(--panel2))` : "var(--panel2)";
   const hours = Array.from({ length: 24 }, (_, h) => `<div class="hh">${h % 3 === 0 ? h : ""}</div>`).join("");
-  return `<div class="heat"><div></div>${hours}${matrix.map((row, d) => `<div class="hd">${WEEKDAYS[d]}</div>${row.map((v, h) =>
-    `<div class="hc" title="${WEEKDAYS[d]}曜 ${h} 時台: ${num(v)} pt" style="background:${v ? `color-mix(in srgb, ${color} ${Math.round(15 + (v / max) * 85)}%, transparent)` : "var(--panel2)"}"></div>`).join("")}`).join("")}</div>`;
+  const rows = matrix.map((row, d) => `<div class="hd${d >= 5 ? " we" : ""}">${WEEKDAYS[d]}</div>${row.map((v, h) =>
+    `<div class="hc" data-tip="${WEEKDAYS[d]}曜 ${h}:00〜${h + 1}:00\n${num(v)} pt" style="background:${shade(v)}"></div>`).join("")}
+    <div class="hs" data-tip="${WEEKDAYS[d]}曜の合計\n${num(rowSum[d])} pt"><i style="width:${(rowSum[d] / rowMax) * 100}%;background:${color}"></i></div>`).join("");
+  const foot = colSum.map((v, h) => `<div class="hf" data-tip="${h}時台の合計\n${num(v)} pt"><i style="height:${(v / colMax) * 100}%;background:${color}"></i></div>`).join("");
+  const scale = [0.05, 0.25, 0.5, 0.75, 1].map((f) => `<i style="background:${shade(max * f)}"></i>`).join("");
+  return `<div class="heat"><div></div>${hours}<div class="hh">合計</div>${rows}<div class="hd ft">計</div>${foot}<div></div></div>
+    <div class="heat-scale">少ない${scale}多い<span>1 マスの最大 ${num(max)} pt</span></div>`;
+}
+// 見てすぐ分かる要約 (送った日数・間隔・よく送る時間帯など)
+function chartSummary(d, c) {
+  const active = c.daily.filter((x) => x.paid + x.free > 0).map((x) => x.day);
+  const gaps = active.slice(1).map((day, i) => (new Date(day) - new Date(active[i])) / 86400000);
+  const since = Math.floor((Date.now() / 1000 - d.last_at) / 86400);
+  const kind = d.total.paid_points > 0 ? "paid" : "free";
+  let best = null;
+  c.heatmap[kind].forEach((row, wd) => row.forEach((v, h) => { if (v > 0 && (!best || v > best.v)) best = { v, wd, h }; }));
+  const topTiming = c.timing.reduce((a, b) => (b[kind] > a[kind] ? b : a), c.timing[0]);
+  const lastBin = c.timing[c.timing.length - 1];
+  const paidSizes = c.sizes.filter((s) => s.paid > 0);
+  const topSize = paidSizes.length ? paidSizes.reduce((a, b) => (b.paid > a.paid ? b : a)) : null;
+  const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  return `<div class="summary chart-summary">
+    ${stat(`${num(active.length)} <small>/ ${num(c.daily.length)} 日</small>`, "送った日")}
+    ${stat(gaps.length ? `${(gaps.reduce((t, g) => t + g, 0) / gaps.length).toFixed(1)} <small>日ごと</small>` : "—", `平均の間隔${gaps.length ? ` (最長 ${num(Math.max(...gaps))} 日)` : ""}`)}
+    ${stat(since <= 0 ? "今日" : `${num(since)} <small>日前</small>`, "最後に送った日")}
+    ${stat(best ? `${WEEKDAYS[best.wd]}曜 ${best.h} 時台` : "—", `${kind === "paid" ? "有料" : "無料"}が一番多い時間帯`)}
+    ${stat(topTiming && topTiming[kind] ? (topTiming === lastBin ? `${topTiming.from} 分以降` : `${topTiming.from}〜${topTiming.from + 10} 分`) : "—", "よく送る配信の経過時間")}
+    ${stat(topSize ? `${shortNum(topSize.from)} pt〜` : "—", "有料で一番多い 1 回の大きさ")}
+  </div>`;
 }
 const listenerChart = { daily: "rooms", heat: "paid" };
 function renderListenerCharts(d) {
@@ -1115,38 +1179,73 @@ function renderListenerCharts(d) {
   const nameOf = (k) => (d.rooms.find((r) => r.key === k) || {}).name || k;
   const roomColor = (k) => k === "_other" ? OTHER_COLOR : ROOM_COLORS[c.rooms.indexOf(k)] || OTHER_COLOR;
   const byRoom = listenerChart.daily === "rooms";
-  const daily = stackedBars(c.daily.map((x) => ({
-    label: x.day.slice(5).replace("-", "/"),
-    tip: `${x.day}: ${num(x.paid + x.free)} pt (有料 ${num(x.paid)} / 無料 ${num(x.free)})` + Object.entries(x.rooms).filter(([, v]) => v).map(([k, v]) => `\n${k === "_other" ? "その他" : nameOf(k)}: ${num(v)} pt`).join(""),
-    parts: byRoom ? [...c.rooms, "_other"].map((k) => ({ v: x.rooms[k] || 0, color: roomColor(k) }))
-      : [{ v: x.paid, color: PAID_COLOR }, { v: x.free, color: FREE_COLOR }],
-  })), { labelEvery: Math.max(1, Math.ceil(c.daily.length / 12)) });
+  const dailyBars = c.daily.map((x) => {
+    const wd = (new Date(`${x.day}T00:00:00+09:00`).getUTCDay() + 6) % 7;
+    const rooms = [...c.rooms, "_other"].filter((k) => x.rooms[k]).map((k) => `\n${k === "_other" ? "その他" : nameOf(k)}: ${num(x.rooms[k])} pt`).join("");
+    return {
+      label: x.day.slice(5).replace("-", "/"), shade: wd >= 5,
+      tip: `${x.day.replaceAll("-", "/")} (${WEEKDAYS[wd]})\n合計 ${num(x.paid + x.free)} pt (有料 ${num(x.paid)} / 無料 ${num(x.free)})${rooms}`,
+      parts: byRoom ? [...c.rooms, "_other"].map((k) => ({ v: x.rooms[k] || 0, color: roomColor(k) }))
+        : [{ v: x.paid, color: PAID_COLOR }, { v: x.free, color: FREE_COLOR }],
+    };
+  });
+  // 表示する幅そのままで描く (縮めて描くと、狭い画面で文字が読めなくなるため)。30 はカードの余白と枠
+  const avail = box.clientWidth || 720, full = Math.max(260, avail - 30), half = avail >= 720 ? (avail - 12) / 2 - 30 : full;
+  const daily = stackedBars(dailyBars, { width: full, maxBar: 28,
+    labelEvery: Math.max(1, Math.ceil(c.daily.length / Math.max(2, Math.floor((full - 52) / 52)))) });
   const dailyLegend = byRoom ? chartLegend([...c.rooms.map((k) => [nameOf(k), roomColor(k)]), ...(c.daily.some((x) => x.rooms._other) ? [["その他", OTHER_COLOR]] : [])])
     : chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]]);
-  const paidFree = (rows, label, tip) => stackedBars(rows.map((x) => ({ label: label(x), tip: `${tip(x)}: 有料 ${num(x.paid)} 回 / 無料 ${num(x.free)} 回`,
-    parts: [{ v: x.paid, color: PAID_COLOR }, { v: x.free, color: FREE_COLOR }] })), { width: 360, height: 150, unit: "回" });
+  const paidFreeLegend = chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]]);
+  const paidFree = (rows, label, tip, xTitle) => rows.some((x) => x.paid + x.free) ? stackedBars(rows.map((x, i) => ({ label: label(x, i), tip: `${tip(x, i)}\n有料 ${num(x.paid)} 回 / 無料 ${num(x.free)} 回`,
+    parts: [{ v: x.paid, color: PAID_COLOR }, { v: x.free, color: FREE_COLOR }] })), { width: half, height: 180, unit: "回", xTitle }) + paidFreeLegend : null;
   const last = c.timing.length - 1;
   const timing = paidFree(c.timing, (x) => (x.from % 30 === 0 ? `${x.from}` : ""),
-    (x) => x === c.timing[last] ? `${x.from} 分以降` : `${x.from}〜${c.timing[c.timing.indexOf(x) + 1].from} 分`);
-  const sizes = paidFree(c.sizes, (x) => `${num(x.from)}〜`, (x) => `1 回 ${num(x.from)} pt 以上`);
-  const toggle = (name, options) => `<div class="seg">${options.map(([v, l]) => `<button type="button" class="${listenerChart[name] === v ? "active" : ""}" data-chart="${name}" data-v="${v}">${l}</button>`).join("")}</div>`;
-  box.innerHTML = `<h3>行動のグラフ</h3>
-    <div class="charts">
-      <div class="chart-card wide"><div class="chart-head"><b>日別のポイント</b>${toggle("daily", [["rooms", "ルーム別"], ["paid", "有料・無料"]])}</div>${daily}${dailyLegend}
-        <div class="hint">${byRoom ? "どの日に、どのルームへ送ったか。" : "どの日に、有料・無料のギフトをどれだけ送ったか。"}${c.daily.length >= 180 ? "最後に送った日から 180 日分を表示しています。" : ""}</div></div>
-      <div class="chart-card wide"><div class="chart-head"><b>曜日・時間帯</b>${toggle("heat", [["paid", "有料"], ["free", "無料"]])}</div>
-        ${heatmap(c.heatmap[listenerChart.heat], listenerChart.heat === "paid" ? PAID_COLOR : FREE_COLOR)}
-        <div class="hint">濃いほど多くのポイントを送った時間帯 (日本時間)。</div></div>
-      <div class="chart-card"><div class="chart-head"><b>配信のどの辺りで送るか</b></div>${timing}${chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]])}
-        <div class="hint">その配信で最初に記録したギフトからの経過時間 (分)。配信の開始時刻は記録に無いため、目安です。</div></div>
-      <div class="chart-card"><div class="chart-head"><b>1 回に送るポイント</b></div>${sizes}${chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]])}
-        <div class="hint">1 回 (同じギフトをまとめて送った分) のポイントの大きさごとの回数。</div></div>
+    (x, i) => i === last ? `${x.from} 分以降` : `${x.from}〜${c.timing[i + 1].from} 分`, "配信で最初のギフトからの経過 (分)");
+  const sizes = paidFree(c.sizes, (x) => `${shortNum(x.from)}〜`,
+    (x, i) => i === c.sizes.length - 1 ? `1 回 ${num(x.from)} pt 以上` : `1 回 ${num(x.from)}〜${num(c.sizes[i + 1].from - 1)} pt`, "1 回のポイント");
+  const heatKind = listenerChart.heat, heatHas = c.heatmap[heatKind].some((r) => r.some((v) => v));
+  const toggle = (name, options) => `<div class="seg" role="group">${options.map(([v, l]) => `<button type="button" class="${listenerChart[name] === v ? "active" : ""}" aria-pressed="${listenerChart[name] === v}" data-chart="${name}" data-v="${v}">${l}</button>`).join("")}</div>`;
+  const period = $("#l-days").selectedOptions[0]?.textContent || "";
+  box.innerHTML = `<h3>行動のグラフ <small class="muted">${esc(period)}</small></h3>
+    ${chartSummary(d, c)}
+    <div class="charts${avail >= 720 ? "" : " one"}">
+      <div class="chart-card wide"><div class="chart-head"><div><b>日別のポイント</b><div class="chart-sub">${byRoom ? "どの日に、どのルームへ送ったか" : "どの日に、有料・無料のギフトをどれだけ送ったか"} (薄い帯は土日)</div></div>${toggle("daily", [["rooms", "ルーム別"], ["paid", "有料・無料"]])}</div>
+        ${daily}${dailyLegend}${c.daily.length >= 180 ? `<div class="hint">最後に送った日から 180 日分を表示しています。</div>` : ""}</div>
+      <div class="chart-card wide"><div class="chart-head"><div><b>曜日・時間帯</b><div class="chart-sub">何曜日の何時台 (日本時間) に送るか。濃いほど多い</div></div>${toggle("heat", [["paid", "有料"], ["free", "無料"]])}</div>
+        ${heatHas ? heatmap(c.heatmap[heatKind], heatKind === "paid" ? PAID_COLOR : FREE_COLOR) : chartEmpty(`この期間に${heatKind === "paid" ? "有料" : "無料"}のギフトはありません`)}</div>
+      <div class="chart-card"><div class="chart-head"><div><b>配信のどの辺りで送るか</b><div class="chart-sub">配信で最初に記録したギフトからの経過時間 (配信開始の目安)</div></div></div>
+        ${timing || chartEmpty("どの配信で送ったか分かる記録がありません")}</div>
+      <div class="chart-card"><div class="chart-head"><div><b>1 回に送るポイント</b><div class="chart-sub">1 回 (同じギフトをまとめて送った分) の大きさごとの回数</div></div></div>
+        ${sizes || chartEmpty("ポイントの分かるギフトがありません")}</div>
     </div>`;
   box.onclick = (ev) => {
     const b = ev.target.closest("[data-chart]");
     if (b) { listenerChart[b.dataset.chart] = b.dataset.v; renderListenerCharts(d); }
   };
+  chartDetail = d;
 }
+let chartDetail = null, chartResize = null, chartWidth = 0;
+window.addEventListener("resize", () => {
+  clearTimeout(chartResize);
+  chartResize = setTimeout(() => {
+    const box = $("#l-charts");
+    if (chartDetail && box && box.clientWidth !== chartWidth) { chartWidth = box.clientWidth; renderListenerCharts(chartDetail); }
+  }, 150);
+});
+// グラフの吹き出し (title 属性より早く出し、複数行の内訳も読みやすくする)
+const chartTip = document.createElement("div");
+chartTip.id = "chart-tip";
+chartTip.hidden = true;
+document.body.appendChild(chartTip);
+document.addEventListener("mousemove", (ev) => {
+  const t = ev.target.closest && ev.target.closest(".charts [data-tip]");
+  if (!t) { chartTip.hidden = true; return; }
+  chartTip.textContent = t.dataset.tip;
+  chartTip.hidden = false;
+  const r = chartTip.getBoundingClientRect();
+  chartTip.style.left = `${Math.min(ev.clientX + 14, window.innerWidth - r.width - 8)}px`;
+  chartTip.style.top = `${ev.clientY + 16 + r.height > window.innerHeight ? ev.clientY - r.height - 10 : ev.clientY + 16}px`;
+});
 
 async function openListener(uid) {
   location.hash = "#listeners";
