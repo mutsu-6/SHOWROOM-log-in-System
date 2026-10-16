@@ -191,6 +191,12 @@ svg.chart g.col:hover rect.hit { fill: var(--text); fill-opacity: .07; }
 svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
 .chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.hbars { display: flex; flex-direction: column; gap: 6px; }
+.hbar { display: grid; grid-template-columns: minmax(0, 9em) 1fr auto; gap: 8px; align-items: center; font-size: 12px; }
+.hbar .hn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar .ht { background: var(--panel2); border-radius: 4px; height: 12px; overflow: hidden; }
+.hbar .ht i { display: block; height: 100%; border-radius: 4px; }
+.hbar .hv { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: right; }
 .chart-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 36px 8px; background: var(--panel2); border-radius: 8px; }
 .seg { display: inline-flex; flex: none; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: transparent; color: var(--muted); padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
@@ -1481,6 +1487,48 @@ function renderResearch() {
   }
   $("#r-body").innerHTML = html;
 }
+// ランキング (累計ランキング・イベントの貢献ランキング) から分かることのグラフ。送った日時が無くても描ける
+const RANK_BUCKETS = [[1, 1, "1"], [2, 3, "2〜3"], [4, 10, "4〜10"], [11, 30, "11〜30"], [31, 100, "31〜"]];
+const ymd = (sec) => new Date(sec * 1000).toLocaleDateString("ja-JP", { timeZone: "Asia/Tokyo" });  // "2026/10/16"
+const EVENT_BARS = 60;  // イベントごとのグラフに出す、新しい方からのイベントの数
+function renderRankingCharts(d, sel) {
+  const box = $(sel);
+  if (!box) return;
+  if (!d.events.length && !d.rooms.some((r) => r.cumulative || r.events)) { box.innerHTML = ""; return; }
+  const avail = box.clientWidth || 720, full = Math.max(260, avail - 30), half = avail >= 720 ? (avail - 12) / 2 - 30 : full;
+  // イベントごとのポイント (終わった日の順)。色は、イベントで多く送ったルーム上位 5 つ
+  const byRoom = {};
+  d.events.forEach((e) => { byRoom[e.room] = (byRoom[e.room] || 0) + e.point; });
+  const top = Object.keys(byRoom).sort((a, b) => byRoom[b] - byRoom[a]).slice(0, ROOM_COLORS.length);
+  const color = (k) => top.includes(k) ? ROOM_COLORS[top.indexOf(k)] : OTHER_COLOR;
+  const nameOf = (k) => (d.events.find((e) => e.room === k) || {}).room_name || k;
+  const events = {};
+  d.events.forEach((e) => { (events[e.event_id] = events[e.event_id] || { name: e.event, end: e.end || 0, rows: [] }).rows.push(e); });
+  const list = Object.values(events).sort((a, b) => a.end - b.end).slice(-EVENT_BARS);
+  const eventChart = list.length ? stackedBars(list.map((ev) => ({
+    label: ev.end ? day(ev.end).slice(0, 5) : "",
+    tip: `${ev.name}\n${ev.end ? `${ymd(ev.end)} 終了\n` : ""}${ev.rows.map((r) => `${r.room_name}: ${num(r.point)} pt${r.rank ? ` (${r.rank} 位)` : ""}`).join("\n")}`,
+    parts: [...top, "_other"].map((k) => ({ v: ev.rows.filter((r) => (k === "_other" ? !top.includes(r.room) : r.room === k)).reduce((t, r) => t + r.point, 0), color: color(k) })),
+  })), { width: full, maxBar: 28, labelEvery: Math.max(1, Math.ceil(list.length / Math.max(2, Math.floor((full - 52) / 52)))) })
+    + chartLegend([...top.map((k) => [nameOf(k), color(k)]), ...(Object.keys(byRoom).length > top.length ? [["その他", OTHER_COLOR]] : [])])
+    + (Object.keys(events).length > EVENT_BARS ? `<div class="hint">新しい方から ${EVENT_BARS} 件のイベントを表示しています。</div>` : "")
+    : chartEmpty("集めたイベントの貢献ランキングには出ていません");
+  // 順位の分布 (イベントの貢献ランキングで、何位に入ることが多いか)
+  const ranks = RANK_BUCKETS.map(([lo, hi, label]) => ({ label, n: d.events.filter((e) => e.rank >= lo && e.rank <= hi).length }));
+  const rankChart = d.events.some((e) => e.rank) ? stackedBars(ranks.map((r) => ({ label: r.label, tip: `${r.label} 位: ${num(r.n)} 回`, parts: [{ v: r.n, color: FREE_COLOR }] })),
+    { width: half, height: 180, unit: "回", maxBar: 56, xTitle: "順位" }) : chartEmpty("順位の分かるイベントがありません");
+  // ルーム別の分かったポイント (上位 10 ルーム)
+  const rooms = d.rooms.filter((r) => r.points > 0).slice(0, 10), max = Math.max(1, ...rooms.map((r) => r.points));
+  const roomChart = rooms.length ? `<div class="hbars">${rooms.map((r) => `<div class="hbar" data-tip="${esc(r.name)}\n分かった ${num(r.points)} pt${r.cumulative ? `\n累計ランキング ${num(r.cumulative)} pt${r.cumulative_rank ? ` (${r.cumulative_rank} 位)` : ""}` : ""}${r.events ? `\nイベント ${num(r.events)} pt` : ""}${r.visits ? `\n来場 ${num(r.visits)} 回` : ""}">
+      <span class="hn">${esc(r.name)}</span><span class="ht"><i style="width:${(r.points / max) * 100}%;background:${r.support ? "var(--accent)" : "var(--info)"}"></i></span><span class="hv">${shortNum(r.points)}</span></div>`).join("")}</div>`
+    : chartEmpty("ポイントの分かるルームがありません");
+  box.innerHTML = `<h3>ランキングから分かること</h3><div class="hint" style="margin-top:0">累計ランキングとイベントの貢献ランキングから作ります (送った日時は分からないので、イベントの終わった日で並べます)。</div>
+    <div class="charts${avail >= 720 ? "" : " one"}">
+      <div class="chart-card wide"><div class="chart-head"><div><b>イベントごとのポイント</b><div class="chart-sub">どのイベントで、どのルームに、どれだけ送ったか (イベントの終わった日の順)</div></div></div>${eventChart}</div>
+      <div class="chart-card"><div class="chart-head"><div><b>ルーム別のポイント</b><div class="chart-sub">分かったポイントの多い 10 ルーム${rooms.some((r) => r.support) ? " (赤は応援ルーム)" : ""}</div></div></div>${roomChart}</div>
+      <div class="chart-card"><div class="chart-head"><div><b>イベントでの順位</b><div class="chart-sub">貢献ランキングで、何位に入ることが多いか</div></div></div>${rankChart}</div>
+    </div>`;
+}
 async function openGifter(uid) {
   research.selected = uid;
   const box = $("#r-detail");
@@ -1504,12 +1552,14 @@ async function openGifter(uid) {
       <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}</td><td class="num"><b>${num(r.points)}</b></td>
         <td class="num">${r.cumulative ? `${num(r.cumulative)}${r.cumulative_rank ? ` (${num(r.cumulative_rank)} 位)` : ""}` : "-"}</td><td class="num">${r.events ? num(r.events) : "-"}</td>
         <td class="num">${r.recorded ? num(r.recorded) : "-"}</td><td class="num">${r.visits ? num(r.visits) : "-"}</td></tr>`).join("")}</tbody></table></div>
+      <div id="r-rank-charts"></div>
       <div id="r-charts">${h ? `<div class="loading"><span class="spinner"></span>行動のグラフを読み込み中…</div>`
-        : `<h3>行動のグラフ</h3><div class="empty">このギフターのギフトはまだ記録していません。曜日・時間帯などは、記録したギフトから作ります (「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)</div>`}</div>
+        : `<h3>行動のグラフ</h3><div class="hint" style="margin-top:0">曜日・時間帯などの行動のグラフは、記録したギフトから作ります。このギフターのギフトはまだ記録していません (送っているルームを「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)。</div>`}</div>
       <h3>イベントの実績 (新しい順)</h3>${d.events.length ? `<div class="table-wrap" style="max-height:360px;overflow-y:auto"><table><thead><tr><th>イベント</th><th>ルーム</th><th class="num">順位</th><th class="num">pt</th><th class="num">終了</th></tr></thead>
         <tbody>${d.events.map((e) => `<tr><td>${esc(e.event)}</td><td>${esc(e.room_name)}</td><td class="num">${e.rank ? num(e.rank) : "-"}</td><td class="num">${num(e.point)}</td><td class="num">${e.end ? day(e.end) : ""}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">集めたイベントの貢献ランキングには出ていません</div>`}
     </div>`;
+    renderRankingCharts(d, "#r-rank-charts");
     renderResearch();
     box.scrollIntoView({ behavior: "smooth", block: "start" });
     if (h) {  // 行動のグラフは、リスナーの履歴と同じもの (記録したギフトすべてから)
