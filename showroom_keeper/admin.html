@@ -350,7 +350,7 @@ svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
   <!-- 分析 -->
   <section data-tab="research">
     <h2>分析</h2>
-    <p class="sub">応援しているルームへ誘導する作戦の参考データです。ルーム設定の「応援しているルーム」「調べるルーム」の累計ポイントランキングと、過去・開催中のイベントの貢献ランキング、記録したギフトから作ります。</p>
+    <p class="sub">応援しているルームへ誘導する作戦の参考データです。ルーム設定の「応援しているルーム」「調べるルーム」(全ルームの収集を有効にしていれば SHOWROOM の全ルーム) の累計ポイントランキングと、過去・開催中のイベントの貢献ランキング、記録したギフトから作ります。</p>
     <div class="card">
       <div class="row">
         <label class="row" style="gap:6px;color:var(--muted)">応援ルーム <select id="r-support" style="max-width:280px"></select></label>
@@ -358,6 +358,11 @@ svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
         <span class="hint" id="r-job" style="margin:0"></span>
       </div>
       <div id="r-status" class="hint"></div>
+      <div id="r-sweep"></div>
+      <div class="row" style="margin-top:8px">
+        <span class="hint" id="r-analyzed" style="margin:0"></span>
+        <button type="button" class="btn small" id="r-refresh">集計し直す</button>
+      </div>
     </div>
     <div id="r-detail"></div>
     <div id="r-body"></div>
@@ -1341,10 +1346,15 @@ $("#l-room").addEventListener("input", () => { if (!$("#l-room").value.trim()) {
 /* ------------------------------------------------------------ 分析 */
 const research = { data: null, filter: "all", sort: "other", shown: 100, selected: null, timer: null };
 const hourText = (hs) => hs && hs.length ? hs.map((h) => `${h}時`).join("・") : "";
-async function loadResearch() {
+const researchActive = () => $("section[data-tab=research]").classList.contains("active");
+async function loadResearch(refresh = false) {
   const sel = $("#r-support"), cur = sel.value;
+  const q = new URLSearchParams();
+  if (cur) q.set("support", cur);
+  if (refresh) q.set("refresh", "1");
   try {
-    const d = await api(`/api/research${cur ? `?support=${encodeURIComponent(cur)}` : ""}`);
+    if (refresh) $("#r-analyzed").innerHTML = `<span class="spinner"></span> 集計しています…`;
+    const d = await api(`/api/research${q.toString() ? `?${q}` : ""}`);
     research.data = d;
     d.status.forEach((r) => { if (r.name && r.name !== r.key) names.room[r.key] = r.name; });
     const many = d.support_rooms.length > 1;
@@ -1352,17 +1362,49 @@ async function loadResearch() {
       + (d.support_rooms.map((k) => `<option value="${esc(k)}">${esc(roomName(k))}</option>`).join("") || `<option value="">(未設定)</option>`);
     if (d.support_rooms.includes(cur)) sel.value = cur;
     renderResearch();
-    clearTimeout(research.timer);  // 集めている間は 5 秒ごとに進み具合を見る
-    if (d.job.running) research.timer = setTimeout(() => { if ($("section[data-tab=research]").classList.contains("active")) loadResearch(); }, 5000);
+    pollResearch(d.job.running);
   } catch (e) {
     $("#r-body").innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
   }
 }
+// 集めている間は進み具合だけを 10 秒ごとに見る (分析は数え直さない)。指定のルームを集め終えたら 1 回だけ集計し直す
+function pollResearch(wasRunning) {
+  clearTimeout(research.timer);
+  const d = research.data;
+  if (!d || !(d.job.running || (d.sweep && d.sweep.running))) return;
+  research.timer = setTimeout(async () => {
+    if (!researchActive()) return;
+    try {
+      const p = await api("/api/research/status");
+      Object.assign(research.data, p);
+      researchStatus(research.data);
+      if (wasRunning && !p.job.running) return loadResearch(true);
+    } catch (e) { /* 次の回にまた見る */ }
+    pollResearch(research.data.job.running);
+  }, 10000);
+}
+const durationText = (s) => s >= 86400 ? `約 ${Math.round(s / 86400)} 日` : s >= 3600 ? `約 ${Math.round(s / 3600)} 時間` : `約 ${Math.max(1, Math.round(s / 60))} 分`;
+function sweepStatus(d) {
+  const w = d.sweep || {}, s = d.store, t = d.throttle || {};
+  if (!w.enabled || !s) return "";
+  const pace = t.paused ? `<b style="color:var(--accent)">SHOWROOM が混んでいるため止めています (あと ${durationText(t.paused)})</b>`
+    : t.gap > t.base ? `<b style="color:var(--warn)">混んでいるため間隔を ${num(t.gap)} 秒に広げています</b>` : `${num(t.gap)} 秒に 1 回`;
+  const scan = !w.scan ? "しない" : s.scan_done_at ? `済み (${tm(s.scan_done_at, true).slice(0, 11)})`
+    : `${num(s.scan_next - 1)} / ${num(s.scan_end || 0)} 番 (${s.scan_end ? Math.floor((s.scan_next - 1) / s.scan_end * 100) : 0}%)`;
+  const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  return `<h3 style="margin-top:14px">SHOWROOM の全ルーム</h3>
+    <div class="summary">${stat(num(s.rooms), "見つけたルーム")}${stat(num(s.collected), "集めたルーム")}${stat(num(s.rankings), "貢献ランキング (件)")}
+      ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
+    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ ルーム番号の調べ ${scan}
+      ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}</div>`;
+}
 function researchStatus(d) {
   const j = d.job, last = j.last;
   $("#r-job").textContent = j.running ? `集めています… ${j.progress || ""}`
-    : last ? `前回 ${tm(last.at, true)} (${last.reason}): ${num(last.rooms)} ルーム / 新しい貢献ランキング ${num(last.events)} 件${last.failures ? ` / 失敗 ${last.failures} ルーム` : ""}` : "";
+    : last ? `前回 ${tm(last.at, true)} (${last.reason}): ${num(last.rooms)} ルーム / 新しい貢献ランキング ${num(last.events)} 件${last.failures ? ` / 失敗 ${last.failures} 件` : ""}` : "";
   $("#r-collect").disabled = j.running || !d.status.length;
+  $("#r-sweep").innerHTML = sweepStatus(d);
+  $("#r-analyzed").textContent = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true)} (${num(d.analysis_seconds)} 秒かかりました。10 分間は同じ結果を使います)` : "";
   $("#r-status").innerHTML = d.status.length ? `<div class="chips" style="margin-top:8px">${d.status.map((r) => `<span class="chip" title="${esc(r.key)}">
       ${d.support_rooms.includes(r.key) ? "★ " : ""}${esc(r.name)}　${r.at ? `累計 ${num(r.cumulative)} 人・イベント ${num(r.events)} 件・ランキング ${num(r.rankings)} 件 (${tm(r.at, true).slice(0, 11)})` : "まだ集めていません"}</span>`).join("")}</div>
       <div class="hint">累計ランキングは各ルームの上位 30 人、貢献ランキングはイベントごとに上位 100 人です (約 9 か月より前のイベントは SHOWROOM が公開していません)。毎日 4:30 に集め直します。</div>` : "";
@@ -1383,7 +1425,7 @@ const eventCell = (u) => u.event_count ? `${num(u.event_count)} 件<div class="u
 function renderResearch() {
   const d = research.data;
   researchStatus(d);
-  if (!d.status.length) {
+  if (!d.status.length && !(d.sweep && d.sweep.enabled)) {
     $("#r-body").innerHTML = `<div class="empty">「ルーム設定」で「応援しているルーム」と「調べるルーム」を追加してください。保存するとすぐに情報を集め始めます。</div>`;
     return;
   }
@@ -1466,8 +1508,9 @@ $("#r-collect").addEventListener("click", async () => {
     const r = await api("/api/research/collect", { force: true });
     toast(r.started ? "情報を集め始めました (ルーム数によって数分かかります)" : "すでに集めています");
   } catch (e) { toast(`集められませんでした: ${e.message}`); }
-  setTimeout(loadResearch, 1000);
+  setTimeout(() => loadResearch(), 1000);
 });
+$("#r-refresh").addEventListener("click", () => loadResearch(true));
 
 /* ------------------------------------------------------------ 設定 */
 let saved = { rooms: [], record_rooms: [], events: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;

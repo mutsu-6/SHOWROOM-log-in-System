@@ -217,15 +217,23 @@ def test_research_endpoints(admin, monkeypatch):
     keeper, base = admin
     started = []
     monkeypatch.setattr(research.JOB, "start", lambda state_dir, keys, reason, force=False: started.append((keys, force)) or True)
-    monkeypatch.setattr(research, "analyze", lambda state_dir, support: {"candidates": [], "support_arg": support})
+    monkeypatch.setattr(research, "analyze", lambda state_dir, support, max_age=600: {
+        "candidates": [], "support_arg": support, "max_age": max_age})
     keeper.cfg.support_rooms = ["sup"]
     code, body = call(base + "/api/research")
     data = json.loads(body)
-    assert code == 200 and data["support_arg"] == ["sup"] and data["job"]["running"] is False
+    assert code == 200 and data["support_arg"] == ["sup"] and data["job"]["running"] is False and data["max_age"] == 600
+    assert json.loads(call(base + "/api/research?refresh=1")[1])["max_age"] == 0  # 「集計し直す」
+    code, body = call(base + "/api/research/status")  # 集めている間の進み具合 (分析はしない)
+    data = json.loads(body)
+    assert code == 200 and "candidates" not in data and data["sweep"] == {"enabled": False} and data["throttle"]["gap"] >= 1
     code, body = call(base + "/api/research/collect", {"force": True}, POST)
     assert code == 200 and json.loads(body)["started"] and started == [(["sup"], True)]
     # 応援ルームだけ変えた時は、視聴をやり直さず、まだ集めていないルームを集める
     code, _ = call(base + "/api/settings", {"rooms": ["a", "b"], "support_rooms": ["sup", "new"]}, POST)
     assert code == 200 and keeper.reloads == 0 and keeper.cfg.support_rooms == ["sup", "new"]
     assert started[-1] == (["sup", "new"], False)
+    # 視聴のルームと一緒に変えた時も、新しい応援ルームをすぐ集める (視聴のやり直しを待たない)
+    code, _ = call(base + "/api/settings", {"rooms": ["c"], "support_rooms": ["sup", "new", "newer"]}, POST)
+    assert code == 200 and keeper.reloads == 1 and started[-1] == (["sup", "new", "newer"], False)
     assert call(base + "/api/research/gifter?user=x")[0] == 400
