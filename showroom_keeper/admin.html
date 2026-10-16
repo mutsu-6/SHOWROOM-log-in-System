@@ -1404,7 +1404,7 @@ function researchStatus(d) {
     : last ? `前回 ${tm(last.at, true)} (${last.reason}): ${num(last.rooms)} ルーム / 新しい貢献ランキング ${num(last.events)} 件${last.failures ? ` / 失敗 ${last.failures} 件` : ""}` : "";
   $("#r-collect").disabled = j.running || !d.status.length;
   $("#r-sweep").innerHTML = sweepStatus(d);
-  $("#r-analyzed").textContent = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true)} (${num(d.analysis_seconds)} 秒かかりました。10 分間は同じ結果を使います)` : "";
+  $("#r-analyzed").textContent = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true).slice(0, 11)}${d.analysis_seconds >= 1 ? ` (${num(d.analysis_seconds)} 秒)` : ""} ・ 10 分間は同じ集計を使います` : "";
   $("#r-status").innerHTML = d.status.length ? `<div class="chips" style="margin-top:8px">${d.status.map((r) => `<span class="chip" title="${esc(r.key)}">
       ${d.support_rooms.includes(r.key) ? "★ " : ""}${esc(r.name)}　${r.at ? `累計 ${num(r.cumulative)} 人・イベント ${num(r.events)} 件・ランキング ${num(r.rankings)} 件 (${tm(r.at, true).slice(0, 11)})` : "まだ集めていません"}</span>`).join("")}</div>
       <div class="hint">累計ランキングは各ルームの上位 30 人、貢献ランキングはイベントごとに上位 100 人です (約 9 か月より前のイベントは SHOWROOM が公開していません)。毎日 4:30 に集め直します。</div>` : "";
