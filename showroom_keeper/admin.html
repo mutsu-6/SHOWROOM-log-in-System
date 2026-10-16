@@ -171,12 +171,6 @@ td.name { max-width: 280px; word-break: break-word; }
 tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--panel2); }
 tr.selected td { background: var(--info-soft); }
 #l-detail, #r-detail { scroll-margin-top: 110px; }
-.bars { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.bars > div { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; min-width: 0; }
-.bars i { display: block; background: var(--info); border-radius: 3px 3px 0 0; min-height: 1px; }
-.bars span { font-size: 10px; color: var(--muted); text-align: center; margin-top: 2px; }
-.habit-grid { display: grid; grid-template-columns: 1fr 3fr; gap: 16px; }
-@media (max-width: 560px) { .habit-grid { grid-template-columns: 1fr; } }
 .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .charts.one { grid-template-columns: minmax(0, 1fr); }
 .chart-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 10px; min-width: 0; background: var(--panel); }
@@ -1209,8 +1203,9 @@ function chartSummary(d, c) {
   </div>`;
 }
 const listenerChart = { daily: "rooms", heat: "paid" };
-function renderListenerCharts(d) {
-  const c = d.charts, box = $("#l-charts");
+// 行動のグラフを描く (リスナーの履歴と、分析のギフターの詳しい表示で使う)。period は見出しに添える期間
+function renderListenerCharts(d, sel = "#l-charts", period = null) {
+  const c = d.charts, box = $(sel);
   if (!c || !box) return;
   const nameOf = (k) => (d.rooms.find((r) => r.key === k) || {}).name || k;
   const roomColor = (k) => k === "_other" ? OTHER_COLOR : ROOM_COLORS[c.rooms.indexOf(k)] || OTHER_COLOR;
@@ -1239,15 +1234,18 @@ function renderListenerCharts(d) {
     (x, i) => i === last ? `${x.from} 分以降` : `${x.from}〜${c.timing[i + 1].from} 分`, "配信で最初のギフトからの経過 (分)");
   const sizes = paidFree(c.sizes, (x) => `${shortNum(x.from)}〜`,
     (x, i) => i === c.sizes.length - 1 ? `1 回 ${num(x.from)} pt 以上` : `1 回 ${num(x.from)}〜${num(c.sizes[i + 1].from - 1)} pt`, "1 回のポイント");
-  const heatKind = listenerChart.heat, heatHas = c.heatmap[heatKind].some((r) => r.some((v) => v));
-  const toggle = (name, options) => `<div class="seg" role="group">${options.map(([v, l]) => `<button type="button" class="${listenerChart[name] === v ? "active" : ""}" aria-pressed="${listenerChart[name] === v}" data-chart="${name}" data-v="${v}">${l}</button>`).join("")}</div>`;
-  const period = $("#l-days").selectedOptions[0]?.textContent || "";
+  const has = (kind) => c.heatmap[kind].some((r) => r.some((v) => v));
+  // 選んだ方 (有料・無料) が空で、もう一方にある時はそちらを出す (無料だけ送るリスナーで空の表にならないように)
+  const other = listenerChart.heat === "paid" ? "free" : "paid";
+  const heatKind = !has(listenerChart.heat) && has(other) ? other : listenerChart.heat, heatHas = has(heatKind);
+  const toggle = (name, options, current = listenerChart[name]) => `<div class="seg" role="group">${options.map(([v, l]) => `<button type="button" class="${current === v ? "active" : ""}" aria-pressed="${current === v}" data-chart="${name}" data-v="${v}">${l}</button>`).join("")}</div>`;
+  if (period === null) period = $("#l-days").selectedOptions[0]?.textContent || "";
   box.innerHTML = `<h3>行動のグラフ <small class="muted">${esc(period)}</small></h3>
     ${chartSummary(d, c)}
     <div class="charts${avail >= 720 ? "" : " one"}">
       <div class="chart-card wide"><div class="chart-head"><div><b>日別のポイント</b><div class="chart-sub">${byRoom ? "どの日に、どのルームへ送ったか" : "どの日に、有料・無料のギフトをどれだけ送ったか"} (薄い帯は土日)</div></div>${toggle("daily", [["rooms", "ルーム別"], ["paid", "有料・無料"]])}</div>
         ${daily}${dailyLegend}${c.daily.length >= 180 ? `<div class="hint">最後に送った日から 180 日分を表示しています。</div>` : ""}</div>
-      <div class="chart-card wide"><div class="chart-head"><div><b>曜日・時間帯</b><div class="chart-sub">何曜日の何時台 (日本時間) に送るか。濃いほど多い</div></div>${toggle("heat", [["paid", "有料"], ["free", "無料"]])}</div>
+      <div class="chart-card wide"><div class="chart-head"><div><b>曜日・時間帯</b><div class="chart-sub">何曜日の何時台 (日本時間) に送るか。濃いほど多い</div></div>${toggle("heat", [["paid", "有料"], ["free", "無料"]], heatKind)}</div>
         ${heatHas ? heatmap(c.heatmap[heatKind], heatKind === "paid" ? PAID_COLOR : FREE_COLOR) : chartEmpty(`この期間に${heatKind === "paid" ? "有料" : "無料"}のギフトはありません`)}</div>
       <div class="chart-card"><div class="chart-head"><div><b>配信のどの辺りで送るか</b><div class="chart-sub">配信で最初に記録したギフトからの経過時間 (配信開始の目安)</div></div></div>
         ${timing || chartEmpty("どの配信で送ったか分かる記録がありません")}</div>
@@ -1256,16 +1254,16 @@ function renderListenerCharts(d) {
     </div>`;
   box.onclick = (ev) => {
     const b = ev.target.closest("[data-chart]");
-    if (b) { listenerChart[b.dataset.chart] = b.dataset.v; renderListenerCharts(d); }
+    if (b) { listenerChart[b.dataset.chart] = b.dataset.v; renderListenerCharts(d, sel, period); }
   };
-  chartDetail = d;
+  chartDetail = { d, sel, period };
 }
 let chartDetail = null, chartResize = null, chartWidth = 0;
 window.addEventListener("resize", () => {
   clearTimeout(chartResize);
   chartResize = setTimeout(() => {
-    const box = $("#l-charts");
-    if (chartDetail && box && box.clientWidth !== chartWidth) { chartWidth = box.clientWidth; renderListenerCharts(chartDetail); }
+    const box = chartDetail && $(chartDetail.sel);
+    if (box && box.clientWidth !== chartWidth) { chartWidth = box.clientWidth; renderListenerCharts(chartDetail.d, chartDetail.sel, chartDetail.period); }
   }, 150);
 });
 // グラフの吹き出し (title 属性より早く出し、複数行の内訳も読みやすくする)
@@ -1415,10 +1413,6 @@ function renderResearch() {
     : `<div class="empty">まだ分かっていません</div>`);
   $("#r-body").innerHTML = html;
 }
-const bars = (values, labels) => {
-  const max = Math.max(...values, 1);
-  return `<div class="bars">${values.map((v, i) => `<div title="${esc(labels[i])}: ${num(v)} pt"><i style="height:${Math.round((v / max) * 100)}%"></i><span>${esc(labels[i])}</span></div>`).join("")}</div>`;
-};
 async function openGifter(uid) {
   research.selected = uid;
   const box = $("#r-detail");
@@ -1440,16 +1434,18 @@ async function openGifter(uid) {
       <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}</td><td class="num"><b>${num(r.points)}</b></td>
         <td class="num">${r.cumulative ? `${num(r.cumulative)}${r.cumulative_rank ? ` (${num(r.cumulative_rank)} 位)` : ""}` : "-"}</td><td class="num">${r.events ? num(r.events) : "-"}</td>
         <td class="num">${r.recorded ? num(r.recorded) : "-"}</td><td class="num">${r.visits ? num(r.visits) : "-"}</td></tr>`).join("")}</tbody></table></div>
-      <h3>行動のくせ (記録したギフトから)</h3>${h ? `<div class="hint" style="margin-top:0">${num(h.times)} 回 ・ 1 回 平均 ${num(h.avg_point)} pt ・ 最大 ${num(h.max_point)} pt ・ ${tm(h.first_at, true).slice(0, 11)} 〜 ${tm(h.last_at, true).slice(0, 11)}</div>
-        <div class="habit-grid"><div><div class="uid">曜日</div>${bars(h.weekday, [..."月火水木金土日"])}</div>
-        <div><div class="uid">時間帯 (時)</div>${bars(h.hour, [...Array(24).keys()].map(String))}</div></div>`
-        : `<div class="empty">このギフターのギフトはまだ記録していません (記録するルームで送ると分かります)</div>`}
+      <div id="r-charts">${h ? `<div class="loading"><span class="spinner"></span>行動のグラフを読み込み中…</div>`
+        : `<h3>行動のグラフ</h3><div class="empty">このギフターのギフトはまだ記録していません。曜日・時間帯などは、記録したギフトから作ります (「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)</div>`}</div>
       <h3>イベントの実績 (新しい順)</h3>${d.events.length ? `<div class="table-wrap" style="max-height:360px;overflow-y:auto"><table><thead><tr><th>イベント</th><th>ルーム</th><th class="num">順位</th><th class="num">pt</th><th class="num">終了</th></tr></thead>
         <tbody>${d.events.map((e) => `<tr><td>${esc(e.event)}</td><td>${esc(e.room_name)}</td><td class="num">${e.rank ? num(e.rank) : "-"}</td><td class="num">${num(e.point)}</td><td class="num">${e.end ? day(e.end) : ""}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">集めたイベントの貢献ランキングには出ていません</div>`}
     </div>`;
     renderResearch();
     box.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (h) {  // 行動のグラフは、リスナーの履歴と同じもの (記録したギフトすべてから)
+      const l = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=0`);
+      if (research.selected == uid && l.found && $("#r-charts")) renderListenerCharts(l, "#r-charts", "記録したギフトすべて");
+    }
   } catch (e) {
     box.innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
   }
