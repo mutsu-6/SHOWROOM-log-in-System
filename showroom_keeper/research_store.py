@@ -22,11 +22,11 @@ DB_NAME = "research.db"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms (
     room_id INTEGER PRIMARY KEY, key TEXT, name TEXT, followers INTEGER,
-    found_via TEXT, found_at REAL, live_at REAL, collected_at REAL);
+    found_via TEXT, found_at REAL, live_at REAL, collected_at REAL, retry_at REAL);
 CREATE INDEX IF NOT EXISTS rooms_key ON rooms(key);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY, key TEXT, name TEXT, start REAL, end REAL, type TEXT,
-    show_ranking INTEGER DEFAULT 1, rooms_at REAL);
+    show_ranking INTEGER DEFAULT 1, rooms_at REAL, retry_at REAL);
 CREATE TABLE IF NOT EXISTS room_events (
     room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
     PRIMARY KEY (room_id, event_id));
@@ -68,6 +68,10 @@ class Store:
             if str(path) not in _ready:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.executescript(SCHEMA)
+                for table in ("rooms", "events"):  # この欄が無かったころの research.db
+                    cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                    if "retry_at" not in cols:
+                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN retry_at REAL")
                 _import_json(self)
                 _ready.add(str(path))
 
@@ -132,11 +136,13 @@ class Store:
         with self.tx() as c:
             c.executemany(
                 """INSERT INTO events(event_id, key, name, start, end, type, show_ranking)
-                   VALUES (:event_id, :key, :name, :start, :end, :type, :show_ranking)
+                   VALUES (:event_id, :key, :name, :start, :end, :type, COALESCE(:show_ranking, 1))
                    ON CONFLICT(event_id) DO UPDATE SET key=COALESCE(excluded.key, key), name=COALESCE(excluded.name, name),
                      start=COALESCE(excluded.start, start), end=COALESCE(excluded.end, end),
-                     type=COALESCE(excluded.type, type), show_ranking=excluded.show_ranking""",
-                [{**e, "show_ranking": int(bool(e.get("show_ranking", True)))} for e in events if e.get("event_id")])
+                     type=COALESCE(excluded.type, type), show_ranking=COALESCE(:show_ranking, show_ranking)""",
+                [{"key": None, "name": None, "start": None, "end": None, "type": None, **e,
+                  "show_ranking": None if e.get("show_ranking") is None else int(bool(e["show_ranking"]))}
+                 for e in events if e.get("event_id")])
 
     def link(self, pairs: Iterable[tuple[int, int]]) -> None:
         """ルームとイベント (参加したもの) を結び付ける。"""

@@ -49,7 +49,7 @@ ANALYSIS_TTL = 600  # 分析の結果を使い回す時間 (秒)。全ルーム�
 class Throttle:
     """SHOWROOM への問い合わせを 1 本ずつ、間隔を空けて流す (スレッドをまたいで共有する)。
 
-    429 / 5xx / 通信の失敗が続いたら間隔を倍に広げ (MAX_GAP まで)、PAUSE_AFTER 回続いたら PAUSE 秒止める。
+    403 / 429 / 5xx / 通信の失敗が続いたら間隔を倍に広げ (MAX_GAP まで)、PAUSE_AFTER 回続いたら PAUSE 秒止める。
     成功するたびに間隔を少しずつ元に戻す。404 (無いルーム・ランキング) は失敗に数えない。
     """
 
@@ -82,7 +82,7 @@ class Throttle:
             try:
                 data = get(path)
             except urllib.error.HTTPError as e:
-                if e.code == 429 or e.code >= 500:
+                if e.code in (403, 429) or e.code >= 500:  # 403 は SHOWROOM 側に止められているとき
                     self._failed(f"HTTP {e.code}")
                 else:
                     self._ok()
@@ -120,9 +120,10 @@ def is_missing(e: BaseException) -> bool:
 def _event_info(e: dict[str, Any]) -> dict[str, Any]:
     url = e.get("event_url") or ""
     key = e.get("event_url_key") or (url.rstrip("/").rsplit("/", 1)[-1] if url else None)
-    return {"event_id": e.get("event_id"), "name": e.get("event_name") or str(e.get("event_id")), "key": key,
+    # 分からない項目は None (ほかの取り方で分かった名前や「順位を公開しない」を上書きしない)
+    return {"event_id": e.get("event_id"), "name": e.get("event_name") or None, "key": key,
             "start": e.get("started_at"), "end": e.get("ended_at"), "type": e.get("event_type"),
-            "show_ranking": bool(e.get("show_ranking", 1))}
+            "show_ranking": None if e.get("show_ranking") is None else bool(e["show_ranking"])}
 
 
 def _rows(data: Any, cumulative: bool = False) -> list[dict[str, Any]]:
@@ -284,7 +285,7 @@ class Collector:
 # ------------------------------------------------------------------ 集めた情報の読み込み
 def _event_dict(e: Any, now: float) -> dict[str, Any]:
     current = bool(e["start"] and e["end"] and float(e["start"]) <= now <= float(e["end"]))
-    return {"event_id": e["event_id"], "name": e["name"], "key": e["key"], "start": e["start"], "end": e["end"],
+    return {"event_id": e["event_id"], "name": e["name"] or str(e["event_id"]), "key": e["key"], "start": e["start"], "end": e["end"],
             "type": e["type"], "show_ranking": bool(e["show_ranking"]), "current": current}
 
 

@@ -120,7 +120,7 @@ class Config:
     research_times: str = "4:30"
     # SHOWROOM の全ルームの情報を少しずつ集め続ける (配信中・イベント参加のルームを見つけて、累計ランキングと
     # 終わったイベントの貢献ランキングを取る)。問い合わせは research_gap 秒に 1 回 (混んでいれば自動で広げる)。
-    # research.db (SQLite) が数百 MB になる。research_scan はルーム番号を 1 から順に 1 回だけ調べる (約 58 万回)
+    # research.db (SQLite) が数百 MB〜1GB 程度になる。research_scan はルーム番号を 1 から順に 1 回だけ調べる (約 58 万回)
     research_all: bool = False
     research_scan: bool = True
     research_gap: float = 1.0

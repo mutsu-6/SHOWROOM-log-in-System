@@ -282,6 +282,45 @@ def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
     assert sw.step() is False and len(get.calls) == before  # することが無ければ問い合わせない
 
 
+def test_sweep_puts_off_rooms_and_events_that_keep_failing(tmp_path):
+    class Broken(FakeAll):
+        def __call__(self, path):
+            if path.startswith("/api/live/summary_ranking?room_id=4") or path.startswith("/api/event/done_ev/rooms"):
+                self.calls.append(path)
+                raise http_error(500)
+            return super().__call__(path)
+
+    get = Broken()
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 4, "key": "ev4"}], "event", NOW)
+    steps = 0
+    while sw.step():
+        steps += 1
+        assert steps < 20  # 失敗し続けるものを何度も問い合わせない
+    assert sum("room_id=4" in c for c in get.calls) == 1 and sum("done_ev/rooms" in c for c in get.calls) == 1
+    assert "500" in sw.last_error
+    with Store(tmp_path) as s:
+        assert s.room(room_id=4)["retry_at"] > NOW and s.room(room_id=4)["collected_at"] is None
+
+
+def test_events_keep_names_and_hidden_rankings(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_events([research._event_info({"event_id": 5, "event_name": "名前", "show_ranking": 0})])
+        s.upsert_events([research._event_info({"event_id": 5, "ended_at": NOW})])  # 名前などの無い取り方
+        e = s.one("SELECT * FROM events WHERE event_id=5")
+        assert (e["name"], e["show_ranking"], e["end"]) == ("名前", 0, NOW)
+        s.upsert_events([research._event_info({"event_id": 6})])
+        assert s.one("SELECT show_ranking FROM events WHERE event_id=6")[0] == 1
+
+
+def test_forbidden_counts_as_busy():
+    th, _ = throttle()
+    with pytest.raises(urllib.error.HTTPError):
+        th.call(lambda p: (_ for _ in ()).throw(http_error(403)), "/x")
+    assert th.errors == 1 and th.gap == 2
+
+
 def test_sweep_takes_turns_between_jobs(tmp_path):
     get = FakeAll()
     sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()))
