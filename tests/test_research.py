@@ -317,3 +317,28 @@ def test_support_and_research_rooms_from_env_and_settings(tmp_path):
     assert apply_settings(cfg) and cfg.rooms == ["x"] and cfg.support_rooms == ["sup"]
     save_settings(cfg, {"rooms": ["x"], "support_rooms": ["new_sup"]})
     assert apply_settings(cfg) and cfg.support_rooms == ["new_sup"]
+
+
+def test_analyze_without_support_room(collected):
+    tmp_path, _, _, _ = collected
+    r = research.analyze(tmp_path, [])
+    assert r["mode"] == "all" and r["fans"] == [] and r["similar"] == []
+    assert [c["user_id"] for c in r["candidates"]] == [20, 10, 30]  # 分かったギフター全員を、ポイントの多い順に
+    assert r["candidates"][1]["room_count"] == 2 and r["multi_count"] == 1
+    assert r["pairs"] == []  # 共通のギフターが 1 人だけの組は出さない (PAIR_MIN_SHARED)
+    rooms = {x["key"]: x for x in r["rooms"]}
+    assert rooms["other"]["gifters"] == 4 and rooms["other"]["top"]["user_id"] == 20 and rooms["other"]["multi"] == 1
+    assert rooms["support"]["events"] == 2 and rooms["support"]["researched"]
+
+
+def test_room_pairs_share_gifters(tmp_path, monkeypatch):
+    monkeypatch.setattr(listing, "_names_cache", None)
+    monkeypatch.setattr(listing, "_file_cache", {})
+    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir, rooms=None: {5: {"gift_name": "花", "point": 10, "free": False}})
+    for room in ("a", "b", "c"):
+        users = {"a": (1, 2, 3), "b": (1, 2), "c": (3,)}[room]
+        for u in users:
+            record_gift(tmp_path, room, 1, {"t": 2, "u": u, "ac": f"u{u}", "g": 5, "n": 1, "created_at": NOW})
+    r = research.analyze(tmp_path, [])
+    assert [(p["a"], p["b"], p["shared"]) for p in r["pairs"]] == [("a", "b", 2)]
+    assert r["pairs"][0]["overlap"] == round(2 / 3, 3)

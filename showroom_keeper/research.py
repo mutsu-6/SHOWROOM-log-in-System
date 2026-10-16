@@ -510,8 +510,10 @@ def forget_analysis() -> None:
 
 
 def analyze(state_dir: Path, support: list[str], limit: int = 300, max_age: float = ANALYSIS_TTL) -> dict[str, Any]:
-    """応援ルームを基準に、誘導の候補・応援ルームのギフター・似ているルームを出す。
+    """集めた情報をギフターとルームの両方から分析する。
 
+    応援ルームがあれば、それを基準に誘導の候補・応援ルームのギフター・似ているルームを出す。
+    無ければ (mode "all")、ギフター一覧 (分かったポイントの多い順)・ルーム同士の重なり・ルームごとのまとめを出す。
     全ルーム分だと重いので、結果は max_age 秒使い回す (同時に何本も数えないように 1 本ずつ)。
     """
     key = (str(Path(state_dir).resolve()), tuple(support), limit)
@@ -548,9 +550,9 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
                        SELECT user_id, room_id, MAX(cumulative, events) AS s FROM user_room
                        UNION ALL SELECT user_id, room_id, pt FROM rec)
                      GROUP BY user_id, room_id HAVING MAX(s) > 0""")
-        c.execute("""CREATE TEMP TABLE u AS SELECT user_id, SUM(s) AS total,
-                       SUM(CASE WHEN room_id IN (SELECT room_id FROM sup) THEN s ELSE 0 END) AS support
-                     FROM pair GROUP BY user_id""")
+        c.execute("""CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)""")
+        c.execute("""INSERT INTO u SELECT user_id, SUM(s), SUM(CASE WHEN room_id IN (SELECT room_id FROM sup) THEN s ELSE 0 END),
+                       COUNT(*) FROM pair GROUP BY user_id""")
         c.execute("CREATE TEMP TABLE fan (user_id INTEGER PRIMARY KEY)")
         c.execute("INSERT INTO fan SELECT user_id FROM u WHERE support > 0")
         fan_count = s.scalar("SELECT COUNT(*) FROM fan")
@@ -572,18 +574,67 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
             similar.append({"key": key, "name": label, "gifters": r["gifters"], "shared": r["shared"],
                             "overlap": round(r["shared"] / (r["gifters"] + fan_count - r["shared"]), 3),
                             "candidates": r["gifters"] - r["shared"]})
-        givers = {r[0]: r[1] for r in s.all(
-            "SELECT room_id, COUNT(*) FROM pair WHERE room_id IN (SELECT room_id FROM sup) GROUP BY room_id")}
+        # ルームごとのまとめ (ギフターの数・分かったポイント・複数のルームに送る人・いちばん送っている人)。
+        # MAX(p.s) と一緒に選んだ p.user_id は、SQLite ではその最大の行の値になる
+        c.execute("""CREATE TEMP TABLE rs AS SELECT p.room_id, COUNT(*) AS gifters, SUM(p.s) AS points,
+                       SUM(u.n > 1) AS multi, p.user_id AS top_user, MAX(p.s) AS top_points
+                     FROM pair p JOIN u USING(user_id) GROUP BY p.room_id""")
+        givers = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM rs")} if sup_ids else {}
+        room_count = s.scalar("SELECT COUNT(*) FROM rs")
+        multi_count = s.scalar(f"SELECT COUNT(*) FROM u WHERE n > 1 AND {name} NOT IN ({','.join('?' * len(left))})", left)
+        room_rows = s.all("SELECT * FROM rs ORDER BY points DESC LIMIT 200")
+        pairs = _room_pairs(s, rooms)
 
         uids = list(dict.fromkeys(fan_ids + cand_ids))
         slots, evs, names = _slots(s, rooms, rec, uids), _event_stats(s, uids), _user_names(s, rec, uids)
         sup = set(sup_ids)
         summary = {u: _summary(u, names.get(u), slots.get(u, {}), evs.get(u), rec.gifts.get(u, []), rooms, sup) for u in uids}
-        return {"support": [{"key": k, "name": rooms.label(rooms.id(k))[1], "gifters": givers.get(rooms.id(k), 0)}
+        top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
+        room_list = []
+        for r in room_rows:
+            key, label = rooms.label(r["room_id"])
+            info = s.room(room_id=r["room_id"]) if r["room_id"] > 0 else None
+            room_list.append({"key": key, "name": label, "gifters": r["gifters"], "points": r["points"], "multi": r["multi"],
+                              "events": s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=?", (r["room_id"],)),
+                              "researched": bool(info is not None and info["collected_at"]), "support": r["room_id"] in sup,
+                              "top": {"user_id": r["top_user"], "name": top_names.get(r["top_user"]) or "(名前なし)",
+                                      "points": r["top_points"]}})
+        return {"mode": "support" if sup_ids else "all",
+                "support": [{"key": k, "name": rooms.label(rooms.id(k))[1], "gifters": givers.get(rooms.id(k), 0)}
                             for k in support],
                 "candidates": [summary[u] for u in cand_ids], "candidate_count": candidate_count,
                 "fans": [summary[u] for u in fan_ids], "fan_count": fan_count, "similar": similar,
+                "pairs": pairs, "rooms": room_list, "room_count": room_count, "multi_count": multi_count,
                 "gifter_count": gifter_count}
+
+
+PAIR_MIN_SHARED = 2  # ルーム同士の重なりに出す、共通のギフターの最少人数
+PAIR_ROOMS = 300  # ルーム同士の重なりを調べるルームの数 (ギフターの多い順)
+PAIR_USER_ROOMS = 100  # これより多くのルームに送っている人は、重なりの数に入れない (組の数が増えすぎるため)
+
+
+def _room_pairs(s: Store, rooms: _Rooms) -> list[dict[str, Any]]:
+    """ルーム同士の重なり: どのルームとどのルームに、同じギフターが送っているか (ギフターの好みが近いルーム)。
+
+    全ルームの組は数が多すぎるので、ギフターの多い PAIR_ROOMS ルームの中で調べる。
+    """
+    c = s.conn
+    c.execute("CREATE TEMP TABLE top_rooms AS SELECT room_id, gifters FROM rs ORDER BY gifters DESC LIMIT ?", (PAIR_ROOMS,))
+    c.execute("""CREATE TEMP TABLE tp AS SELECT p.user_id, p.room_id FROM pair p JOIN u USING(user_id)
+                 WHERE p.room_id IN (SELECT room_id FROM top_rooms) AND u.n BETWEEN 2 AND ?""", (PAIR_USER_ROOMS,))
+    c.execute("CREATE INDEX temp.tp_user ON tp(user_id)")
+    gifters = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM top_rooms")}
+    out = []
+    for r in s.all("""SELECT a.room_id AS ra, b.room_id AS rb, COUNT(*) AS shared FROM tp a
+                      JOIN tp b ON a.user_id = b.user_id AND a.room_id < b.room_id
+                      GROUP BY ra, rb HAVING shared >= ? ORDER BY shared DESC LIMIT 1000""", (PAIR_MIN_SHARED,)):
+        a, b = r["ra"], r["rb"]
+        if gifters[b] > gifters[a] or (gifters[b] == gifters[a] and rooms.label(b)[0] < rooms.label(a)[0]):
+            a, b = b, a
+        out.append({"a": rooms.label(a)[0], "a_name": rooms.label(a)[1], "b": rooms.label(b)[0], "b_name": rooms.label(b)[1],
+                    "shared": r["shared"], "overlap": round(r["shared"] / (gifters[a] + gifters[b] - r["shared"]), 3)})
+    out.sort(key=lambda p: (-p["shared"], -p["overlap"]))
+    return out[:100]
 
 
 def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
