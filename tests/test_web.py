@@ -74,7 +74,7 @@ def test_page_and_overview(admin):
     a, b = data["rooms"]
     assert a["watcher"]["state"] == "watching" and a["watcher"]["can_comment"] is True
     assert b["watcher"]["state"] == "waiting" and a["excitement"] == 10
-    assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": []}
+    assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": [], "support_rooms": [], "research_rooms": []}
 
 
 def test_rejects_other_hosts_and_cross_site_posts(admin):
@@ -209,3 +209,23 @@ def test_list_endpoints(admin, tmp_path, monkeypatch):
     code, body = call(base + "/api/lookup/user?id=12")
     assert code == 200 and json.loads(body)["user"]["name"] == "だれか"
     assert call(base + "/api/lookup/user?id=x1")[0] == 400
+
+
+def test_research_endpoints(admin, monkeypatch):
+    from showroom_keeper import research
+
+    keeper, base = admin
+    started = []
+    monkeypatch.setattr(research.JOB, "start", lambda state_dir, keys, reason, force=False: started.append((keys, force)) or True)
+    monkeypatch.setattr(research, "analyze", lambda state_dir, support: {"candidates": [], "support_arg": support})
+    keeper.cfg.support_rooms = ["sup"]
+    code, body = call(base + "/api/research")
+    data = json.loads(body)
+    assert code == 200 and data["support_arg"] == ["sup"] and data["job"]["running"] is False
+    code, body = call(base + "/api/research/collect", {"force": True}, POST)
+    assert code == 200 and json.loads(body)["started"] and started == [(["sup"], True)]
+    # 応援ルームだけ変えた時は、視聴をやり直さず、まだ集めていないルームを集める
+    code, _ = call(base + "/api/settings", {"rooms": ["a", "b"], "support_rooms": ["sup", "new"]}, POST)
+    assert code == 200 and keeper.reloads == 0 and keeper.cfg.support_rooms == ["sup", "new"]
+    assert started[-1] == (["sup", "new"], False)
+    assert call(base + "/api/research/gifter?user=x")[0] == 400

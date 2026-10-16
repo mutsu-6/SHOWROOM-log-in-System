@@ -264,7 +264,8 @@ def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, 
     live = live or {}
     files = _record_files(state_dir)
     registered = list(dict.fromkeys([*settings.get("rooms", []), *settings.get("record_rooms", []),
-                                     *settings.get("enter_rooms", [])]))
+                                     *settings.get("enter_rooms", []), *settings.get("support_rooms", []),
+                                     *settings.get("research_rooms", [])]))
     keys = list(dict.fromkeys([*registered, *live, *files]))
     typed = None
     if q.strip():  # URL や room_url_key をそのまま入れた時は、そのルームを出す
@@ -293,6 +294,10 @@ def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, 
             tags.append("record")
         if key in settings.get("enter_rooms", []):
             tags.append("enter")
+        if key in settings.get("support_rooms", []):
+            tags.append("support")
+        if key in settings.get("research_rooms", []):
+            tags.append("research")
         if rows:
             tags.append("has_records")
         item.update(room_id=info.get("room_id"), registered=key in registered, is_live=key in live,

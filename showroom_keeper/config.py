@@ -73,6 +73,10 @@ class Config:
     # 視聴はせずギフトだけ記録するルームと、参加ルームすべてを記録するイベント (件数の上限なし)
     record_rooms: list[str] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
+    # 応援しているルーム (分析の基準) と、ギフターを調べるルーム。どちらも累計ランキングとイベントの
+    # 貢献ランキングを集める (research_days / research_times の時刻に、問い合わせの間隔を空けて)
+    support_rooms: list[str] = field(default_factory=list)
+    research_rooms: list[str] = field(default_factory=list)
     credentials: Credentials = field(default_factory=Credentials)
     state_file: Path = Path("state/storage_state.json")
     headless: bool = True
@@ -111,6 +115,9 @@ class Config:
     # 曜日は mon〜sun / 月〜日 をカンマ区切り (毎日 なら毎日)、時刻は 0:00,18:30 のようにカンマ区切り
     gift_update_days: str = "mon"
     gift_update_times: str = "0:00,3:00,12:00,15:00,18:00"
+    # 応援ルーム・調べるルームの情報 (累計ランキング・イベントの貢献ランキング) を集める曜日と時刻 (日本時間)
+    research_days: str = "毎日"
+    research_times: str = "4:30"
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
     # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
     record_gifts: bool = True
@@ -173,6 +180,10 @@ class Config:
             cfg.record_rooms = [r for r in env["SHOWROOM_RECORD_ROOMS"].split(",") if r.strip()]
         if env.get("SHOWROOM_EVENTS"):
             cfg.events = [e for e in env["SHOWROOM_EVENTS"].split(",") if e.strip()]
+        for name in ("support_rooms", "research_rooms"):
+            if env.get(env_key(name)):
+                setattr(cfg, name, [r for r in env[env_key(name)].split(",") if r.strip()])
+            setattr(cfg, name, list(dict.fromkeys(normalize_room_key(str(r)) for r in getattr(cfg, name) or [])))
         cfg.record_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.record_rooms or []))
         cfg.events = list(dict.fromkeys(normalize_event_key(str(e)) for e in cfg.events or []))
 
@@ -191,7 +202,7 @@ class Config:
 
 ENV_PREFIX = "SHOWROOM_"
 # 環境変数を個別に扱う項目 (カンマ区切りの一覧・ログイン情報・空の値に意味がある・HTTPS_PROXY も見る)
-ENV_SPECIAL = {"rooms", "record_rooms", "events", "credentials", "browser_channel", "proxy"}
+ENV_SPECIAL = {"rooms", "record_rooms", "events", "support_rooms", "research_rooms", "credentials", "browser_channel", "proxy"}
 TRUE_WORDS = {"1", "true", "yes", "on"}
 FALSE_WORDS = {"0", "false", "no", "off"}
 
@@ -236,7 +247,7 @@ def apply_env_overrides(cfg: "Config", env: dict[str, str]) -> None:
             raise ValueError(f"環境変数 {env_key(f.name)} の値が不正です: {raw!r} ({e})") from None
 
 
-SETTINGS_KEYS = ("rooms", "record_rooms", "events")
+SETTINGS_KEYS = ("rooms", "record_rooms", "events", "support_rooms", "research_rooms")
 
 
 def settings_path(cfg: Config) -> Path:
@@ -272,7 +283,10 @@ def apply_settings(cfg: Config) -> bool:
         values = normalize_settings(data)
     except ValueError:
         return False
-    cfg.rooms, cfg.record_rooms, cfg.events = values["rooms"], values["record_rooms"], values["events"]
+    # 保存したファイルに無い項目 (あとから増えた項目など) は、.env / config.yaml の指定のまま使う
+    for key in SETTINGS_KEYS:
+        if key in data:
+            setattr(cfg, key, values[key])
     return True
 
 

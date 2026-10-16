@@ -12,6 +12,11 @@ record_rooms: []
 events: []
 #  - https://www.showroom-live.com/event/イベント名
 
+# 応援しているルーム (「分析」の基準) と、ギフターを調べるルーム。視聴はせず、累計ポイントランキングと
+# イベントの貢献ランキングを research_days / research_times (既定は毎日 4:30) に集める
+support_rooms: []
+research_rooms: []
+
 # ログイン情報。パスワードはこのファイルではなく環境変数
 # SHOWROOM_ACCOUNT_ID / SHOWROOM_PASSWORD (.env) で渡すことを推奨します。
 credentials:
