@@ -645,12 +645,70 @@ def listener_detail(state_dir: Path, user_id: Any, days: float | None = None) ->
         days_map[day]["times"] += 1
         history.append({"at": g["at"], "room": key, "room_name": rooms[key]["name"], "name": g.get("name"),
                         "gift": gift_label(catalog, g.get("gift_id")), "num": int(g.get("num") or 1), "points": pt})
+    ranked = sorted(rooms.values(), key=lambda r: -r["points"])
     return {
         "user_id": uid, "found": True,
         "names": list(dict.fromkeys(g.get("name") for _, g in reversed(hits) if g.get("name"))),
         "total": total,
-        "rooms": sorted(rooms.values(), key=lambda r: -r["points"]),
+        "rooms": ranked,
         "days": [{"day": d, **v} for d, v in days_map.items()],
         "history": list(reversed(history[-500:])),
         "first_at": hits[0][1]["at"], "last_at": hits[-1][1]["at"],
+        "charts": _behavior(state_dir, hits, catalog, [r["key"] for r in ranked[:CHART_ROOMS]]),
+    }
+
+
+CHART_ROOMS = 5  # 日別のグラフで色分けするルームの数 (残りは「その他」)
+CHART_MAX_DAYS = 180  # 日別のグラフに出す日数の上限 (最後に送った日から)
+TIMING_BIN_MIN = 10  # 配信のどの辺りで送ったかのグラフの刻み (分)
+TIMING_MAX_MIN = 180  # これより後は最後の棒にまとめる
+SIZE_BINS = (1, 10, 100, 1000, 10000)  # 1 回に送ったポイントの区切り
+
+
+def _behavior(state_dir: Path, hits: list[tuple[str, dict[str, Any]]], catalog: dict[int, dict[str, Any]],
+              top_rooms: list[str]) -> dict[str, Any]:
+    """1 人のリスナーの行動のグラフ用の集計 (いつ・どこに・配信のどの辺りで・どれくらいずつ送るか)。"""
+    from datetime import timedelta
+
+    # 配信の始まりは記録に無いので、そのルームの記録で、その配信の最初のギフトの時刻を使う
+    files = _record_files(state_dir)
+    live_start: dict[tuple[str, Any], float] = {}
+    for key in dict.fromkeys(k for k, _ in hits):
+        for g in _load_file(files[key]) if key in files else []:
+            lk = (key, g.get("live_id"))
+            if g["at"] < live_start.get(lk, float("inf")):
+                live_start[lk] = g["at"]
+
+    daily: dict[str, dict[str, Any]] = {}
+    heat = {kind: [[0] * 24 for _ in range(7)] for kind in ("paid", "free")}  # [曜日 (月=0)][時]
+    timing = [{"paid": 0, "free": 0} for _ in range(TIMING_MAX_MIN // TIMING_BIN_MIN + 1)]
+    sizes = [{"paid": 0, "free": 0} for _ in SIZE_BINS]
+    for key, g in hits:
+        pt, free = _points(catalog, g)
+        kind = "free" if free else "paid"
+        t = datetime.fromtimestamp(g["at"], JST)
+        d = daily.setdefault(t.strftime("%Y-%m-%d"), {"paid": 0, "free": 0, "rooms": defaultdict(int)})
+        d[kind] += pt
+        d["rooms"][key if key in top_rooms else "_other"] += pt
+        heat[kind][t.weekday()][t.hour] += pt
+        # live_id の無い記録 (イベントのルームで配信が分かる前の分) は、どの配信か分からないので数えない
+        start = live_start.get((key, g.get("live_id"))) if g.get("live_id") is not None else None
+        if start is not None:
+            timing[min(int((g["at"] - start) // 60), TIMING_MAX_MIN) // TIMING_BIN_MIN][kind] += 1
+        if pt > 0:
+            sizes[max(i for i, low in enumerate(SIZE_BINS) if pt >= low)][kind] += 1
+
+    last = datetime.fromtimestamp(hits[-1][1]["at"], JST).date()
+    first = max(datetime.fromtimestamp(hits[0][1]["at"], JST).date(), last - timedelta(days=CHART_MAX_DAYS - 1))
+    days = []
+    for i in range((last - first).days + 1):
+        day = (first + timedelta(days=i)).strftime("%Y-%m-%d")
+        d = daily.get(day) or {"paid": 0, "free": 0, "rooms": {}}
+        days.append({"day": day, "paid": d["paid"], "free": d["free"], "rooms": dict(d["rooms"])})
+    return {
+        "daily": days,
+        "heatmap": heat,
+        "timing": [{"from": i * TIMING_BIN_MIN, **v} for i, v in enumerate(timing)],
+        "sizes": [{"from": low, **v} for low, v in zip(SIZE_BINS, sizes)],
+        "rooms": top_rooms,
     }
