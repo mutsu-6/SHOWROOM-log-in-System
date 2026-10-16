@@ -28,6 +28,7 @@ from .research import PENDING_RANKING, RANKING_RETRIES, Collector, is_missing
 
 log = logging.getLogger("research")
 
+PROGRESS_EVERY = 3600  # 開催中のイベントのポイントを残す間隔 (秒)
 LIVE_EVERY = 300  # 配信中のルームを見る間隔 (秒)
 EVENTS_EVERY = 6 * 3600  # イベントの一覧を見る間隔 (秒)
 EVENT_PAGES = 30  # イベントの一覧 (1 ページ 30 件) を状態ごとに読むページ数の上限
@@ -98,7 +99,7 @@ class Sweeper:
             return self._onlives(now)
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
             return self._event_list(now)
-        jobs = [self._next_ranking, self._next_room, self._next_event_rooms, self._next_event_history]
+        jobs = [self._next_progress, self._next_ranking, self._next_room, self._next_event_rooms, self._next_event_history]
         if self.scan:
             jobs.append(self._next_scan)
         for i in range(len(jobs)):
@@ -136,7 +137,7 @@ class Sweeper:
             self.store.upsert_events(events)  # 途中で失敗しても、読めた分は残す
         return True
 
-    def _read_event_rooms(self, event_id: int, now: float) -> None:
+    def _read_event_rooms(self, event_id: int, now: float) -> list[dict[str, Any]]:
         """イベントの参加ルームと、各ルームのイベントのポイント・順位を読む (古いイベントも番号で読める)。"""
         rooms = []
         page: Any = 1
@@ -153,6 +154,7 @@ class Sweeper:
                       for r in data.get("list") or [] if isinstance(r, dict) and r.get("room_id")]
             page = data.get("next_page")
         self.store.set_event_rooms(event_id, rooms, now)
+        return rooms
 
     def _next_event_rooms(self, now: float) -> bool:
         """一覧で見つけたイベントの参加ルームを、まだ読んでいない (または読み直す時期の) ものから 1 つ読む。
@@ -172,6 +174,29 @@ class Sweeper:
             self._read_event_rooms(e["event_id"], now)
         except Exception as err:  # noqa: BLE001
             self._failed("events", "event_id", e["event_id"], now, err)
+        return True
+
+    def _next_progress(self, now: float) -> bool:
+        """開催中のイベントの参加ルームのポイントと順位を、PROGRESS_EVERY ごとに残す (ポイントの推移)。
+
+        推移は集め始めないと貯まらないので、画面や予想より先に集める。1 つのイベントにつき 1 時間に 1 回、
+        参加ルームの一覧のページ数だけ問い合わせる (開催中のイベントが 60 件なら 1 時間に 200 回ほど)。
+        """
+        e = self.store.one(
+            """SELECT * FROM events WHERE start IS NOT NULL AND start <= ? AND end > ?
+                 AND (progress_at IS NULL OR progress_at < ?) AND (retry_at IS NULL OR retry_at < ?)
+               ORDER BY progress_at IS NOT NULL, progress_at LIMIT 1""",
+            (now, now, now - PROGRESS_EVERY, now))
+        if e is None:
+            return False
+        self.doing = f"開催中のイベントのポイント ({e['name'] or e['event_id']})"
+        try:
+            rooms = self._read_event_rooms(e["event_id"], now)
+        except Exception as err:  # noqa: BLE001
+            self.store.conn.execute("UPDATE events SET progress_at=? WHERE event_id=?", (now, e["event_id"]))
+            self._failed("events", "event_id", e["event_id"], now, err)
+            return True
+        self.store.add_progress(e["event_id"], rooms, now)
         return True
 
     def _next_event_history(self, now: float) -> bool:

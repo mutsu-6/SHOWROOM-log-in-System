@@ -462,3 +462,44 @@ def test_room_pairs_share_gifters(tmp_path, monkeypatch):
     r = research.analyze(tmp_path, [])
     assert [(p["a"], p["b"], p["shared"]) for p in r["pairs"]] == [("a", "b", 2)]
     assert r["pairs"][0]["overlap"] == round(2 / 3, 3)
+
+
+def test_sweep_records_points_of_ongoing_events_every_hour(tmp_path):
+    class Ongoing(FakeAll):
+        point = 100
+
+        def __call__(self, path):
+            if path.startswith("/api/event/search?status=1&page=1"):
+                self.calls.append(path)
+                return {"event_list": [{"event_id": 8, "event_name": "開催中", "event_url_key": "now_ev",
+                                        "started_at": NOW - 86400, "ended_at": NOW + 86400, "show_ranking": True}],
+                        "next_page": None}
+            if path == "/api/event/room_list?event_id=8&p=1":
+                self.calls.append(path)
+                return {"list": [{"room_id": 4, "room_url_key": "ev4", "room_name": "参加", "point": self.point, "rank": 1},
+                                 {"room_id": 9, "room_url_key": "ev9", "room_name": "まだ", "point": None}], "next_page": None}
+            return super().__call__(path)
+
+    clock = [NOW]
+    get = Ongoing()
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False,
+                       clock=lambda: clock[0])
+    for _ in range(40):
+        if not sw.step():
+            break
+    first = sum("room_list?event_id=8&" in c for c in get.calls)
+    with Store(tmp_path) as s:
+        rows = s.all("SELECT room_id, point, rank FROM event_progress WHERE event_id=8")
+    assert [tuple(r) for r in rows] == [(4, 100, 1)]  # ポイントの分からないルームは残さない
+    for _ in range(5):
+        sw.step()
+    assert sum("room_list?event_id=8&" in c for c in get.calls) == first  # 1 時間たつまでは読み直さない
+    clock[0] = NOW + 3601
+    get.point = 250
+    for _ in range(10):
+        sw.step()
+    with Store(tmp_path) as s:
+        pts = [r[0] for r in s.all("SELECT point FROM event_progress WHERE event_id=8 AND room_id=4 ORDER BY at")]
+    assert pts == [100, 250]
+    st = research.store_status(tmp_path)
+    assert st["progress_events"] == 1 and st["progress_rows"] == 2

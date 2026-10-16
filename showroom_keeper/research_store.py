@@ -27,6 +27,9 @@ CREATE INDEX IF NOT EXISTS rooms_key ON rooms(key);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY, key TEXT, name TEXT, start REAL, end REAL, type TEXT,
     show_ranking INTEGER DEFAULT 1, rooms_at REAL, retry_at REAL);
+CREATE TABLE IF NOT EXISTS event_progress (
+    event_id INTEGER, room_id INTEGER, at REAL, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, room_id, at));
+CREATE INDEX IF NOT EXISTS event_progress_at ON event_progress(event_id, at);
 CREATE TABLE IF NOT EXISTS room_events (
     room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
     point INTEGER, rank INTEGER, PRIMARY KEY (room_id, event_id)) WITHOUT ROWID;
@@ -75,7 +78,7 @@ class Store:
             if str(path) not in _ready:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.executescript(SCHEMA)
-                for table, col in (("rooms", "retry_at REAL"), ("rooms", "history_at REAL"), ("events", "retry_at REAL"),
+                for table, col in (("rooms", "retry_at REAL"), ("rooms", "history_at REAL"), ("events", "retry_at REAL"), ("events", "progress_at REAL"),
                                    ("room_events", "point INTEGER"), ("room_events", "rank INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
@@ -218,6 +221,16 @@ class Store:
                              ON CONFLICT(room_id, event_id) DO UPDATE SET point=excluded.point, rank=excluded.rank""",
                           [(int(r["room_id"]), event_id, r.get("point"), r.get("rank")) for r in rows if r.get("room_id")])
             c.execute("UPDATE events SET rooms_at=?, retry_at=NULL WHERE event_id=?", (now, event_id))
+
+    def add_progress(self, event_id: int, rows: list[dict[str, Any]], now: float) -> int:
+        """開催中のイベントの、今のルームごとのポイントと順位を残す (ポイントの推移)。戻り値は残したルームの数。"""
+        event_id = int(event_id)
+        keep = [(event_id, int(r["room_id"]), now, int(r["point"]), r.get("rank"))
+                for r in rows if r.get("room_id") and r.get("point") is not None]
+        with self.tx() as c:
+            c.executemany("INSERT OR REPLACE INTO event_progress(event_id, room_id, at, point, rank) VALUES (?, ?, ?, ?, ?)", keep)
+            c.execute("UPDATE events SET progress_at=? WHERE event_id=?", (now, event_id))
+        return len(keep)
 
     def ranking_failed(self, event_id: int, room_id: int) -> None:
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, failures) VALUES (?, ?, 1)
