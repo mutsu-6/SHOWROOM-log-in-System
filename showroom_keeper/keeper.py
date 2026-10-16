@@ -344,6 +344,8 @@ class Keeper:
             from .web import start_admin
 
             admin = start_admin(self)
+        gift_updates = asyncio.ensure_future(self._gift_updates())
+        research = asyncio.ensure_future(self._research_updates())
         try:
             while not self._stop.is_set():
                 if self._reload_requested:
@@ -355,8 +357,81 @@ class Keeper:
                     self._wake.clear()
                 await self._run_targets()
         finally:
+            gift_updates.cancel()
+            research.cancel()
             if admin is not None:
                 admin.shutdown()
+
+    async def _gift_updates(self) -> None:
+        """ギフトの一覧 (名前・ポイント) を、起動時と予定の時刻に SHOWROOM から取り直す。"""
+        from . import listing
+        from .schedule import describe, next_time, parse_slots
+
+        try:
+            slots = parse_slots(self.cfg.gift_update_days, self.cfg.gift_update_times)
+        except ValueError as e:
+            slots = listing.GIFT_UPDATE_SLOTS
+            log.warning("ギフトの一覧を更新する予定が正しくありません (%s)。%s に更新します", e, describe(slots))
+        listing.GIFT_UPDATE_SLOTS = slots
+        log.info("ギフトの一覧を起動時と %s (日本時間) に SHOWROOM から取り直します", describe(slots))
+        state_dir = Path(self.cfg.state_file).parent
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                r = await loop.run_in_executor(None, listing.refresh_gift_catalog, state_dir)
+                if r["ok"] and r.get("first"):
+                    log.info("ギフトの一覧を取得しました: %d 種類", r["count"])
+                elif r["ok"]:
+                    added = "、".join(r["added"][:5]) + (" ほか" if len(r["added"]) > 5 else "")
+                    log.info("ギフトの一覧を更新しました: %d 種類 (新しいギフト %d%s / ポイントが変わったギフト %d)",
+                             r["count"], len(r["added"]), f": {added}" if added else "", len(r["changed"]))
+                else:
+                    log.warning("ギフトの一覧を取得できませんでした。前の一覧を使います (%d 種類)", r["count"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - 次の予定でもう一度試す
+                log.warning("ギフトの一覧の更新に失敗: %s", e)
+            target = next_time(time.time(), slots)
+            # 長く眠る間に時計がずれても予定を過ぎないよう、10 分ごとに残り時間を測り直す
+            while time.time() < target:
+                await asyncio.sleep(min(600.0, max(1.0, target - time.time())))
+
+    async def _research_updates(self) -> None:
+        """応援ルーム・調べるルームの情報を、予定の時刻 (research_days / research_times) に集める。
+
+        起動した時は、まだ集めていないルームや古くなったルームがある時だけ集める。
+        """
+        from . import research
+        from .schedule import describe, next_time, parse_slots
+
+        try:
+            slots = parse_slots(self.cfg.research_days, self.cfg.research_times)
+        except ValueError as e:
+            slots = parse_slots("毎日", "4:30")
+            log.warning("情報を集める予定が正しくありません (%s)。%s に集めます", e, describe(slots))
+        state_dir = Path(self.cfg.state_file).parent
+        loop = asyncio.get_running_loop()
+        first = True
+        while True:
+            keys = research.research_keys(self.cfg)  # 管理画面で変えたルームも次の回から使う
+            if first and keys:
+                log.info("応援ルーム・調べるルームの情報を %s (日本時間) に集めます", describe(slots))
+            todo, reason = keys, "予定の時刻"
+            if first:
+                rows = research.status(state_dir, keys)
+                todo = [r["key"] for r in rows if not r["at"] or time.time() - r["at"] > research.ROOM_REFRESH]
+                reason = "起動時"
+            first = False
+            if todo:
+                try:
+                    await loop.run_in_executor(None, research.JOB.run, state_dir, todo, reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - 次の予定でもう一度試す
+                    log.warning("情報の収集に失敗: %s", e)
+            target = next_time(time.time(), slots)
+            while time.time() < target:
+                await asyncio.sleep(min(600.0, max(1.0, target - time.time())))
 
     async def _run_targets(self) -> None:
         """今の設定で視聴とギフト記録を動かす。停止か設定の反映を求められたら戻る。"""

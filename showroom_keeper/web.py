@@ -32,6 +32,8 @@ log = logging.getLogger("web")
 
 PAGE = Path(__file__).with_name("admin.html")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+# 変えると視聴とギフト記録をやり直す設定 (応援ルーム・調べるルームは情報収集だけに使うので含めない)
+WATCH_KEYS = ("rooms", "record_rooms", "events", "enter_rooms")
 STATUS_TTL = 15  # 配信状況 (SHOWROOM への問い合わせ) を使い回す秒数
 COMMENT_TIMEOUT = 80.0  # 投稿処理 (入力・送信・反映の確認) の上限に余裕を持たせる
 CSRF_HEADER = "X-Showroom-Keeper"  # 変更を伴う要求に必須。他のサイトから送らせることはできない
@@ -246,7 +248,8 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _settings(self) -> dict[str, list[str]]:
         cfg = self.keeper.cfg
-        return {key: list(getattr(cfg, key, []) or []) for key in ("rooms", "record_rooms", "events", "enter_rooms")}
+        return {key: list(getattr(cfg, key, []) or [])
+                for key in ("rooms", "record_rooms", "events", "enter_rooms", "support_rooms", "research_rooms")}
 
     def _body(self) -> dict[str, Any] | None:
         if self.headers.get(CSRF_HEADER) != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
@@ -305,6 +308,17 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 room = normalize_room_key(q["room"]) if q.get("room") else None
                 self._json(list_listeners(self._state_dir(), _days(q.get("days")), room))
+            elif url.path == "/api/research":
+                from . import research
+
+                cfg = self.keeper.cfg
+                self._json({**research.analyze(self._state_dir(), self._support(q)), "job": research.JOB.state(),
+                            "status": research.status(self._state_dir(), research.research_keys(cfg)),
+                            "support_rooms": list(cfg.support_rooms), "research_rooms": list(cfg.research_rooms)})
+            elif url.path == "/api/research/gifter":
+                from . import research
+
+                self._json(research.gifter_detail(self._state_dir(), q.get("user"), self._support(q)))
             elif url.path == "/api/lookup/user":
                 from .listing import lookup_user
 
@@ -319,6 +333,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._error(404, "見つかりません")
         except (ValueError, LookupError) as e:
             self._error(400, str(e))
+        except (BrokenPipeError, ConnectionResetError):
+            return  # 画面を閉じるなどで、返事を送る前に接続が切れた
         except Exception as e:  # noqa: BLE001
             log.warning("管理画面の処理に失敗: %s %s", url.path, e)
             self._error(502, f"取得できませんでした ({str(e).splitlines()[0] if str(e) else type(e).__name__})")
@@ -326,6 +342,20 @@ class AdminHandler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     # ------------------------------------------------------------ POST
+    def _start_research(self, only_new: bool, force: bool = False) -> bool:
+        """応援ルーム・調べるルームの情報を集め始める。only_new ならまだ集めていないルームだけ。"""
+        from . import research
+
+        keys = research.research_keys(self.keeper.cfg)
+        if only_new:
+            keys = [r["key"] for r in research.status(self._state_dir(), keys) if not r["at"]]
+        return bool(keys) and research.JOB.start(self._state_dir(), keys, "管理画面から", force=force)
+
+    def _support(self, q: dict[str, str]) -> list[str]:
+        if q.get("support"):
+            return [normalize_room_key(k) for k in q["support"].split(",") if k.strip()]
+        return list(self.keeper.cfg.support_rooms)
+
     def do_POST(self) -> None:  # noqa: N802 - 標準の名前
         if not self._allowed():
             return
@@ -337,14 +367,25 @@ class AdminHandler(BaseHTTPRequestHandler):
             if path == "/api/comment":
                 self._json(post_comment(self.keeper, str(data.get("text", "")), data.get("room") or None))
             elif path == "/api/settings":
-                values = save_settings(self.keeper.cfg, data)
+                cfg = self.keeper.cfg
+                before = {k: list(getattr(cfg, k, []) or []) for k in WATCH_KEYS}
+                values = save_settings(cfg, data)
                 log.info("管理画面からルーム設定が変更されました")
-                self.keeper.request_reload()
+                if any(values.get(k, before[k]) != before[k] for k in WATCH_KEYS):
+                    self.keeper.request_reload()
+                else:  # 応援ルーム・調べるルームだけの変更なら、視聴をやり直さない
+                    cfg.support_rooms, cfg.research_rooms = values["support_rooms"], values["research_rooms"]
+                self._start_research(only_new=True)
                 self._json({"ok": True, "settings": values})
+            elif path == "/api/research/collect":
+                started = self._start_research(only_new=False, force=bool(data.get("force")))
+                self._json({"ok": True, "started": started})
             else:
                 self._error(404, "見つかりません")
         except ValueError as e:
             self._error(400, str(e))
+        except (BrokenPipeError, ConnectionResetError):
+            return  # 画面を閉じるなどで、返事を送る前に接続が切れた
         except Exception as e:  # noqa: BLE001
             log.warning("管理画面の処理に失敗: %s %s", path, e)
             self._error(500, "処理できませんでした")
