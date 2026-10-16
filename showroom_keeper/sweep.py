@@ -2,12 +2,14 @@
 
 ルームの見つけ方:
 - 配信中のルーム /api/live/onlives (LIVE_EVERY 秒ごと)
-- イベントの一覧 /api/event/search (開催中・開催予定・終了) と、その参加ルーム /api/event/{key}/rooms
+- イベントの一覧 /api/event/search (開催中・開催予定・終了) と、その参加ルーム /api/event/room_list
+- 過去のイベント: イベント番号を新しい順に 1 までさかのぼり、参加ルームと各ルームのポイント・順位を読む
+  (2014 年からのギフトの量の移り変わりを見るため)
 - ルーム番号を 1 から順に調べる /api/room/profile?room_id= (最初の 1 回だけ。見つかっている最大の番号を
   SCAN_MARGIN 過ぎたら終わる)
 
 見つけたルームごとに、累計ランキング・参加したイベントを取り (research.Collector.refresh_room)、
-終わったイベントの貢献ランキングを 1 件ずつ取る。問い合わせは指定のルームの収集と同じ research.THROTTLE を通すので、
+終わったイベントの貢献ランキングを新しいイベントから 1 件ずつ取る (古いイベントの分も)。問い合わせは指定のルームの収集と同じ research.THROTTLE を通すので、
 両方が動いていても SHOWROOM への問い合わせは合わせて 1 秒に 1 回まで (混んでいれば自動で間隔を広げる)。
 
 1 回の step() では小さな仕事を 1 つだけ行い、仕事の種類は順番に回す (どれかが溜まっても、ほかが止まらないように)。
@@ -22,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import research
-from .research import PENDING_RANKING, RANKING_DAYS, RANKING_RETRIES, Collector, is_missing
+from .research import PENDING_RANKING, RANKING_RETRIES, Collector, is_missing
 
 log = logging.getLogger("research")
 
@@ -49,6 +51,7 @@ class Sweeper:
         self._turn = 0
         self._rooms: list[Any] = []
         self._rankings: list[Any] = []
+        self._history_failures = 0
         self.doing = ""
         self.last_error: str | None = None
         self.running = False
@@ -95,7 +98,7 @@ class Sweeper:
             return self._onlives(now)
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
             return self._event_list(now)
-        jobs = [self._next_ranking, self._next_room, self._next_event_rooms]
+        jobs = [self._next_ranking, self._next_room, self._next_event_rooms, self._next_event_history]
         if self.scan:
             jobs.append(self._next_scan)
         for i in range(len(jobs)):
@@ -133,31 +136,72 @@ class Sweeper:
             self.store.upsert_events(events)  # 途中で失敗しても、読めた分は残す
         return True
 
-    def _next_event_rooms(self, now: float) -> bool:
-        """参加ルームをまだ読んでいない (または読み直す時期の) イベントを 1 つ読む。"""
-        e = self.store.one(
-            """SELECT * FROM events WHERE key IS NOT NULL AND (end IS NULL OR end > ?) AND (retry_at IS NULL OR retry_at < ?)
-                 AND (rooms_at IS NULL OR (rooms_at < COALESCE(end, 0) + 3600 AND rooms_at < ?))
-               ORDER BY rooms_at IS NOT NULL, COALESCE(end, 0) DESC LIMIT 1""",
-            (now - RANKING_DAYS * 86400, now, now - EVENT_ROOMS_EVERY))
-        if e is None:
-            return False
-        self.doing = f"イベントの参加ルーム ({e['name'] or e['key']})"
+    def _read_event_rooms(self, event_id: int, now: float) -> None:
+        """イベントの参加ルームと、各ルームのイベントのポイント・順位を読む (古いイベントも番号で読める)。"""
         rooms = []
         page: Any = 1
+        while page and page <= EVENT_ROOM_PAGES:
+            try:
+                data = self.c.get(f"/api/event/room_list?event_id={event_id}&p={page}") or {}
+            except Exception as err:  # noqa: BLE001
+                if not is_missing(err):
+                    raise
+                break
+            rooms += [{"room_id": r.get("room_id"), "key": r.get("room_url_key"), "name": r.get("room_name"),
+                       "followers": r.get("follower_num"), "live_at": r.get("last_lived_at") or None,
+                       "point": r.get("point"), "rank": r.get("rank")}
+                      for r in data.get("list") or [] if isinstance(r, dict) and r.get("room_id")]
+            page = data.get("next_page")
+        self.store.set_event_rooms(event_id, rooms, now)
+
+    def _next_event_rooms(self, now: float) -> bool:
+        """一覧で見つけたイベントの参加ルームを、まだ読んでいない (または読み直す時期の) ものから 1 つ読む。
+
+        開催中・開催予定のイベントは EVENT_ROOMS_EVERY ごとに、終わったイベントは終わったあと 1 回読み直す
+        (ルームのポイントと順位が決まるので)。
+        """
+        e = self.store.one(
+            """SELECT * FROM events WHERE (retry_at IS NULL OR retry_at < ?)
+                 AND (rooms_at IS NULL OR (rooms_at < COALESCE(end, 0) + 3600 AND rooms_at < ?))
+               ORDER BY rooms_at IS NOT NULL, COALESCE(end, 0) DESC LIMIT 1""",
+            (now, now - EVENT_ROOMS_EVERY))
+        if e is None:
+            return False
+        self.doing = f"イベントの参加ルーム ({e['name'] or e['event_id']})"
         try:
-            while page and page <= EVENT_ROOM_PAGES:
-                data = self.c.get(f"/api/event/{e['key']}/rooms?page={page}") or {}
-                rooms += [{"room_id": r.get("room_id"), "key": r.get("room_url_key"), "name": r.get("room_name")}
-                          for r in data.get("rooms") or [] if isinstance(r, dict)]
-                page = data.get("next_page")
+            self._read_event_rooms(e["event_id"], now)
         except Exception as err:  # noqa: BLE001
-            if not is_missing(err):
-                self._failed("events", "event_id", e["event_id"], now, err)
-                return True
-        self.store.upsert_rooms(rooms, "event", now)
-        self.store.link((r["room_id"], e["event_id"]) for r in rooms if r.get("room_id"))
-        self.store.conn.execute("UPDATE events SET rooms_at=?, retry_at=NULL WHERE event_id=?", (now, e["event_id"]))
+            self._failed("events", "event_id", e["event_id"], now, err)
+        return True
+
+    def _next_event_history(self, now: float) -> bool:
+        """イベント番号を新しい順にさかのぼって、過去のイベントの参加ルームとポイントを 1 つ読む (2014 年から)。"""
+        st = self.store
+        eid = st.meta("history_next")
+        if eid is None:
+            eid = int(st.scalar("SELECT MAX(event_id) FROM events", default=0))
+            if not eid:
+                return False  # イベントの一覧を読んでから始める
+        eid = int(eid)
+        while eid > 0 and st.one("SELECT 1 FROM events WHERE event_id=? AND (rooms_at IS NOT NULL OR name IS NOT NULL)", (eid,)):
+            eid -= 1  # 一覧やルームの過去のイベントで分かっているもの (_next_event_rooms で読む)
+        if eid <= 0:
+            if not st.meta("history_done_at"):
+                st.set_meta("history_done_at", now)
+                log.info("過去のイベントをすべて読みました")
+            st.set_meta("history_next", 0)
+            return False
+        self.doing = f"過去のイベント (番号 {eid})"
+        try:
+            self._read_event_rooms(eid, now)
+        except Exception as err:  # noqa: BLE001
+            self._history_failures += 1
+            if self._history_failures < RANKING_RETRIES:
+                raise  # 番号は進めない (次の回にもう一度)
+            self.last_error = f"{self.doing}: {str(err).splitlines()[0] if str(err) else type(err).__name__}"
+            log.warning("過去のイベントを読めなかったので飛ばします (%s)", self.last_error)
+        self._history_failures = 0
+        st.set_meta("history_next", eid - 1)
         return True
 
     def _next_scan(self, now: float) -> bool:
@@ -229,7 +273,7 @@ class Sweeper:
     def _next_ranking(self, now: float) -> bool:
         """終わったイベントの貢献ランキングを、新しいイベントから 1 件取る (失敗は数えて RANKING_RETRIES 回まで)。"""
         r = self._take(self._rankings, f"""SELECT re.room_id, re.event_id, e.name FROM room_events re JOIN events e USING(event_id)
-                WHERE {PENDING_RANKING} ORDER BY e.end DESC""", (now - 3600, now - RANKING_DAYS * 86400, RANKING_RETRIES))
+                WHERE {PENDING_RANKING} ORDER BY e.end DESC""", (now - 3600, RANKING_RETRIES))
         if r is None:
             return False
         self.doing = f"貢献ランキング ({r['name'] or r['event_id']})"

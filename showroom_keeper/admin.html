@@ -1269,14 +1269,84 @@ function renderListenerCharts(d, sel = "#l-charts", period = null) {
   };
   chartDetail = { d, sel, period };
 }
-let chartDetail = null, chartResize = null, chartWidth = 0;
+let chartDetail = null, chartResize = null, chartWidth = 0, timelineData = null, timelineWidth = 0;
 window.addEventListener("resize", () => {
   clearTimeout(chartResize);
   chartResize = setTimeout(() => {
     const box = chartDetail && $(chartDetail.sel);
     if (box && box.clientWidth !== chartWidth) { chartWidth = box.clientWidth; renderListenerCharts(chartDetail.d, chartDetail.sel, chartDetail.period); }
+    const tl = timelineData && $("#r-timeline");
+    if (tl && tl.clientWidth !== timelineWidth) renderTimeline(timelineData);
   }, 150);
 });
+// 支出の移り変わり (分析のギフターの詳しい表示)。種類は重なりがあるので足さずに切り替える
+const TIMELINE_KINDS = [["events", "イベントの貢献"], ["cumulative", "累計ランキングの増え"], ["recorded", "記録したギフト"]];
+const TIMELINE_NOTES = {
+  events: "イベントの貢献ランキング (各ルームの上位 100 人) に出たポイントを、イベントが終わった月に数えています。2015 年ごろのイベントからあります",
+  cumulative: "ルームの累計ランキング (上位 30 人) を取り直した間に増えた分を、取り直した月に数えています。集め始めてからの分です",
+  recorded: "このシステムで記録したギフトです。記録しているルームの分だけです",
+};
+let timelineKind = null;
+function renderTimeline(t) {
+  const box = $("#r-timeline");
+  timelineData = t;
+  if (!box) return;
+  if (!t || !t.months.length) { box.innerHTML = ""; return; }
+  const has = (k) => t.months.some((m) => m[k].total > 0);
+  const kind = timelineKind && has(timelineKind) ? timelineKind : (TIMELINE_KINDS.find(([k]) => has(k)) || ["events"])[0];
+  const keys = [...t.rooms, "_other"], nameOf = (k) => k === "_other" ? "その他" : t.names[k] || k;
+  const color = (k) => k === "_other" ? OTHER_COLOR : ROOM_COLORS[t.rooms.indexOf(k)] || OTHER_COLOR;
+  const tipRooms = (parts) => keys.filter((k) => parts[k]).map((k) => `\n${nameOf(k)}: ${num(parts[k])} pt`).join("");
+  const months = t.months, n = months.length;
+  // 目盛り: 2 年以内なら 3 か月ごと、それより長ければ 1 月 (年の数字) だけ。長いときは 2 年おき
+  const yearStep = n > 96 ? 2 : 1;
+  const monthBars = months.map((m) => {
+    const [y, mo] = m.month.split("-").map(Number), v = m[kind];
+    const label = n <= 24 ? (mo % 3 === 1 ? `${String(y).slice(2)}/${mo}` : "") : mo === 1 && y % yearStep === 0 ? `${y}` : "";
+    return { label, shade: y % 2 === 0, tip: `${y}年${mo}月\n合計 ${num(v.total)} pt${tipRooms(v.rooms)}`,
+      parts: keys.map((k) => ({ v: v.rooms[k] || 0, color: color(k) })) };
+  });
+  const years = {};
+  months.forEach((m) => {
+    const y = m.month.slice(0, 4), v = m[kind], cur = years[y] || (years[y] = { total: 0, rooms: {} });
+    cur.total += v.total;
+    Object.entries(v.rooms).forEach(([k, pt]) => { cur.rooms[k] = (cur.rooms[k] || 0) + pt; });
+  });
+  const yearBars = Object.entries(years).map(([y, v]) => ({ label: Object.keys(years).length > 8 ? `'${y.slice(2)}` : y, tip: `${y}年\n合計 ${num(v.total)} pt${tipRooms(v.rooms)}`,
+    parts: keys.map((k) => ({ v: v.rooms[k] || 0, color: color(k) })) }));
+  const avail = box.clientWidth || 720, full = Math.max(260, avail - 30);
+  timelineWidth = box.clientWidth;
+  // 要約: 最近 12 か月とその前の 12 か月、一番多かった年、最初と最後に分かった月
+  const totals = months.map((m) => m[kind].total), sum = (a) => a.reduce((x, y) => x + y, 0);
+  const recent = sum(totals.slice(-12)), before = sum(totals.slice(-24, -12));
+  const change = before ? Math.round((recent / before - 1) * 100) : null;
+  const active = months.filter((m) => m[kind].total > 0);
+  const best = Object.entries(years).reduce((a, b) => (b[1].total > a[1].total ? b : a), ["", { total: 0 }]);
+  const ym = (s) => s ? `${s.slice(0, 4)}年${Number(s.slice(5))}月` : "—";
+  const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const trend = change === null ? "" : `<small style="color:${change >= 0 ? "var(--ok)" : "var(--accent)"}">${change >= 0 ? "+" : ""}${num(change)}%</small>`;
+  const toggle = `<div class="seg" role="group">${TIMELINE_KINDS.map(([k, l]) => `<button type="button" class="${k === kind ? "active" : ""}" aria-pressed="${k === kind}" data-tl="${k}" ${has(k) ? "" : "disabled"}>${l}</button>`).join("")}</div>`;
+  const legend = chartLegend(keys.filter((k) => months.some((m) => m[kind].rooms[k])).map((k) => [nameOf(k), color(k)]));
+  box.innerHTML = `<h3>支出の移り変わり</h3>
+    <div class="summary chart-summary">
+      ${stat(`${shortNum(recent)} <small>pt</small> ${trend}`, "最近 12 か月 (その前の 12 か月と比べて)")}
+      ${stat(`${shortNum(before)} <small>pt</small>`, "その前の 12 か月")}
+      ${stat(best[0] ? `${best[0]}<small>年</small>` : "—", best[0] ? `一番多かった年 (${shortNum(best[1].total)} pt)` : "一番多かった年")}
+      ${stat(active.length ? ym(active[0].month) : "—", "最初に分かった月")}
+      ${stat(active.length ? ym(active[active.length - 1].month) : "—", "最後に分かった月")}
+    </div>
+    <div class="charts one">
+      <div class="chart-card wide"><div class="chart-head"><div><b>月ごと</b><div class="chart-sub">どの月に、どのルームへ送ったか (薄い帯は偶数の年)</div></div>${toggle}</div>
+        ${has(kind) ? stackedBars(monthBars, { width: full, height: 190, maxBar: 24 }) + legend : chartEmpty("この種類の情報はまだありません")}
+        <div class="hint">${esc(TIMELINE_NOTES[kind])}</div></div>
+      ${Object.keys(years).length > 1 && has(kind) ? `<div class="chart-card wide"><div class="chart-head"><div><b>年ごと</b><div class="chart-sub">年ごとの合計と、ルームの移り変わり</div></div></div>
+        ${stackedBars(yearBars, { width: full, height: 150, maxBar: 48 })}</div>` : ""}
+    </div>`;
+  box.onclick = (ev) => {
+    const b = ev.target.closest("[data-tl]");
+    if (b && !b.disabled) { timelineKind = b.dataset.tl; renderTimeline(t); }
+  };
+}
 // グラフの吹き出し (title 属性より早く出し、複数行の内訳も読みやすくする)
 const chartTip = document.createElement("div");
 chartTip.id = "chart-tip";
@@ -1309,7 +1379,7 @@ async function openListener(uid) {
         <div class="stat"><div class="v">${num(t.times)}</div><div class="l">回数 (${num(t.count)} 個)</div></div>
         <div class="stat"><div class="v">${num(d.rooms.length)}</div><div class="l">ルーム</div></div>
       </div>
-      <h3>ルーム別</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">有料</th><th class="num">回数</th><th class="num">最後</th><th></th></tr></thead>
+      <h3>ルーム別${d.room_total > d.rooms.length ? ` <span class="hint">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</span>` : ""}</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">有料</th><th class="num">回数</th><th class="num">最後</th><th></th></tr></thead>
       <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}</td><td class="num"><b>${num(r.points)}</b></td><td class="num">${num(r.paid_points)}</td><td class="num">${num(r.times)}</td><td class="num">${tm(r.last_at, true).slice(0, 11)}</td>
         <td><button class="linkish" data-room-gifts="${esc(r.key)}">ギフト画面で見る ›</button></td></tr>`).join("")}</tbody></table></div>
       <div id="l-charts"></div>
@@ -1397,11 +1467,15 @@ function sweepStatus(d) {
     : t.gap > t.base ? `<b style="color:var(--warn)">混んでいるため間隔を ${num(t.gap)} 秒に広げています</b>` : `${num(t.gap)} 秒に 1 回`;
   const scan = !w.scan ? "しない" : s.scan_done_at ? `済み (${tm(s.scan_done_at, true).slice(0, 11)})`
     : `${num(s.scan_next - 1)} / ${num(s.scan_end || 0)} 番 (${s.scan_end ? Math.floor((s.scan_next - 1) / s.scan_end * 100) : 0}%)`;
+  const hist = s.history_done_at ? `済み (${tm(s.history_done_at, true).slice(0, 11)})`
+    : s.history_next != null && s.event_max ? `番号 ${num(s.history_next)} まで (${Math.floor((1 - s.history_next / s.event_max) * 100)}%)` : "これから";
+  const oldestAt = s.oldest_ranking ? new Date(s.oldest_ranking * 1000) : null;
+  const oldest = oldestAt ? ` ・ 貢献ランキングは ${oldestAt.getFullYear()}年${oldestAt.getMonth() + 1}月のイベントまで取りました` : "";
   const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   return `<h3 style="margin-top:14px">SHOWROOM の全ルーム</h3>
     <div class="summary">${stat(num(s.rooms), "見つけたルーム")}${stat(num(s.collected), "集めたルーム")}${stat(num(s.rankings), "貢献ランキング (件)")}
       ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
-    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ ルーム番号の調べ ${scan}
+    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest} ・ ルーム番号の調べ ${scan}
       ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}</div>`;
 }
 function researchStatus(d) {
@@ -1413,7 +1487,7 @@ function researchStatus(d) {
   $("#r-analyzed").textContent = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true).slice(0, 11)}${d.analysis_seconds >= 1 ? ` (${num(d.analysis_seconds)} 秒)` : ""} ・ 10 分間は同じ集計を使います` : "";
   $("#r-status").innerHTML = d.status.length ? `<div class="chips" style="margin-top:8px">${d.status.map((r) => `<span class="chip" title="${esc(r.key)}">
       ${d.support_rooms.includes(r.key) ? "★ " : ""}${esc(r.name)}　${r.at ? `累計 ${num(r.cumulative)} 人・イベント ${num(r.events)} 件・ランキング ${num(r.rankings)} 件 (${tm(r.at, true).slice(0, 11)})` : "まだ集めていません"}</span>`).join("")}</div>
-      <div class="hint">累計ランキングは各ルームの上位 30 人、貢献ランキングはイベントごとに上位 100 人です (約 9 か月より前のイベントは SHOWROOM が公開していません)。毎日 4:30 に集め直します。</div>` : "";
+      <div class="hint">累計ランキングは各ルームの上位 30 人、貢献ランキングはイベントごとに上位 100 人です (2015 年ごろからのイベントがあります)。毎日 4:30 に集め直します。</div>` : "";
 }
 const R_FILTERS = [["all", "すべて"], ["recorded", "行動がわかる (ギフトの記録あり)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
 const R_SORTS = [["other", "ほかのルームへのポイント順"], ["event", "イベントでのポイント順"], ["events", "参加イベントの多い順"], ["visits", "来場回数の多い順"], ["rooms", "送るルームの多い順"], ["last", "最近ギフトを送った順"]];
@@ -1500,17 +1574,19 @@ async function openGifter(uid) {
         <div class="stat"><div class="v">${num(s.event_count)}</div><div class="l">参加したイベント${s.best_rank ? ` (最高 ${num(s.best_rank)} 位)` : ""}</div></div>
         <div class="stat"><div class="v">${s.focus === null ? "-" : `${Math.round(s.focus * 100)}%`}</div><div class="l">いちばん多いルームの割合</div></div>
       </div>
-      <h3>ルーム別</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">分かった pt</th><th class="num">累計ランキング</th><th class="num">イベント</th><th class="num">記録したギフト</th><th class="num">来場</th></tr></thead>
+      <h3>ルーム別${d.room_total > d.rooms.length ? ` <span class="hint">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</span>` : ""}</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">分かった pt</th><th class="num">累計ランキング</th><th class="num">イベント</th><th class="num">記録したギフト</th><th class="num">来場</th></tr></thead>
       <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}</td><td class="num"><b>${num(r.points)}</b></td>
         <td class="num">${r.cumulative ? `${num(r.cumulative)}${r.cumulative_rank ? ` (${num(r.cumulative_rank)} 位)` : ""}` : "-"}</td><td class="num">${r.events ? num(r.events) : "-"}</td>
         <td class="num">${r.recorded ? num(r.recorded) : "-"}</td><td class="num">${r.visits ? num(r.visits) : "-"}</td></tr>`).join("")}</tbody></table></div>
+      <div id="r-timeline"></div>
       <div id="r-charts">${h ? `<div class="loading"><span class="spinner"></span>行動のグラフを読み込み中…</div>`
         : `<h3>行動のグラフ</h3><div class="empty">このギフターのギフトはまだ記録していません。曜日・時間帯などは、記録したギフトから作ります (「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)</div>`}</div>
-      <h3>イベントの実績 (新しい順)</h3>${d.events.length ? `<div class="table-wrap" style="max-height:360px;overflow-y:auto"><table><thead><tr><th>イベント</th><th>ルーム</th><th class="num">順位</th><th class="num">pt</th><th class="num">終了</th></tr></thead>
+      <h3>イベントの実績 (新しい順)${d.event_total > d.events.length ? ` <span class="hint">(${num(d.events.length)} / ${num(d.event_total)} 件)</span>` : ""}</h3>${d.events.length ? `<div class="table-wrap" style="max-height:360px;overflow-y:auto"><table><thead><tr><th>イベント</th><th>ルーム</th><th class="num">順位</th><th class="num">pt</th><th class="num">終了</th></tr></thead>
         <tbody>${d.events.map((e) => `<tr><td>${esc(e.event)}</td><td>${esc(e.room_name)}</td><td class="num">${e.rank ? num(e.rank) : "-"}</td><td class="num">${num(e.point)}</td><td class="num">${e.end ? day(e.end) : ""}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">集めたイベントの貢献ランキングには出ていません</div>`}
     </div>`;
     renderResearch();
+    renderTimeline(d.timeline);
     box.scrollIntoView({ behavior: "smooth", block: "start" });
     if (h) {  // 行動のグラフは、リスナーの履歴と同じもの (記録したギフトすべてから)
       const l = await api(`/api/listener?user=${encodeURIComponent(uid)}&days=0`);

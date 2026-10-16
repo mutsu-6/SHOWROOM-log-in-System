@@ -20,7 +20,7 @@ events: []
 support_rooms: []
 research_rooms: []
 # SHOWROOM の全ルームの情報を少しずつ集め続ける (配信中・イベント参加のルームを見つけて、累計ランキングと
-# 終わったイベントの貢献ランキングを取る)。state/research.db が数百 MB〜1GB 程度になる (ディスクの空きに注意)
+# 2015 年ごろからの貢献ランキングを取る)。state/research.db が数 GB になる (ディスクの空きに注意)
 research_all: false
 research_scan: true     # ルーム番号を 1 から順に 1 回だけ調べる (約 58 万回、1 秒に 1 回で約 7 日)
 research_gap: 1.0       # 問い合わせの間隔 (秒)。混んでいれば自動で広げ、続けて失敗したら 1 時間止める
