@@ -35,6 +35,8 @@ LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # 変えると視聴とギフト記録をやり直す設定 (応援ルーム・調べるルームは情報収集だけに使うので含めない)
 WATCH_KEYS = ("rooms", "record_rooms", "events", "enter_rooms")
 STATUS_TTL = 15  # 配信状況 (SHOWROOM への問い合わせ) を使い回す秒数
+STORE_STATUS_TTL = 30  # 全ルームの収集の件数を使い回す秒数
+_store_status: dict[str, Any] = {"at": 0.0, "data": None}
 COMMENT_TIMEOUT = 80.0  # 投稿処理 (入力・送信・反映の確認) の上限に余裕を持たせる
 CSRF_HEADER = "X-Showroom-Keeper"  # 変更を伴う要求に必須。他のサイトから送らせることはできない
 
@@ -312,9 +314,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import research
 
                 cfg = self.keeper.cfg
-                self._json({**research.analyze(self._state_dir(), self._support(q)), "job": research.JOB.state(),
-                            "status": research.status(self._state_dir(), research.research_keys(cfg)),
+                max_age = 0 if q.get("refresh") == "1" else research.ANALYSIS_TTL
+                self._json({**research.analyze(self._state_dir(), self._support(q), max_age=max_age),
+                            **self._research_progress(),
                             "support_rooms": list(cfg.support_rooms), "research_rooms": list(cfg.research_rooms)})
+            elif url.path == "/api/research/status":
+                self._json(self._research_progress())
             elif url.path == "/api/research/gifter":
                 from . import research
 
@@ -340,6 +345,20 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._error(502, f"取得できませんでした ({str(e).splitlines()[0] if str(e) else type(e).__name__})")
 
     do_HEAD = do_GET
+
+    def _research_progress(self) -> dict[str, Any]:
+        """情報収集の進み具合 (分析は数え直さないので軽い。集めている間の画面の更新に使う)。"""
+        from . import research, sweep
+
+        cfg = self.keeper.cfg
+        out = {"job": research.JOB.state(), "status": research.status(self._state_dir(), research.research_keys(cfg)),
+               "throttle": research.THROTTLE.state(), "sweep": sweep.state()}
+        if cfg.research_all:
+            now = time.time()
+            if now - _store_status["at"] > STORE_STATUS_TTL:  # 全体の件数は数えるのに時間がかかるので使い回す
+                _store_status.update(at=now, data=research.store_status(self._state_dir()))
+            out["store"] = _store_status["data"]
+        return out
 
     # ------------------------------------------------------------ POST
     def _start_research(self, only_new: bool, force: bool = False) -> bool:
@@ -371,10 +390,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                 before = {k: list(getattr(cfg, k, []) or []) for k in WATCH_KEYS}
                 values = save_settings(cfg, data)
                 log.info("管理画面からルーム設定が変更されました")
+                # 応援ルーム・調べるルームは視聴に関係しないので、すぐ反映して新しいルームを集め始める
+                cfg.support_rooms, cfg.research_rooms = values["support_rooms"], values["research_rooms"]
                 if any(values.get(k, before[k]) != before[k] for k in WATCH_KEYS):
                     self.keeper.request_reload()
-                else:  # 応援ルーム・調べるルームだけの変更なら、視聴をやり直さない
-                    cfg.support_rooms, cfg.research_rooms = values["support_rooms"], values["research_rooms"]
                 self._start_research(only_new=True)
                 self._json({"ok": True, "settings": values})
             elif path == "/api/research/collect":

@@ -120,6 +120,12 @@ class Config:
     # 応援ルーム・調べるルームの情報 (累計ランキング・イベントの貢献ランキング) を集める曜日と時刻 (日本時間)
     research_days: str = "毎日"
     research_times: str = "4:30"
+    # SHOWROOM の全ルームの情報を少しずつ集め続ける (配信中・イベント参加のルームを見つけて、累計ランキングと
+    # 終わったイベントの貢献ランキングを取る)。問い合わせは research_gap 秒に 1 回 (混んでいれば自動で広げる)。
+    # research.db (SQLite) が数百 MB〜1GB 程度になる。research_scan はルーム番号を 1 から順に 1 回だけ調べる (約 58 万回)
+    research_all: bool = False
+    research_scan: bool = True
+    research_gap: float = 1.0
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
     # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
     record_gifts: bool = True

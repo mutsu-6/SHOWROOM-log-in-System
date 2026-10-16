@@ -410,6 +410,11 @@ class Keeper:
             slots = parse_slots("毎日", "4:30")
             log.warning("情報を集める予定が正しくありません (%s)。%s に集めます", e, describe(slots))
         state_dir = Path(self.cfg.state_file).parent
+        research.THROTTLE.set_base(self.cfg.research_gap)
+        if self.cfg.research_all:
+            from . import sweep
+
+            sweep.start(state_dir, scan=self.cfg.research_scan)
         loop = asyncio.get_running_loop()
         first = True
         while True:
