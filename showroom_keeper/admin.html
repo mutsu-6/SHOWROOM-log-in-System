@@ -171,6 +171,24 @@ td.name { max-width: 280px; word-break: break-word; }
 tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--panel2); }
 tr.selected td { background: var(--info-soft); }
 #l-detail { scroll-margin-top: 110px; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 720px) { .charts { grid-template-columns: minmax(0, 1fr); } }
+.chart-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.chart-card.wide { grid-column: 1 / -1; }
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+svg.chart { width: 100%; height: auto; display: block; }
+svg.chart text { font-size: 10px; fill: var(--muted); }
+svg.chart line { stroke: var(--line); }
+svg.chart text.max { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+svg.chart g:hover rect[fill="transparent"] { fill: var(--panel2); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--muted); padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.seg button.active { background: var(--panel2); color: var(--text); font-weight: 600; }
+.heat { display: grid; grid-template-columns: 20px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 10px; color: var(--muted); }
+.heat .hc { aspect-ratio: 1.6; border-radius: 2px; min-height: 10px; }
+.heat .hh { text-align: left; } .heat .hd { text-align: center; line-height: 1.6; }
 /* 入力欄の下に出る候補 */
 .suggest { position: fixed; z-index: 15; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18);
   max-height: min(460px, 60vh); display: flex; flex-direction: column; overflow: hidden; }
@@ -1060,6 +1078,76 @@ function renderListeners() {
       <td>${esc(u.rooms.slice(0, 2).map((r) => r.name).join("、"))}${u.room_count > 2 ? ` ほか ${u.room_count - 2}` : ""}</td><td class="num">${tm(u.last_at, true).slice(0, 11)}</td></tr>`).join("")}</tbody></table></div>`
     + (rows.length > listeners.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="l-more">さらに表示 (${num(rows.length - listeners.shown)} 人)</button></div>` : "");
 }
+/* ------------------------------------------------------------ リスナーの行動のグラフ */
+const ROOM_COLORS = ["#e5484d", "#2f5bd3", "#18794e", "#d9822b", "#8e4ec6"], OTHER_COLOR = "#98a2b3";
+const PAID_COLOR = "var(--accent)", FREE_COLOR = "var(--info)";
+// 積み上げ棒グラフ。bars: [{label, tip, parts: [{v, color}]}]、labelEvery 本ごとに下に目盛りを書く
+function stackedBars(bars, { width = 720, height = 150, labelEvery = 1, unit = "pt" } = {}) {
+  const W = width, top = 8, bottom = 22, plot = height - top - bottom, gap = bars.length > 60 ? 0.5 : 2;
+  const max = Math.max(1, ...bars.map((b) => b.parts.reduce((t, p) => t + p.v, 0)));
+  const bw = W / Math.max(bars.length, 1);
+  const cols = bars.map((b, i) => {
+    let y = top + plot;
+    const rects = b.parts.filter((p) => p.v > 0).map((p) => {
+      const h = (p.v / max) * plot;
+      y -= h;
+      return `<rect x="${(i * bw + gap / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(bw - gap, 0.5).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${p.color}"></rect>`;
+    }).join("");
+    const x = i * bw + bw / 2, anchor = x < 20 ? "start" : x > W - 20 ? "end" : "middle";  // 両端の目盛りが切れないように
+    const label = i % labelEvery === 0 ? `<text x="${(anchor === "start" ? 0 : anchor === "end" ? W : x).toFixed(1)}" y="${height - 6}" text-anchor="${anchor}">${esc(b.label)}</text>` : "";
+    return `<g><title>${esc(b.tip)}</title><rect x="${(i * bw).toFixed(1)}" y="${top}" width="${bw.toFixed(1)}" height="${plot}" fill="transparent"></rect>${rects}</g>${label}`;
+  }).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" role="img"><line x1="0" x2="${W}" y1="${top + plot}" y2="${top + plot}"></line>${cols}
+    <text x="${W - 2}" y="${top + 8}" text-anchor="end" class="max">最大 ${num(max)} ${unit}</text></svg>`;
+}
+const chartLegend = (items) => `<div class="chart-legend">${items.map(([name, color]) => `<span><i style="background:${color}"></i>${esc(name)}</span>`).join("")}</div>`;
+const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
+function heatmap(matrix, color) {
+  const max = Math.max(1, ...matrix.flat());
+  const hours = Array.from({ length: 24 }, (_, h) => `<div class="hh">${h % 3 === 0 ? h : ""}</div>`).join("");
+  return `<div class="heat"><div></div>${hours}${matrix.map((row, d) => `<div class="hd">${WEEKDAYS[d]}</div>${row.map((v, h) =>
+    `<div class="hc" title="${WEEKDAYS[d]}曜 ${h} 時台: ${num(v)} pt" style="background:${v ? `color-mix(in srgb, ${color} ${Math.round(15 + (v / max) * 85)}%, transparent)` : "var(--panel2)"}"></div>`).join("")}`).join("")}</div>`;
+}
+const listenerChart = { daily: "rooms", heat: "paid" };
+function renderListenerCharts(d) {
+  const c = d.charts, box = $("#l-charts");
+  if (!c || !box) return;
+  const nameOf = (k) => (d.rooms.find((r) => r.key === k) || {}).name || k;
+  const roomColor = (k) => k === "_other" ? OTHER_COLOR : ROOM_COLORS[c.rooms.indexOf(k)] || OTHER_COLOR;
+  const byRoom = listenerChart.daily === "rooms";
+  const daily = stackedBars(c.daily.map((x) => ({
+    label: x.day.slice(5).replace("-", "/"),
+    tip: `${x.day}: ${num(x.paid + x.free)} pt (有料 ${num(x.paid)} / 無料 ${num(x.free)})` + Object.entries(x.rooms).filter(([, v]) => v).map(([k, v]) => `\n${k === "_other" ? "その他" : nameOf(k)}: ${num(v)} pt`).join(""),
+    parts: byRoom ? [...c.rooms, "_other"].map((k) => ({ v: x.rooms[k] || 0, color: roomColor(k) }))
+      : [{ v: x.paid, color: PAID_COLOR }, { v: x.free, color: FREE_COLOR }],
+  })), { labelEvery: Math.max(1, Math.ceil(c.daily.length / 12)) });
+  const dailyLegend = byRoom ? chartLegend([...c.rooms.map((k) => [nameOf(k), roomColor(k)]), ...(c.daily.some((x) => x.rooms._other) ? [["その他", OTHER_COLOR]] : [])])
+    : chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]]);
+  const paidFree = (rows, label, tip) => stackedBars(rows.map((x) => ({ label: label(x), tip: `${tip(x)}: 有料 ${num(x.paid)} 回 / 無料 ${num(x.free)} 回`,
+    parts: [{ v: x.paid, color: PAID_COLOR }, { v: x.free, color: FREE_COLOR }] })), { width: 360, height: 150, unit: "回" });
+  const last = c.timing.length - 1;
+  const timing = paidFree(c.timing, (x) => (x.from % 30 === 0 ? `${x.from}` : ""),
+    (x) => x === c.timing[last] ? `${x.from} 分以降` : `${x.from}〜${c.timing[c.timing.indexOf(x) + 1].from} 分`);
+  const sizes = paidFree(c.sizes, (x) => `${num(x.from)}〜`, (x) => `1 回 ${num(x.from)} pt 以上`);
+  const toggle = (name, options) => `<div class="seg">${options.map(([v, l]) => `<button type="button" class="${listenerChart[name] === v ? "active" : ""}" data-chart="${name}" data-v="${v}">${l}</button>`).join("")}</div>`;
+  box.innerHTML = `<h3>行動のグラフ</h3>
+    <div class="charts">
+      <div class="chart-card wide"><div class="chart-head"><b>日別のポイント</b>${toggle("daily", [["rooms", "ルーム別"], ["paid", "有料・無料"]])}</div>${daily}${dailyLegend}
+        <div class="hint">${byRoom ? "どの日に、どのルームへ送ったか。" : "どの日に、有料・無料のギフトをどれだけ送ったか。"}${c.daily.length >= 180 ? "最後に送った日から 180 日分を表示しています。" : ""}</div></div>
+      <div class="chart-card wide"><div class="chart-head"><b>曜日・時間帯</b>${toggle("heat", [["paid", "有料"], ["free", "無料"]])}</div>
+        ${heatmap(c.heatmap[listenerChart.heat], listenerChart.heat === "paid" ? PAID_COLOR : FREE_COLOR)}
+        <div class="hint">濃いほど多くのポイントを送った時間帯 (日本時間)。</div></div>
+      <div class="chart-card"><div class="chart-head"><b>配信のどの辺りで送るか</b></div>${timing}${chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]])}
+        <div class="hint">その配信で最初に記録したギフトからの経過時間 (分)。配信の開始時刻は記録に無いため、目安です。</div></div>
+      <div class="chart-card"><div class="chart-head"><b>1 回に送るポイント</b></div>${sizes}${chartLegend([["有料", PAID_COLOR], ["無料", FREE_COLOR]])}
+        <div class="hint">1 回 (同じギフトをまとめて送った分) のポイントの大きさごとの回数。</div></div>
+    </div>`;
+  box.onclick = (ev) => {
+    const b = ev.target.closest("[data-chart]");
+    if (b) { listenerChart[b.dataset.chart] = b.dataset.v; renderListenerCharts(d); }
+  };
+}
+
 async function openListener(uid) {
   location.hash = "#listeners";
   listeners.selected = uid;
@@ -1080,10 +1168,11 @@ async function openListener(uid) {
       <h3>ルーム別</h3><div class="table-wrap"><table><thead><tr><th>ルーム</th><th class="num">pt</th><th class="num">有料</th><th class="num">回数</th><th class="num">最後</th><th></th></tr></thead>
       <tbody>${d.rooms.map((r) => `<tr><td class="name">${esc(r.name)}</td><td class="num"><b>${num(r.points)}</b></td><td class="num">${num(r.paid_points)}</td><td class="num">${num(r.times)}</td><td class="num">${tm(r.last_at, true).slice(0, 11)}</td>
         <td><button class="linkish" data-room-gifts="${esc(r.key)}">ギフト画面で見る ›</button></td></tr>`).join("")}</tbody></table></div>
-      <h3>日別</h3><div class="chips">${d.days.map((x) => `<span class="chip">${esc(x.day)}　${num(x.points)} pt</span>`).join("")}</div>
+      <div id="l-charts"></div>
       <h3>履歴 (新しい順)</h3><div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>日時</th><th>ルーム</th><th>ギフト</th><th class="num">個数</th><th class="num">pt</th></tr></thead>
       <tbody>${d.history.map((h) => `<tr><td>${tm(h.at, true)}</td><td>${esc(h.room_name)}</td><td>${esc(h.gift)}</td><td class="num">${num(h.num)}</td><td class="num">${num(h.points)}</td></tr>`).join("")}</tbody></table></div>
     </div>`;
+    renderListenerCharts(d);
     renderListeners();
     box.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {

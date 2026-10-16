@@ -68,6 +68,31 @@ def test_listener_detail_shows_every_room(tmp_path, monkeypatch):
     assert listing.listener_detail(tmp_path, "999")["found"] is False
 
 
+def test_listener_detail_charts_show_when_where_and_how_much(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    from showroom_keeper.status import JST
+
+    _setup(tmp_path, monkeypatch)
+    start = datetime(2026, 10, 12, 21, 0, tzinfo=JST).timestamp()  # 月曜 21 時
+    record_gift(tmp_path, "room_c", 9, {"t": 2, "u": 99, "ac": "べつ", "g": 1, "n": 1, "created_at": start})
+    record_gift(tmp_path, "room_c", 9, {"t": 2, "u": 5, "ac": "じろう", "g": 100, "n": 3, "created_at": start + 25 * 60})
+    record_gift(tmp_path, "room_c", 9, {"t": 2, "u": 5, "ac": "じろう", "g": 1, "n": 10, "created_at": start + 5 * 3600})
+    record_gift(tmp_path, "room_c", 10, {"t": 2, "u": 5, "ac": "じろう", "g": 1, "n": 2, "created_at": start + 2 * 86400})
+    c = listing.listener_detail(tmp_path, 5)["charts"]
+    assert [d["day"] for d in c["daily"]] == ["2026-10-12", "2026-10-13", "2026-10-14"]  # 送らなかった日も 0 で出す
+    assert c["daily"][0] == {"day": "2026-10-12", "paid": 300, "free": 0, "rooms": {"room_c": 300}}
+    assert c["daily"][1]["free"] == 10 and c["daily"][2]["free"] == 2
+    assert c["heatmap"]["paid"][0][21] == 300 and c["heatmap"]["free"][1][2] == 10  # 26 時 = 火曜 2 時
+    timing = {t["from"]: t for t in c["timing"]}
+    assert timing[20]["paid"] == 1  # 他の人の最初のギフトから 25 分後
+    assert timing[180]["free"] == 1  # 180 分以降はまとめる
+    assert timing[0]["free"] == 1  # 別の配信では、その配信の最初のギフト
+    sizes = {s["from"]: s for s in c["sizes"]}
+    assert sizes[100]["paid"] == 1 and sizes[10]["free"] == 1 and sizes[1]["free"] == 1
+    assert c["rooms"] == ["room_c"]
+
+
 def test_events_list_marks_state_recording_and_cached_ranking(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     now = time.time()
