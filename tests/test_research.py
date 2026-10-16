@@ -527,6 +527,15 @@ def test_sweep_records_points_of_ongoing_events_every_hour(tmp_path):
     assert pts == [100, 250]
     st = research.store_status(tmp_path)
     assert st["progress_events"] == 1 and st["progress_rows"] == 2
+    # 終わったあと、参加ルームを読み直した時の最終結果も、終わった時刻の値として推移に入れる
+    clock[0] = NOW + 86400 * 3
+    get.point = 900
+    for _ in range(20):
+        if not sw.step():
+            break
+    with Store(tmp_path) as s:
+        last = s.one("SELECT at, point FROM event_progress WHERE event_id=8 AND room_id=4 ORDER BY at DESC LIMIT 1")
+    assert last["point"] == 900 and last["at"] == pytest.approx(NOW + 86400)
 
 
 def test_watch_list_with_memo(collected):

@@ -173,9 +173,13 @@ class Sweeper:
             return False
         self.doing = f"イベントの参加ルーム ({e['name'] or e['event_id']})"
         try:
-            self._read_event_rooms(e["event_id"], now)
+            rooms = self._read_event_rooms(e["event_id"], now)
         except Exception as err:  # noqa: BLE001
             self._failed("events", "event_id", e["event_id"], now, err)
+            return True
+        if e["progress_at"] is not None and e["end"] is not None and e["end"] <= now:
+            # 推移を残していたイベントが終わった: 終わった時のポイント (最終結果) も、終わった時刻の値として推移に入れる
+            self.store.add_progress(e["event_id"], rooms, e["end"])
         return True
 
     def _aggregate(self) -> None:
