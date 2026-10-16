@@ -346,6 +346,7 @@ class Keeper:
             admin = start_admin(self)
         gift_updates = asyncio.ensure_future(self._gift_updates())
         research = asyncio.ensure_future(self._research_updates())
+        backups = asyncio.ensure_future(self._backup_updates())
         try:
             while not self._stop.is_set():
                 if self._reload_requested:
@@ -359,6 +360,7 @@ class Keeper:
         finally:
             gift_updates.cancel()
             research.cancel()
+            backups.cancel()
             if admin is not None:
                 admin.shutdown()
 
@@ -434,6 +436,36 @@ class Keeper:
                     raise
                 except Exception as e:  # noqa: BLE001 - 次の予定でもう一度試す
                     log.warning("情報の収集に失敗: %s", e)
+            target = next_time(time.time(), slots)
+            while time.time() < target:
+                await asyncio.sleep(min(600.0, max(1.0, target - time.time())))
+
+    async def _backup_updates(self) -> None:
+        """research.db のバックアップを毎日決まった時刻 (research_backup_times) に作る。
+
+        起動した時は、前回のバックアップから 1 日以上たっていれば作る (research.db がある時だけ)。
+        """
+        from . import backup
+        from .schedule import next_time, parse_slots
+
+        try:
+            slots = parse_slots("毎日", self.cfg.research_backup_times)
+        except ValueError as e:
+            slots = parse_slots("毎日", "4:00")
+            log.warning("バックアップの時刻が正しくありません (%s)。毎日 4:00 に作ります", e)
+        state_dir = Path(self.cfg.state_file).parent
+        loop = asyncio.get_running_loop()
+        last = backup.last_backup(state_dir) or {}
+        due = not last.get("ok") or time.time() - float(last.get("at") or 0) > 86400
+        while True:
+            if due:
+                try:
+                    await loop.run_in_executor(None, backup.backup_research_db, state_dir, self.cfg.research_backup_keep)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - 次の日にもう一度試す
+                    log.warning("バックアップに失敗: %s", e)
+            due = True
             target = next_time(time.time(), slots)
             while time.time() < target:
                 await asyncio.sleep(min(600.0, max(1.0, target - time.time())))
