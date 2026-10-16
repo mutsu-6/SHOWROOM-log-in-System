@@ -101,8 +101,12 @@ class Config:
     block_media: bool = False
     # 視聴する映像の画質。"low" (256x144・約 0.2Mbps) / "medium" (640x360・約 0.8Mbps) /
     # "original" (配信そのまま・最大 1080p 約 6Mbps) / "auto" (SHOWROOM の再生プレーヤー任せ)。
-    # 画質は SHOWROOM の再生プレーヤーで視聴者が選べるもの。低いほど通信量と映像の処理が減る
-    video_quality: str = "low"
+    # 画質は SHOWROOM の再生プレーヤーで視聴者が選べるもの。既定の medium は再生枠 (640x360) と同じ大きさで、
+    # 1080p の配信でも映像の処理が軽い。low は通信量は最も少ないが、引き伸ばして描くため CPU はかえって増える
+    video_quality: str = "medium"
+    # 配信ページを空白のページの裏 (背面のタブ) に置いて開く。映像の再生・コメントの受信と投稿はそのままで、
+    # 画面の描き直しが減るため CPU を約 3 割減らせる (計測: 1 ルーム 21% → 14%)
+    background_tabs: bool = True
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
     # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
     record_gifts: bool = True
