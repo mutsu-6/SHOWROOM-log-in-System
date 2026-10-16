@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 import urllib.error
+from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -440,6 +441,63 @@ class _Rooms:
         return self.labels[rid]
 
 
+class _Signup:
+    """ユーザー ID から登録時期を推測する (遅くともこの時までに登録している)。
+
+    SHOWROOM のユーザー ID は登録順に増えるので、ID k の人は、k 以上の ID の人が初めて分かった時
+    (イベントの貢献ランキング・記録したギフト) までには登録している。集めた情報が多いほど実際に近づく。
+    """
+
+    def __init__(self, steps: list[list[float]]):
+        # ID の小さい順に (それまでに分かった最大の ID, その時)。どちらも増える一方
+        self.steps = steps
+        self.ids = [int(i) for i, _ in steps]
+        self.ats = [a for _, a in steps]
+
+    @classmethod
+    def build(cls, s: Store, rec: _Recorded) -> _Signup:
+        seen = [(r[0], r[1]) for r in s.all("""SELECT e.end, m.uid FROM (SELECT event_id, MAX(user_id) AS uid FROM contributions
+                                               GROUP BY event_id) m JOIN events e USING(event_id) WHERE e.end IS NOT NULL""")]
+        seen += [(min(g[0] for g in gifts), uid) for uid, gifts in rec.gifts.items() if gifts]
+        steps, top = [], 0
+        for at, uid in sorted(seen):
+            if uid > top:
+                steps.append([uid, at])
+                top = uid
+        return cls(steps)
+
+    def at(self, uid: int) -> float | None:
+        i = bisect_left(self.ids, uid)
+        return self.ats[i] if i < len(self.ids) else None
+
+    def id_range(self, start: float, end: float) -> tuple[int, int] | None:
+        """登録時期の推測が start 以上 end 未満になる ID の範囲。"""
+        lo, hi = bisect_left(self.ats, start), bisect_left(self.ats, end)
+        if lo >= hi:
+            return None
+        return (self.ids[lo - 1] + 1 if lo else 1), self.ids[hi - 1]
+
+    def years(self) -> list[tuple[int, int, int]]:
+        """推測した登録年ごとの ID の範囲 (新しい年から)。"""
+        if not self.ats:
+            return []
+        out = []
+        for year in range(datetime.fromtimestamp(self.ats[-1], JST).year, datetime.fromtimestamp(self.ats[0], JST).year - 1, -1):
+            r = self.id_range(datetime(year, 1, 1, tzinfo=JST).timestamp(), datetime(year + 1, 1, 1, tzinfo=JST).timestamp())
+            if r:
+                out.append((year, *r))
+        return out
+
+
+SIGNUP_YEAR_LIMIT = 100  # 登録した年ごとに、全体の上位とは別に返すギフターの数 (登録時期で絞り込むため)
+SIGNUP_META = "signup_steps"  # 1 人の詳しい表示で使う登録時期の推測 (分析のたびに作り直す)
+
+
+def _signup(s: Store, rec: _Recorded) -> _Signup:
+    steps = s.meta(SIGNUP_META)
+    return _Signup(steps) if steps else _Signup.build(s, rec)
+
+
 def _chunks(items: list[Any], n: int = 500) -> list[list[Any]]:
     return [items[i:i + n] for i in range(0, len(items), n)]
 
@@ -481,14 +539,14 @@ def _user_names(store: Store, rec: _Recorded, uids: list[int]) -> dict[int, str]
 
 
 def _summary(uid: int, name: str | None, slots: dict[int, dict[str, Any]], ev: Any, gifts: list[Any],
-             rooms: _Rooms, support: set[int]) -> dict[str, Any]:
+             rooms: _Rooms, support: set[int], signup: float | None = None) -> dict[str, Any]:
     scores = {rid: room_score(v) for rid, v in slots.items()}
     total = sum(scores.values())
     other = {rid: s for rid, s in scores.items() if rid not in support and s > 0}
     top = sorted(other.items(), key=lambda kv: -kv[1])
     h = habits(gifts)
     return {
-        "user_id": uid, "name": name or "(名前なし)",
+        "user_id": uid, "name": name or "(名前なし)", "signup_at": signup,
         "support_points": sum(s for rid, s in scores.items() if rid in support),
         "other_points": sum(other.values()), "total_points": total,
         "room_count": sum(1 for s in scores.values() if s > 0),
@@ -568,6 +626,20 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         candidate_count = s.scalar(f"SELECT COUNT(*) FROM u WHERE {where}", left)
         cand_ids = [r[0] for r in s.all(f"SELECT user_id FROM u WHERE {where} ORDER BY total DESC, user_id LIMIT ?",
                                         (*left, limit))]
+        signup = _Signup.build(s, rec)
+        with s.tx():
+            s.set_meta(SIGNUP_META, signup.steps)
+        signup_years, extra_ids = [], []
+        overall = set(cand_ids)
+        for year, lo, hi in signup.years():
+            band = (*left, lo, hi)
+            n = s.scalar(f"SELECT COUNT(*) FROM u WHERE {where} AND user_id BETWEEN ? AND ?", band)
+            if n:
+                # いちばん古い年は、集めた情報より前に登録した人もまとめて入る
+                signup_years.append({"year": year, "count": n, "earliest": lo == 1})
+                extra_ids += [r[0] for r in s.all(f"""SELECT user_id FROM u WHERE {where} AND user_id BETWEEN ? AND ?
+                                                     ORDER BY total DESC, user_id LIMIT ?""", (*band, SIGNUP_YEAR_LIMIT))
+                              if r[0] not in overall]
         gifter_count = s.scalar("SELECT COUNT(*) FROM u")
         # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか
         similar = []
@@ -589,12 +661,12 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         room_rows = s.all("SELECT * FROM rs ORDER BY points DESC LIMIT 200")
         pairs = _room_pairs(s, rooms)
 
-        uids = list(dict.fromkeys(fan_ids + cand_ids))
+        uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids))
         evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
         sup = set(sup_ids)
         # ルームごとの内訳は 1 人ずつ読む (数万ルームに出てくる人もいて、まとめて読むとメモリが足りなくなる)
         summary = {u: _summary(u, names.get(u), _slots(s, rooms, rec, [u]).get(u, {}), evs.get(u), rec.gifts.get(u, []),
-                               rooms, sup) for u in uids}
+                               rooms, sup, signup.at(u)) for u in uids}
         top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
         room_list = []
         for r in room_rows:
@@ -609,6 +681,7 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
                 "support": [{"key": k, "name": rooms.label(rooms.id(k))[1], "gifters": givers.get(rooms.id(k), 0)}
                             for k in support],
                 "candidates": [summary[u] for u in cand_ids], "candidate_count": candidate_count,
+                "signup_candidates": [summary[u] for u in extra_ids], "signup_years": signup_years,
                 "fans": [summary[u] for u in fan_ids], "fan_count": fan_count, "similar": similar,
                 "pairs": pairs, "rooms": room_list, "room_count": room_count, "multi_count": multi_count,
                 "gifter_count": gifter_count}
@@ -671,7 +744,8 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         room_list = sorted(({"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "support": rid in sup,
                              "points": room_score(v), **v} for rid, v in slots.items()), key=lambda r: -r["points"])
         return {"user_id": uid, "found": True, "room_total": len(room_list), "event_total": event_total,
-                "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup),
+                "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
+                                    _signup(s, rec).at(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid)}
 
 

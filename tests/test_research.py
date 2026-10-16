@@ -1,6 +1,7 @@
 import json
 import time
 import urllib.error
+from datetime import datetime
 
 import pytest
 
@@ -8,6 +9,7 @@ from showroom_keeper import listing, research, sweep
 from showroom_keeper.config import Config, apply_settings, save_settings
 from showroom_keeper.gifts import record_gift
 from showroom_keeper.research_store import Store
+from showroom_keeper.status import JST
 
 NOW = time.time()
 
@@ -233,6 +235,26 @@ def test_cumulative_history_and_monthly_timeline(collected):
     keys = [m["month"] for m in t["months"]]
     assert keys == sorted(keys) and len(keys) >= 11  # 送っていない月も並べる
     assert research.gifter_detail(tmp_path, 30, [])["timeline"]["months"][0]["events"]["total"] == 700
+
+
+def test_signup_is_estimated_from_user_id_order():
+    jan = lambda y: datetime(y, 1, 15, tzinfo=JST).timestamp()  # noqa: E731
+    # ID 500 が 2020 年、ID 900 が 2022 年に分かった。ID 700 が 2023 年に分かっても、900 より前に登録している
+    sg = research._Signup([[500, jan(2020)], [900, jan(2022)]])
+    assert sg.at(1) == sg.at(500) == jan(2020) and sg.at(501) == sg.at(700) == jan(2022) and sg.at(901) is None
+    assert sg.years() == [(2022, 501, 900), (2020, 1, 500)]
+
+
+def test_analysis_lists_gifters_by_signup_year(collected):
+    tmp_path, _, _, _ = collected
+    d = research.analyze(tmp_path, [], max_age=0)
+    every = {u["user_id"]: u for u in d["candidates"] + d["signup_candidates"]}
+    assert all(u["signup_at"] for u in every.values())
+    years = {y["year"]: y for y in d["signup_years"]}
+    assert sum(y["count"] for y in years.values()) == d["candidate_count"]
+    assert [y["earliest"] for y in d["signup_years"]][-1] is True
+    detail = research.gifter_detail(tmp_path, 20, [])
+    assert detail["summary"]["signup_at"] == every[20]["signup_at"]
 
 
 def test_older_research_db_gets_new_columns(tmp_path):
