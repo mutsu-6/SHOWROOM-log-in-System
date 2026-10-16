@@ -73,6 +73,8 @@ class Config:
     # 視聴はせずギフトだけ記録するルームと、参加ルームすべてを記録するイベント (件数の上限なし)
     record_rooms: list[str] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
+    # 視聴はせず、配信が始まったら一度だけ入室するルーム (視聴するルームと重なる分は除く)
+    enter_rooms: list[str] = field(default_factory=list)
     # 応援しているルーム (分析の基準) と、ギフターを調べるルーム。どちらも累計ランキングとイベントの
     # 貢献ランキングを集める (research_days / research_times の時刻に、問い合わせの間隔を空けて)
     support_rooms: list[str] = field(default_factory=list)
@@ -180,6 +182,9 @@ class Config:
             cfg.record_rooms = [r for r in env["SHOWROOM_RECORD_ROOMS"].split(",") if r.strip()]
         if env.get("SHOWROOM_EVENTS"):
             cfg.events = [e for e in env["SHOWROOM_EVENTS"].split(",") if e.strip()]
+        if env.get("SHOWROOM_ENTER_ROOMS"):
+            cfg.enter_rooms = [r for r in env["SHOWROOM_ENTER_ROOMS"].split(",") if r.strip()]
+        cfg.enter_rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in cfg.enter_rooms or []))
         for name in ("support_rooms", "research_rooms"):
             if env.get(env_key(name)):
                 setattr(cfg, name, [r for r in env[env_key(name)].split(",") if r.strip()])
@@ -202,7 +207,8 @@ class Config:
 
 ENV_PREFIX = "SHOWROOM_"
 # 環境変数を個別に扱う項目 (カンマ区切りの一覧・ログイン情報・空の値に意味がある・HTTPS_PROXY も見る)
-ENV_SPECIAL = {"rooms", "record_rooms", "events", "support_rooms", "research_rooms", "credentials", "browser_channel", "proxy"}
+ENV_SPECIAL = {"rooms", "record_rooms", "events", "enter_rooms", "support_rooms", "research_rooms", "credentials",
+               "browser_channel", "proxy"}
 TRUE_WORDS = {"1", "true", "yes", "on"}
 FALSE_WORDS = {"0", "false", "no", "off"}
 
@@ -247,7 +253,7 @@ def apply_env_overrides(cfg: "Config", env: dict[str, str]) -> None:
             raise ValueError(f"環境変数 {env_key(f.name)} の値が不正です: {raw!r} ({e})") from None
 
 
-SETTINGS_KEYS = ("rooms", "record_rooms", "events", "support_rooms", "research_rooms")
+SETTINGS_KEYS = ("rooms", "record_rooms", "events", "enter_rooms", "support_rooms", "research_rooms")
 
 
 def settings_path(cfg: Config) -> Path:

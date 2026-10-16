@@ -48,14 +48,6 @@ def parse_room_status(room_url_key: str, data: dict[str, Any]) -> RoomStatus:
     )
 
 
-def summarize_login(states: list[bool | None]) -> bool | None:
-    """全ルームのログイン確認をまとめる。1 ルームでも未ログインなら False。判定できなければ None。"""
-    known = [state for state in states if state is not None]
-    if not known:
-        return None
-    return all(known)
-
-
 def parse_login_state(data: Any) -> bool | None:
     """ログイン状態 API のレスポンスを解釈する。判定できなければ None。"""
     if not isinstance(data, dict):
@@ -96,6 +88,18 @@ class ShowroomAPI:
         except Exception as e:  # noqa: BLE001 - 判定不能として扱う
             log.debug("ログイン状態の確認に失敗: %s", e)
             return None
+
+    async def live_room_id(self) -> int | None:
+        """ログイン状態の確認に使うため、配信中のルームを 1 つ探す。見つからなければ None。"""
+        try:
+            data = await self._get_json("/api/live/onlives")
+            for genre in data.get("onlives", []):
+                for live in genre.get("lives", []):
+                    if live.get("room_id"):
+                        return int(live["room_id"])
+        except Exception as e:  # noqa: BLE001 - 見つからない扱いにして再ログインはしない
+            log.debug("配信中のルームを取得できません: %s", e)
+        return None
 
     async def login(self, account_id: str, password: str) -> bool:
         """ID/パスワードでログインする。CAPTCHA を要求された場合は False。"""

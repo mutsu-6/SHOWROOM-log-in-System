@@ -7,6 +7,9 @@
 rooms:
   - https://www.showroom-live.com/r/ROOM_URL_KEY
 
+# 視聴はせず、配信が始まったら一度だけ入室するルーム (ページを開き、配信に参加したのを確かめてから閉じる)
+enter_rooms: []
+
 # 視聴はせずギフトだけ記録するルームとイベント (参加ルームすべて)。件数の上限はない
 record_rooms: []
 events: []

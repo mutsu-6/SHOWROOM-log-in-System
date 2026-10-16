@@ -374,6 +374,12 @@ svg.chart g.col:hover rect:not(.hit) { filter: brightness(1.12); }
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
+      <div class="card" data-list="enter_rooms">
+        <h3 style="margin-top:0">配信開始時に入室するルーム</h3>
+        <div class="hint" style="margin-top:0">配信が始まったら一度だけページを開き、配信に参加したのを確かめてから閉じます (1 回 10 秒ほど)。視聴するルームと重なる分は入室しません。</div>
+        <ul class="list"></ul>
+        <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
+      </div>
       <div class="card" data-list="record_rooms">
         <h3 style="margin-top:0">ギフトだけ記録するルーム</h3>
         <div class="hint" style="margin-top:0">ブラウザを使わず、配信中のギフトを受信して記録します。件数の上限はありません。</div>
@@ -835,7 +841,7 @@ const LISTS = {
   room: {
     title: "ルームを選ぶ", what: "ルーム",
     load: (q) => roomList(q), remote: true,
-    filters: [["all", "すべて"], ["live", "配信中"], ["registered", "登録済み"], ["watch", "視聴中"], ["record", "ギフト記録"], ["has_records", "記録あり"]],
+    filters: [["all", "すべて"], ["live", "配信中"], ["registered", "登録済み"], ["watch", "視聴中"], ["enter", "入室"], ["record", "ギフト記録"], ["has_records", "記録あり"]],
     match: (r, f) => f === "all" || (f === "live" ? r.is_live : f === "registered" ? r.registered : r.tags.includes(f)),
     text: (r) => `${r.name} ${r.key}`,
     sorts: [["best", "おすすめ順"], ["viewers", "視聴者の多い順"], ["followers", "フォロワーの多い順"], ["started", "配信開始が新しい順"],
@@ -1494,9 +1500,9 @@ $("#r-collect").addEventListener("click", async () => {
 });
 
 /* ------------------------------------------------------------ 設定 */
-let saved = { rooms: [], record_rooms: [], events: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;
+let saved = { rooms: [], record_rooms: [], events: [], enter_rooms: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;
 const ROOM_RE = /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/;
-const KEY_RE = { rooms: ROOM_RE, record_rooms: ROOM_RE, support_rooms: ROOM_RE, research_rooms: ROOM_RE, events: /showroom-live\.com\/event\/([A-Za-z0-9_\-]+)/ };
+const KEY_RE = { rooms: ROOM_RE, enter_rooms: ROOM_RE, record_rooms: ROOM_RE, support_rooms: ROOM_RE, research_rooms: ROOM_RE, events: /showroom-live\.com\/event\/([A-Za-z0-9_\-]+)/ };
 function normalize(kind, value) {
   value = value.trim();
   const m = value.match(KEY_RE[kind]);

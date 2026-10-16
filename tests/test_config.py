@@ -119,3 +119,17 @@ def test_env_overrides_config_file_and_rejects_bad_values(tmp_path):
         Config.load(None, env={"SHOWROOM_HEADLESS": "たぶん"})
     with pytest.raises(ValueError, match="SHOWROOM_WEB_PORT"):
         Config.load(None, env={"SHOWROOM_WEB_PORT": "abc"})
+
+
+def test_enter_rooms_from_env_survive_older_saved_settings(tmp_path):
+    import json
+
+    env = {"SHOWROOM_ENTER_ROOMS": "x,https://www.showroom-live.com/r/y,x",
+           "SHOWROOM_STATE_FILE": str(tmp_path / "s.json")}
+    assert Config.load(None, env=env).enter_rooms == ["x", "y"]
+    # 入室するルームの項目が無い、以前の管理画面の保存内容
+    (tmp_path / "settings.json").write_text(json.dumps({"rooms": ["a"], "record_rooms": [], "events": []}))
+    cfg = Config.load(None, env=env)
+    assert cfg.rooms == ["a"] and cfg.enter_rooms == ["x", "y"]
+    (tmp_path / "settings.json").write_text(json.dumps({"rooms": ["a"], "enter_rooms": []}))
+    assert Config.load(None, env=env).enter_rooms == []
