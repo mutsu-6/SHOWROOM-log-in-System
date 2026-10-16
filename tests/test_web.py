@@ -195,7 +195,7 @@ def test_list_endpoints(admin, tmp_path, monkeypatch):
     keeper, base = admin
     monkeypatch.setattr(listing, "_names_cache", None)
     monkeypatch.setattr(listing, "_file_cache", {})
-    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir: {1: {"gift_name": "星", "point": 1, "free": True}})
+    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir, rooms=None: {1: {"gift_name": "星", "point": 1, "free": True}})
     record_gift(tmp_path, "a", 1, {"t": 2, "u": 7, "ac": "たろう", "g": 1, "n": 3, "created_at": time.time()})
     code, body = call(base + "/api/lists/rooms")
     rooms = {r["key"]: r for r in json.loads(body)["rooms"]}

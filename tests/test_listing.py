@@ -13,7 +13,8 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(listing, "_live_cache", None)
     monkeypatch.setattr(listing, "_search_cache", {})
     monkeypatch.setattr(listing, "_user_cache", {})
-    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir: {
+    monkeypatch.setattr(listing, "_name_misses", {})
+    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir, rooms=None: {
         1: {"gift_name": "星", "point": 1, "free": True}, 100: {"gift_name": "花火", "point": 100, "free": False}})
     now = time.time()
     record_gift(tmp_path, "room_a", 1, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 2, "created_at": now - 3600})
@@ -184,6 +185,8 @@ def test_gift_catalog_is_refreshed_after_each_scheduled_update(tmp_path, monkeyp
     assert listing.catalog_is_stale(now - 2 * 86400, now)
 
     listing.remember_rooms(tmp_path, {"a": ("A", 1), "b": ("B", 2)})
+    for key in ("a", "b"):  # 予定の時刻には、記録のあるルームの一覧を取り直す
+        record_gift(tmp_path, key, 1, {"t": 2, "u": 7, "ac": "たろう", "g": 10, "n": 1, "created_at": now})
     tables = {1: {10: {"gift_name": "星", "point": 1, "free": True}},
               2: {10: {"gift_name": "星", "point": 1, "free": True}, 20: {"gift_name": "花火", "point": 100, "free": False}}}
     r = listing.refresh_gift_catalog(tmp_path, get_catalog=tables.__getitem__, live_room_ids=[])
@@ -220,3 +223,87 @@ async def test_keeper_refreshes_gifts_at_start(monkeypatch, tmp_path):
         await asyncio.sleep(0.01)
     task.cancel()
     assert calls == [tmp_path] and listing.GIFT_UPDATE_SLOTS == [(0, 0, 0)]
+
+
+def test_gift_catalog_merges_every_room_and_reuses_fetched_rooms(tmp_path, monkeypatch):
+    monkeypatch.setattr(listing, "_names_cache", None)
+    listing.remember_rooms(tmp_path, {"room_a": ("A", 11), "room_b": ("B", 22)})
+    calls = []
+    lists = {11: {1: {"gift_name": "星", "point": 1, "free": True}},
+             22: {1: {"gift_name": "星", "point": 1, "free": True}, 500: {"gift_name": "B だけ", "point": 500, "free": False}}}
+
+    def fetch(room_id):
+        calls.append(room_id)
+        return lists[room_id]
+
+    monkeypatch.setattr(listing, "fetch_catalog", fetch)
+    assert set(listing.gift_catalog(tmp_path, ["room_a"])) == {1}
+    assert set(listing.gift_catalog(tmp_path, ["room_a", "room_b"])) == {1, 500}  # ルームだけのギフトも数える
+    assert calls == [11, 22]  # 取ったルームは取り直さない
+    assert set(listing.gift_catalog(tmp_path, ["room_a"])) == {1, 500} and calls == [11, 22]
+
+
+def test_gift_catalog_retries_failed_room_only_after_a_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(listing, "_names_cache", None)
+    listing.remember_rooms(tmp_path, {"room_a": ("A", 11)})
+    calls = []
+
+    def down(room_id):
+        calls.append(room_id)
+        raise OSError("down")
+
+    monkeypatch.setattr(listing, "fetch_catalog", down)
+    assert listing.gift_catalog(tmp_path, ["room_a"]) == {}
+    listing.gift_catalog(tmp_path, ["room_a"])
+    assert calls == [11]
+
+
+def test_missing_rooms_are_not_looked_up_every_time(tmp_path, monkeypatch):
+    import urllib.error
+
+    monkeypatch.setattr(listing, "_names_cache", None)
+    monkeypatch.setattr(listing, "_name_misses", {})
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        raise urllib.error.HTTPError(path, 404, "Not Found", {}, None)
+
+    listing.fill_unknown_names(tmp_path, ["gone"], get=get)
+    listing.fill_unknown_names(tmp_path, ["gone"], get=get)
+    assert len(calls) == 1
+    monkeypatch.setattr(listing, "_name_misses", {"gone": time.time() - 1})  # 時間が経てば問い合わせ直す
+    listing.fill_unknown_names(tmp_path, ["gone"], get=get)
+    assert len(calls) == 2
+
+
+def test_room_names_written_by_another_process_are_kept(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(listing, "_names_cache", None)
+    listing.remember_rooms(tmp_path, {"room_a": ("A", 11)})
+    path = tmp_path / "gifts" / "_rooms.json"
+    path.write_text(json.dumps({"room_a": {"name": "A", "room_id": 11}, "other": {"name": "別", "room_id": 5}}),
+                    encoding="utf-8")
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # 別のプロセスが後から書いた
+    listing.remember_rooms(tmp_path, {"room_b": ("B", 22)})
+    assert set(json.loads(path.read_text(encoding="utf-8"))) == {"room_a", "other", "room_b"}
+
+
+def test_rooms_fetched_before_scheduled_update_are_fetched_again(tmp_path, monkeypatch):
+    from showroom_keeper.schedule import previous_time
+
+    monkeypatch.setattr(listing, "_names_cache", None)
+    listing.remember_rooms(tmp_path, {"room_a": ("A", 11)})
+    calls = []
+    monkeypatch.setattr(listing, "fetch_catalog", lambda rid: calls.append(rid) or {1: {"gift_name": "星", "point": 1, "free": True}})
+    listing.gift_catalog(tmp_path, ["room_a"])
+    listing.gift_catalog(tmp_path, ["room_a"])
+    assert calls == [11]
+    path = tmp_path / "cache" / "gift_catalog.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["rooms"]["11"] = previous_time(time.time(), listing.GIFT_UPDATE_SLOTS) - 60  # 予定の時刻の前に取った
+    path.write_text(json.dumps(data), encoding="utf-8")
+    listing.gift_catalog(tmp_path, ["room_a"])
+    assert calls == [11, 11]
