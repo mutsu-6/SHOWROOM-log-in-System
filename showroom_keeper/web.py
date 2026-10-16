@@ -294,7 +294,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif url.path == "/api/lists/rooms":
                 from .listing import list_rooms
 
-                self._json({"rooms": list_rooms(self._state_dir(), self._settings(), live_rooms(self.keeper), lookup=True)})
+                self._json({"rooms": list_rooms(self._state_dir(), self._settings(), live_rooms(self.keeper), lookup=True,
+                                                q=q.get("q", "")[:100], showroom=q.get("showroom") == "1")})
             elif url.path == "/api/lists/events":
                 from .listing import list_events
 
@@ -304,6 +305,12 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 room = normalize_room_key(q["room"]) if q.get("room") else None
                 self._json(list_listeners(self._state_dir(), _days(q.get("days")), room))
+            elif url.path == "/api/lookup/user":
+                from .listing import lookup_user
+
+                if not str(q.get("id", "")).strip().isdigit():
+                    raise ValueError("ユーザー ID は数字で指定してください")
+                self._json({"user": lookup_user(q["id"])})
             elif url.path == "/api/listener":
                 from .listing import listener_detail
 

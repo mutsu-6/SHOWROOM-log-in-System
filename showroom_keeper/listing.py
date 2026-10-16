@@ -1,7 +1,8 @@
 """管理画面の一覧 (ルーム・イベント・リスナー) を作る。
 
 ルーム ID やイベントの URL、リスナー ID を毎回入力しなくても選べるよう、
-設定・記録済みのギフト・SHOWROOM のイベント一覧から候補を集める。
+設定・記録済みのギフトに加えて、SHOWROOM 全体 (配信中の全ルーム・ルーム検索・
+開催中/開催前/終了したイベント・ユーザー ID のプロフィール) から候補を集める。
 
 - ルーム名は記録 (gifts/<ルーム>.jsonl) に入っていないため、視聴・記録・イベント集計のときに
   分かった名前を gifts/_rooms.json に覚えておく
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -22,16 +24,26 @@ from typing import Any
 from .gifts import contribution_cache, fetch_catalog, gift_dir, gift_label
 from .status import JST
 
+log = logging.getLogger("web")
+
 ROOM_NAMES_FILE = "_rooms.json"
 EVENT_LIST_TTL = 1800  # SHOWROOM のイベント一覧を使い回す秒数
 CATALOG_TTL = 86400  # ギフトの名前・ポイント表を使い回す秒数
-EVENT_LIST_MAX_PAGES = 20
+EVENT_LIST_MAX_PAGES = 20  # 状態ごとの上限 (1 ページ 30 件)
+EVENT_STATUSES = {1: "ongoing", 3: "upcoming", 4: "ended"}  # /api/event/search の status (終了は約 1 か月分)
+LIVE_TTL = 120  # 配信中の全ルーム (onlives) を使い回す秒数
+SEARCH_TTL = 600  # ルーム検索の結果を使い回す秒数
+SEARCH_CACHE_MAX = 200
+USER_TTL = 3600  # ユーザーのプロフィールを使い回す秒数
 
 _lock = threading.Lock()
 _names_cache: dict[str, dict[str, Any]] | None = None
 _names_path: Path | None = None
 _file_cache: dict[Path, tuple[float, int, list[dict[str, Any]]]] = {}
 _event_cache: tuple[float, list[dict[str, Any]]] | None = None
+_live_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+_search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_user_cache: dict[int, tuple[float, dict[str, Any] | None]] = {}
 
 
 # ------------------------------------------------------------------ ルーム名
@@ -142,24 +154,104 @@ def _load_file(path: Path) -> list[dict[str, Any]]:
 
 
 # ------------------------------------------------------------------ ルーム一覧
-def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, str] | None = None,
-               lookup: Any = False) -> list[dict[str, Any]]:
-    """設定にあるルームと、ギフトの記録があるルームの一覧 (名前・区分・記録件数・最後のギフト)。
+def _room_item(key: str, name: str | None = None) -> dict[str, Any]:
+    return {"key": key, "name": name or key, "room_id": None, "tags": [], "registered": False, "is_live": False,
+            "records": 0, "last_at": None, "image": None, "viewers": None, "followers": None, "genre": None,
+            "started_at": None, "hit": False}
 
-    live は配信中と分かっているルーム {room_url_key: 名前} (視聴中・記録中のもの)。
-    lookup なら、名前を覚えていないルームを SHOWROOM に問い合わせる (関数を渡すとそれで取得する)。
+
+def showroom_live_rooms(get: Any = None) -> dict[str, dict[str, Any]]:
+    """SHOWROOM で今配信している全ルーム {room_url_key: 情報} (2 分ごとに取り直す)。"""
+    global _live_cache
+    from .gifts import _get
+
+    now = time.time()
+    with _lock:
+        if _live_cache and now - _live_cache[0] < LIVE_TTL:
+            return _live_cache[1]
+    data = (get or _get)("/api/live/onlives")
+    out: dict[str, dict[str, Any]] = {}
+    for group in (data or {}).get("onlives") or []:
+        for live in group.get("lives") or []:
+            key = live.get("room_url_key")
+            if not key:
+                continue
+            item = out.setdefault(key, {"name": live.get("main_name") or key, "room_id": live.get("room_id"),
+                                        "image": live.get("image"), "viewers": live.get("view_num"),
+                                        "followers": live.get("follower_num"), "genre": None,
+                                        "started_at": live.get("started_at")})
+            # 「人気」などのまとめ枠ではなく、そのルームのジャンルの枠の名前を使う
+            if group.get("genre_id") == live.get("genre_id") and group.get("genre_name"):
+                item["genre"] = group["genre_name"]
+    with _lock:
+        _live_cache = (now, out)
+    return out
+
+
+def search_showroom_rooms(q: str, get: Any = None) -> list[dict[str, Any]]:
+    """SHOWROOM のルーム検索 (名前で最大 100 件程度)。結果は 10 分使い回す。"""
+    from urllib.parse import quote
+
+    from .gifts import _get
+
+    q = q.strip()
+    if not q:
+        return []
+    now = time.time()
+    with _lock:
+        hit = _search_cache.get(q)
+        if hit and now - hit[0] < SEARCH_TTL:
+            return hit[1]
+    data = (get or _get)(f"/api/search/room?word={quote(q)}")
+    rows = [{"key": r["room_url_key"], "name": r.get("name") or r["room_url_key"], "room_id": r.get("room_id"),
+             "image": r.get("image"), "is_live": bool(r.get("is_online")), "followers": r.get("follower_num"),
+             "genre": r.get("genre_name")}
+            for r in (data or {}).get("result") or [] if isinstance(r, dict) and r.get("room_url_key")]
+    with _lock:
+        if len(_search_cache) >= SEARCH_CACHE_MAX:
+            _search_cache.pop(min(_search_cache, key=lambda k: _search_cache[k][0]))
+        _search_cache[q] = (now, rows)
+    return rows
+
+
+def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, str] | None = None,
+               lookup: Any = False, q: str = "", showroom: bool = False, get: Any = None) -> list[dict[str, Any]]:
+    """ルームの一覧 (名前・区分・記録件数・最後のギフト)。
+
+    設定にあるルームと、ギフトの記録があるルームを出す。live は配信中と分かっているルーム
+    {room_url_key: 名前} (視聴中・記録中のもの)。lookup なら、名前を覚えていないルームを
+    SHOWROOM に問い合わせる (関数を渡すとそれで取得する)。
+    showroom なら SHOWROOM で配信中の全ルームも加え、q があれば SHOWROOM のルーム検索の結果
+    (hit=True) も加える。
     """
+    from .config import normalize_room_key
+
     live = live or {}
     files = _record_files(state_dir)
-    keys = list(dict.fromkeys([*settings.get("rooms", []), *settings.get("record_rooms", []),
-                               *settings.get("enter_rooms", []), *live, *files]))
+    registered = list(dict.fromkeys([*settings.get("rooms", []), *settings.get("record_rooms", []),
+                                     *settings.get("enter_rooms", [])]))
+    keys = list(dict.fromkeys([*registered, *live, *files]))
+    typed = None
+    if q.strip():  # URL や room_url_key をそのまま入れた時は、そのルームを出す
+        try:
+            typed = normalize_room_key(q.strip())
+        except ValueError:
+            typed = None
+        if typed and typed not in keys and showroom:
+            keys.append(typed)
+            if lookup:  # 名前の分からないルームが多くても、入力したルームは必ず調べる
+                fill_unknown_names(state_dir, [typed], get=None if lookup is True else lookup)
     if lookup:
         fill_unknown_names(state_dir, keys, get=None if lookup is True else lookup)
     names = room_names(state_dir)
-    out = []
+    out: dict[str, dict[str, Any]] = {}
     for key in keys:
+        info = names.get(key) or {}
+        if key == typed and key not in registered and key not in files and not info.get("room_id"):
+            continue  # SHOWROOM に無いルーム
         rows = _load_file(files[key]) if key in files else []
-        tags = []
+        item = _room_item(key, live.get(key) or info.get("name"))
+        tags = item["tags"]
         if key in settings.get("rooms", []):
             tags.append("watch")
         if key in settings.get("record_rooms", []):
@@ -168,36 +260,88 @@ def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, 
             tags.append("enter")
         if rows:
             tags.append("has_records")
-        info = names.get(key) or {}
-        out.append({
-            "key": key,
-            "name": live.get(key) or info.get("name") or key,
-            "room_id": info.get("room_id"),
-            "tags": tags,
-            "is_live": key in live,
-            "records": len(rows),
-            "last_at": max((g["at"] for g in rows), default=None),
-        })
-    return out
+        item.update(room_id=info.get("room_id"), registered=key in registered, is_live=key in live,
+                    records=len(rows), last_at=max((g["at"] for g in rows), default=None), hit=key == typed)
+        out[key] = item
+    if showroom:
+        for key, info in _quiet(lambda: showroom_live_rooms(get), {}).items():
+            item = out.get(key) or out.setdefault(key, _room_item(key, info["name"]))
+            item.update({k: v for k, v in info.items() if v is not None and (k != "name" or item["name"] == key)})
+            item["is_live"] = True
+        for info in _quiet(lambda: search_showroom_rooms(q, get), []) if q.strip() else []:
+            item = out.get(info["key"]) or out.setdefault(info["key"], _room_item(info["key"], info["name"]))
+            for k in ("room_id", "image", "followers", "genre"):
+                item[k] = item[k] if item[k] is not None else info[k]
+            item["is_live"] = item["is_live"] or info["is_live"]
+            item["hit"] = True
+    return list(out.values())
+
+
+def _quiet(fn: Any, default: Any) -> Any:
+    """SHOWROOM から取れなくても、手元の一覧だけは出す。"""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        log.debug("SHOWROOM から一覧を取得できませんでした: %s", e)
+        return default
+
+
+# ------------------------------------------------------------------ ユーザー
+def lookup_user(user_id: Any, get: Any = None) -> dict[str, Any] | None:
+    """ユーザー ID から SHOWROOM のプロフィール (名前・アバター・レベル) を調べる。無ければ None。"""
+    from .gifts import _get
+
+    uid = int(str(user_id).strip())
+    now = time.time()
+    with _lock:
+        hit = _user_cache.get(uid)
+        if hit and now - hit[0] < USER_TTL:
+            return hit[1]
+    try:
+        data = (get or _get)(f"/api/user/profile?user_id={uid}")
+    except Exception as e:  # noqa: BLE001 - 404 (いない ID) も含む
+        if getattr(e, "code", None) not in (400, 404):
+            raise
+        data = None
+    found = ({"user_id": uid, "name": data.get("name"), "avatar": data.get("avatar_url"),
+              "level": data.get("fan_level"), "description": (data.get("description") or "")[:200]}
+             if isinstance(data, dict) and data.get("name") else None)
+    with _lock:
+        _user_cache[uid] = (now, found)
+    return found
 
 
 # ------------------------------------------------------------------ イベント一覧
 def _fetch_event_list(get: Any) -> list[dict[str, Any]]:
+    """SHOWROOM のイベント一覧 (開催中・開催前・終了したもの)。30 分使い回す。"""
     global _event_cache
+    from concurrent.futures import ThreadPoolExecutor
+
     now = time.time()
     with _lock:
         if _event_cache and now - _event_cache[0] < EVENT_LIST_TTL:
             return _event_cache[1]
-    events: list[dict[str, Any]] = []
-    page: Any = 1
-    seen = set()
-    while page and page not in seen and len(seen) < EVENT_LIST_MAX_PAGES:
-        seen.add(page)
-        data = get(f"/api/event/search?page={page}")
-        if not isinstance(data, dict):
-            break
-        events.extend(e for e in data.get("event_list") or [] if isinstance(e, dict))
-        page = data.get("next_page")
+
+    def pages(status: int) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        page: Any = 1
+        seen = set()
+        while page and page not in seen and len(seen) < EVENT_LIST_MAX_PAGES:
+            seen.add(page)
+            try:
+                data = get(f"/api/event/search?status={status}&page={page}")
+            except Exception:  # noqa: BLE001 - 取れた分だけ使う
+                if status == 1 and page == 1:
+                    raise
+                break
+            if not isinstance(data, dict):
+                break
+            events.extend(e for e in data.get("event_list") or [] if isinstance(e, dict))
+            page = data.get("next_page")
+        return events
+
+    with ThreadPoolExecutor(len(EVENT_STATUSES)) as ex:
+        events = [e for part in ex.map(pages, EVENT_STATUSES) for e in part]
     with _lock:
         _event_cache = (now, events)
     return events
@@ -212,7 +356,7 @@ def event_state(start: Any, end: Any, now: float) -> str:
 
 
 def list_events(state_dir: Path, configured: list[str], get: Any = None) -> list[dict[str, Any]]:
-    """SHOWROOM の公開イベント (開催中・開催前) と、記録の設定にあるイベントの一覧。"""
+    """SHOWROOM の公開イベント (開催中・開催前・約 1 か月以内に終了) と、記録の設定にあるイベントの一覧。"""
     from .gifts import _get
 
     get = get or _get

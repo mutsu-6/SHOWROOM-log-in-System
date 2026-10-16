@@ -205,3 +205,7 @@ def test_list_endpoints(admin, tmp_path, monkeypatch):
     code, body = call(base + "/api/listener?user=7")
     assert code == 200 and json.loads(body)["total"]["times"] == 1
     assert call(base + "/api/listener?user=abc")[0] == 400
+    monkeypatch.setattr(listing, "lookup_user", lambda uid: {"user_id": int(uid), "name": "だれか"})
+    code, body = call(base + "/api/lookup/user?id=12")
+    assert code == 200 and json.loads(body)["user"]["name"] == "だれか"
+    assert call(base + "/api/lookup/user?id=x1")[0] == 400
