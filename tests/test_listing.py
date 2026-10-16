@@ -171,3 +171,52 @@ def test_lookup_user_by_id(monkeypatch):
     assert listing.lookup_user(404, get=get) is None
     listing.lookup_user(5, get=get)
     assert len(calls) == 2  # 調べた結果は使い回す
+
+
+def test_gift_catalog_is_refreshed_after_each_scheduled_update(tmp_path, monkeypatch):
+    monkeypatch.setattr(listing, "_names_cache", None)
+    from showroom_keeper.schedule import previous_time
+
+    now = time.time()
+    last = previous_time(now, listing.GIFT_UPDATE_SLOTS)
+    assert listing.catalog_is_stale(last - 60, now)  # 予定の時刻より前に取った表は古い
+    assert not listing.catalog_is_stale(max(last, now - 60) + 1, now)
+    assert listing.catalog_is_stale(now - 2 * 86400, now)
+
+    listing.remember_rooms(tmp_path, {"a": ("A", 1), "b": ("B", 2)})
+    tables = {1: {10: {"gift_name": "星", "point": 1, "free": True}},
+              2: {10: {"gift_name": "星", "point": 1, "free": True}, 20: {"gift_name": "花火", "point": 100, "free": False}}}
+    r = listing.refresh_gift_catalog(tmp_path, get_catalog=tables.__getitem__, live_room_ids=[])
+    assert r == {"ok": True, "count": 2, "added": [], "changed": [], "first": True}  # ルームごとの一覧を合わせる
+    tables[2][20] = {"gift_name": "花火", "point": 300, "free": False}
+    tables[2][30] = {"gift_name": "新作", "point": 500, "free": False}
+    r = listing.refresh_gift_catalog(tmp_path, get_catalog=tables.__getitem__, live_room_ids=[])
+    assert (r["added"], r["changed"]) == (["新作"], ["花火"])
+    assert listing.gift_catalog(tmp_path)[20]["point"] == 300  # 取り直した直後は保存した表を使う
+
+    def down(room_id):
+        raise OSError("down")
+
+    assert listing.refresh_gift_catalog(tmp_path, get_catalog=down, live_room_ids=[])["ok"] is False
+    assert listing.gift_catalog(tmp_path)[30]["gift_name"] == "新作"  # 取れなくても前の表は残す
+
+
+async def test_keeper_refreshes_gifts_at_start(monkeypatch, tmp_path):
+    import asyncio
+
+    from conftest import REAL_GIFT_UPDATES
+    from showroom_keeper.config import Config
+    from showroom_keeper.keeper import Keeper
+
+    calls = []
+    monkeypatch.setattr(listing, "GIFT_UPDATE_SLOTS", listing.GIFT_UPDATE_SLOTS)  # テストのあとに戻す
+    monkeypatch.setattr(listing, "refresh_gift_catalog",
+                        lambda state_dir: calls.append(state_dir) or {"ok": True, "count": 1, "added": ["新作"], "changed": []})
+    k = Keeper(Config(state_file=tmp_path / "s.json", web_port=1, gift_update_days="mon", gift_update_times="0:00"))
+    task = asyncio.ensure_future(REAL_GIFT_UPDATES(k))
+    for _ in range(100):
+        if calls:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    assert calls == [tmp_path] and listing.GIFT_UPDATE_SLOTS == [(0, 0, 0)]

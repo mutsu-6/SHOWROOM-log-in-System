@@ -38,6 +38,8 @@ save_state_minutes: 10        # セッション (Cookie) の保存間隔 (分)
 block_trackers: true          # 広告・アクセス解析の読み込みを遮断 (読み込みが速くなる)
 block_media: false            # 映像を受信しない (帯域節約。視聴扱いにならない可能性あり)
 video_quality: medium         # 視聴する画質 low (256x144) / medium (640x360) / original (配信そのまま) / auto (再生プレーヤー任せ)
+gift_update_days: mon         # ギフトの一覧を SHOWROOM から取り直す曜日 (mon〜sun / 月〜日、毎日)
+gift_update_times: "0:00,3:00,12:00,15:00,18:00"  # 取り直す時刻 (日本時間)。起動時にも取り直す
 background_tabs: true         # 配信ページを空白のページの裏に開いて CPU を減らす (約 3 割)
 viewer_count: true            # リアルタイム視聴者数を取得 (要ログイン)
 viewer_count_interval: 60     # その間隔 (秒)

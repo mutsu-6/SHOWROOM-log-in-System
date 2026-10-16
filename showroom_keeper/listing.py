@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .gifts import contribution_cache, fetch_catalog, gift_dir, gift_label
+from .schedule import parse_slots, previous_time
 from .status import JST
 
 log = logging.getLogger("web")
@@ -393,38 +394,85 @@ def list_events(state_dir: Path, configured: list[str], get: Any = None) -> list
 
 
 # ------------------------------------------------------------------ ギフトのポイント表 (全ルーム共通)
-def gift_catalog(state_dir: Path) -> dict[int, dict[str, Any]]:
-    """ギフトの名前・ポイント・無料かどうか。1 日 1 回、覚えているルームの 1 つから取り直す。"""
-    path = state_dir / "cache" / "gift_catalog.json"
-    try:
-        cached = json.loads(path.read_text(encoding="utf-8"))
-        if time.time() - float(cached["at"]) < CATALOG_TTL:
-            return {int(k): v for k, v in cached["gifts"].items()}
-    except (OSError, ValueError, KeyError, TypeError):
-        cached = None
-    room_ids = [v.get("room_id") for v in room_names(state_dir).values() if v.get("room_id")][:3]
-    if not room_ids:  # まだルームを覚えていなければ、配信中のルームを 1 つ使う
-        try:
-            from .gifts import _get
+# ギフトの一覧を更新する予定 (日本時間)。SHOWROOM はギフトを頻繁に入れ替えるため、この時刻を過ぎたら取り直す。
+# keeper は設定 (gift_update_days / gift_update_times) で置き換え、その時刻に自分から取り直す
+GIFT_UPDATE_SLOTS = parse_slots("mon", "0:00,3:00,12:00,15:00,18:00")
+CATALOG_ROOMS = 3  # 一覧を取るルームの数 (ルームごとに少し違うので、合わせて使う)
 
-            room_ids = [l["room_id"] for gr in _get("/api/live/onlives").get("onlives", [])
-                        for l in gr.get("lives", []) if l.get("room_id")][:1]
+
+def _catalog_path(state_dir: Path) -> Path:
+    return state_dir / "cache" / "gift_catalog.json"
+
+
+def _read_catalog(state_dir: Path) -> tuple[float, dict[int, dict[str, Any]]] | None:
+    try:
+        cached = json.loads(_catalog_path(state_dir).read_text(encoding="utf-8"))
+        return float(cached["at"]), {int(k): v for k, v in cached["gifts"].items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def catalog_is_stale(fetched_at: float, now: float | None = None) -> bool:
+    """取った時刻が古いか (1 日たった、または取ったあとに更新の予定時刻を過ぎた)。"""
+    now = time.time() if now is None else now
+    return now - fetched_at >= CATALOG_TTL or fetched_at < previous_time(now, GIFT_UPDATE_SLOTS)
+
+
+def refresh_gift_catalog(state_dir: Path, get_catalog: Any = None, live_room_ids: Any = None) -> dict[str, Any]:
+    """SHOWROOM からギフトの一覧を取り直して保存する。戻り値は {ok, count, added, changed, first}。
+
+    覚えているルームと配信中のルームから CATALOG_ROOMS ルーム分を取り、合わせて使う。
+    取れなかった時は前の一覧をそのまま残す。
+    """
+    get_catalog = get_catalog or fetch_catalog
+    old = (_read_catalog(state_dir) or (0.0, {}))[1]
+    room_ids = [v.get("room_id") for v in room_names(state_dir).values() if v.get("room_id")][:CATALOG_ROOMS]
+    if len(room_ids) < CATALOG_ROOMS:  # 足りない分は配信中のルームで補う
+        try:
+            if live_room_ids is None:
+                from .gifts import _get
+
+                live = [l["room_id"] for gr in _get("/api/live/onlives").get("onlives", [])
+                        for l in gr.get("lives", []) if l.get("room_id")]
+            else:
+                live = list(live_room_ids)
+            room_ids += [r for r in dict.fromkeys(live) if r not in room_ids][:CATALOG_ROOMS - len(room_ids)]
         except Exception:  # noqa: BLE001
-            room_ids = []
+            pass
+    catalog: dict[int, dict[str, Any]] = {}
     for room_id in room_ids:
         try:
-            catalog = fetch_catalog(int(room_id))
-        except Exception:  # noqa: BLE001
-            continue
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"at": time.time(), "gifts": catalog}, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
-        return catalog
-    if cached:  # 取り直せなければ古い表を使う
-        return {int(k): v for k, v in cached.get("gifts", {}).items()}
-    return {}
+            catalog.update(get_catalog(int(room_id)))
+        except Exception as e:  # noqa: BLE001 - 取れたルームの分だけ使う
+            log.debug("ギフトの一覧を取れませんでした (room_id %s): %s", room_id, e)
+    if not catalog:
+        return {"ok": False, "count": len(old), "added": [], "changed": [], "first": False}
+    try:
+        path = _catalog_path(state_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps({"at": time.time(), "gifts": catalog}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    added = [g["gift_name"] or str(k) for k, g in catalog.items() if k not in old]
+    changed = [g["gift_name"] or str(k) for k, g in catalog.items()
+               if k in old and (old[k].get("point"), old[k].get("free")) != (g.get("point"), g.get("free"))]
+    if not old:  # 初めて取った時は、全部が「新しい」ギフトになるので数えない
+        added = []
+    return {"ok": True, "count": len(catalog), "added": added, "changed": changed, "first": not old}
+
+
+def gift_catalog(state_dir: Path) -> dict[int, dict[str, Any]]:
+    """ギフトの名前・ポイント・無料かどうか。古ければ (catalog_is_stale) 取り直す。"""
+    cached = _read_catalog(state_dir)
+    if cached and not catalog_is_stale(cached[0]):
+        return cached[1]
+    refresh_gift_catalog(state_dir)
+    fresh = _read_catalog(state_dir)
+    if fresh:
+        return fresh[1]
+    return cached[1] if cached else {}  # 取り直せなければ古い表を使う
 
 
 def _points(catalog: dict[int, dict[str, Any]], g: dict[str, Any]) -> tuple[int, bool]:
