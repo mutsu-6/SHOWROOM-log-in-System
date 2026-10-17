@@ -38,28 +38,98 @@ def _event_row(e: Any, now: float) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ 検索
+RECORDED_TTL = 60  # 記録したギフトの送り主の名前の一覧を使い回す時間 (秒)
+_recorded_names: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
+
+
+def _recorded(state_dir: Path) -> dict[int, dict[str, Any]]:
+    """記録したギフトの送り主 {user_id: {name: 最後の名前, names: 使っていた名前, times: 回数}}。
+
+    少額でランキングに出ない人は、ランキングから作る users 表に入らないので、記録からも探す。
+    """
+    from .listing import _load_file, _record_files
+
+    key = str(Path(state_dir).resolve())
+    hit = _recorded_names.get(key)
+    if hit and time.time() - hit[0] < RECORDED_TTL:
+        return hit[1]
+    out: dict[int, dict[str, Any]] = {}
+    for path in _record_files(state_dir).values():
+        for g in _load_file(path):
+            uid, name = g.get("user_id"), g.get("name")
+            if uid is None:
+                continue
+            u = out.setdefault(int(uid), {"name": "", "names": set(), "times": 0, "at": 0})
+            u["times"] += 1
+            if name:
+                u["names"].add(name)
+                if g["at"] >= u["at"]:
+                    u["name"], u["at"] = name, g["at"]
+    _recorded_names[key] = (time.time(), out)
+    return out
+
+
 def search(state_dir: Path, q: str) -> dict[str, Any]:
-    """上の検索欄: ギフター (名前・ユーザー ID)・ルーム (名前・URL キー)・イベント (名前・番号) を探す。"""
+    """上の検索欄: ギフター・ルーム・イベントを探す。
+
+    - ギフター: ランキングに出た人 (users) の名前・ユーザー ID、前の名前 (user_names)、記録したギフトの送り主の名前
+    - ルーム: 見つけたルーム (rooms) の名前・URL キー・room_id と、視聴・記録の設定や記録したギフトにあるルーム
+    - イベント: 見つけたイベントの名前・URL キー・番号 (名前のまだ分からないイベントは番号で)
+    """
+    from .listing import room_names
+
     q = str(q or "").strip()[:100]
     if not q:
         return {"gifters": [], "rooms": [], "events": []}
     like = f"%{q.replace('%', '').replace('_', '')}%"
+    low = q.lower()
     digits = q.isdigit()
+    num = int(q) if digits else -1
     now = time.time()
     with Store(state_dir) as s:
-        gifters = [dict(r) for r in s.all(
-            """SELECT u.user_id, u.name, (SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id) AS points
-               FROM users u WHERE u.user_id = ? OR u.name LIKE ? ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""",
-            (int(q) if digits else -1, like, int(q) if digits else -1, SEARCH_LIMIT))]
-        rooms = [dict(r) for r in s.all(
+        points = "(SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id)"
+        gifters = [{**dict(r), "match": None} for r in s.all(
+            f"""SELECT u.user_id, u.name, {points} AS points FROM users u WHERE u.user_id = ? OR u.name LIKE ?
+                ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""", (num, like, num, SEARCH_LIMIT))]
+        seen = {g["user_id"] for g in gifters}
+        # 前の名前で見つかった人 (今の名前と、どの名前で見つかったかを出す)
+        for r in s.all(f"""SELECT n.user_id, n.name AS old, u.name, {points} AS points FROM user_names n
+                           LEFT JOIN users u USING(user_id) WHERE n.name LIKE ? ORDER BY points DESC LIMIT ?""",
+                       (like, SEARCH_LIMIT)):
+            if r["user_id"] not in seen:
+                seen.add(r["user_id"])
+                gifters.append({"user_id": r["user_id"], "name": r["name"] or r["old"], "points": r["points"],
+                                "match": {"kind": "former", "name": r["old"]}})
+        # 記録したギフトにしか出ていない人 (少額でランキングに出ない人など)
+        rec = [(uid, u) for uid, u in _recorded(state_dir).items()
+               if uid not in seen and (uid == num or any(low in n.lower() for n in u["names"]))]
+        rec.sort(key=lambda x: (x[0] != num, -x[1]["times"]))
+        for uid, u in rec[:SEARCH_LIMIT]:
+            hit = u["name"] if low in u["name"].lower() else next((n for n in u["names"] if low in n.lower()), u["name"])
+            gifters.append({"user_id": uid, "name": u["name"] or hit, "points": None, "times": u["times"],
+                            "match": {"kind": "recorded", "name": hit}})
+
+        rooms = [{**dict(r), "source": "research"} for r in s.all(
             """SELECT room_id, key, name, followers, live_at FROM rooms
                WHERE room_id = ? OR key = ? OR name LIKE ? OR key LIKE ?
                ORDER BY room_id = ? DESC, key = ? DESC, COALESCE(followers, 0) DESC LIMIT ?""",
-            (int(q) if digits else -1, q, like, like, int(q) if digits else -1, q, SEARCH_LIMIT))]
-        events = [_event_row(r, now) for r in s.all(
-            """SELECT * FROM events WHERE event_id = ? OR key = ? OR name LIKE ?
+            (num, q, like, like, num, q, SEARCH_LIMIT))]
+        # 視聴・記録の設定や記録したギフトにあるルーム (全ルームの収集でまだ見つかっていないものも)
+        known = {r["key"] for r in rooms if r["key"]} | {str(r["room_id"]) for r in rooms}
+        for key, info in room_names(state_dir).items():
+            name = (info or {}).get("name") or key
+            rid = (info or {}).get("room_id")
+            if key in known or (rid is not None and str(rid) in known):
+                continue
+            if low in key.lower() or low in str(name).lower() or (digits and rid is not None and int(rid) == num):
+                rooms.append({"room_id": rid, "key": key, "name": name, "followers": None, "live_at": None, "source": "known"})
+                if len(rooms) >= SEARCH_LIMIT * 2:
+                    break
+
+        events = [{**_event_row(r, now), "named": bool(r["name"])} for r in s.all(
+            """SELECT * FROM events WHERE event_id = ? OR key = ? OR name LIKE ? OR key LIKE ?
                ORDER BY event_id = ? DESC, COALESCE(end, 0) DESC LIMIT ?""",
-            (int(q) if digits else -1, q, like, int(q) if digits else -1, SEARCH_LIMIT))]
+            (num, q, like, like, num, SEARCH_LIMIT))]
     return {"gifters": gifters, "rooms": rooms, "events": events}
 
 

@@ -257,6 +257,7 @@ section[data-page].active { display: block; }
 .gresults a { display: flex; gap: 8px; align-items: baseline; padding: 7px 8px; border-radius: 8px; color: var(--text); }
 .gresults a:hover, .gresults a.hl { background: var(--panel2); text-decoration: none; }
 .gresults a .s { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.gresults a .via { display: block; color: var(--muted); font-size: 11px; }
 .gresults .none { color: var(--muted); padding: 10px 8px; font-size: 13px; }
 #offline { background: var(--warn-soft); color: var(--warn); font-weight: 600; text-align: center; padding: 6px 12px; font-size: 13px; }
 .page-head { display: flex; align-items: flex-start; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -1985,7 +1986,7 @@ async function showGifter(uid) {
     ${watch ? `<div class="row" style="margin:-4px 0 12px"><textarea id="gp-memo" class="grow" rows="2" maxlength="500" placeholder="メモ (例: 月末に大きく送る、歌の配信が好き)">${esc(watch.memo)}</textarea>
       <button class="btn small" id="gp-memo-save">メモを保存</button></div>` : ""}`;
   const tiles = [];
-  if (s) {
+  if (s && (s.total_points || s.event_count)) {  // ランキングに出ていない (記録したギフトだけの) 人は、空の数字を出さない
     tiles.push(tile("分かったポイント", `${shortNum(s.total_points)} <small>pt</small>`, `${num(s.room_count)} ルーム`));
     if (s.support_points) tiles.push(tile("応援ルームへ", `${shortNum(s.support_points)} <small>pt</small>`));
     tiles.push(tile("参加したイベント", `${num(s.event_count)} <small>件</small>`, s.best_rank ? `最高 ${num(s.best_rank)} 位 ・ ${shortNum(s.event_points)} pt` : ""));
@@ -1994,7 +1995,8 @@ async function showGifter(uid) {
   }
   if (rec) tiles.push(tile("記録したギフト", `${shortNum(rec.total.points)} <small>pt</small>`, `有料 ${shortNum(rec.total.paid_points)} ・ ${num(rec.total.times)} 回 ・ 最後 ${ago(rec.last_at)}`));
   html += `<div class="tiles">${tiles.join("")}</div>`;
-  if (s) html += SCOPE_NOTE;
+  if (s && (s.total_points || s.event_count)) html += SCOPE_NOTE;
+  else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
   if (d.found) {
     html += `<h3>ルーム別${d.room_total > d.rooms.length ? ` <small class="muted">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</small>` : ""}</h3>` + dataTable("gp-rooms", [
@@ -2326,12 +2328,18 @@ async function runSearch() {
   if (seq !== qs.seq) return;
   const items = [];
   if (/^\d{1,12}$/.test(q) && !r.gifters.some((g) => String(g.user_id) === q)) items.push({ grp: "ギフター", href: `#gifter/${q}`, t: `ユーザー ID ${q} のページを開く`, s: "" });
-  r.gifters.forEach((g) => items.push({ grp: "ギフター", href: `#gifter/${g.user_id}`, t: g.name || "(名前なし)", s: `ID ${g.user_id}${g.points ? ` ・ ${shortNum(g.points)} pt` : ""}` }));
-  r.rooms.forEach((x) => items.push({ grp: "ルーム", href: `#room/${encodeURIComponent(x.key || x.room_id)}`, t: x.name || x.key, s: x.followers != null ? `フォロワー ${shortNum(x.followers)}` : "" }));
-  r.events.forEach((e) => items.push({ grp: "イベント", href: `#event/${e.event_id}`, t: e.name, s: e.state === "ongoing" ? "開催中" : e.end ? ymd(e.end) : "" }));
+  // どの名前・どの記録で見つかったかを添える (前の名前、記録したギフトにだけ出ている人、設定・記録だけのルーム、名前の分からないイベント)
+  const via = (g) => !g.match ? "" : g.match.kind === "former" ? `前の名前「${g.match.name}」で見つかりました`
+    : `記録したギフト ${num(g.times)} 回${g.match.name !== g.name ? `・「${g.match.name}」で見つかりました` : ""} (ランキングには出ていません)`;
+  r.gifters.forEach((g) => items.push({ grp: "ギフター", href: `#gifter/${g.user_id}`, t: g.name || "(名前なし)",
+    s: `ID ${g.user_id}${g.points ? ` ・ ${shortNum(g.points)} pt` : ""}`, note: via(g) }));
+  r.rooms.forEach((x) => items.push({ grp: "ルーム", href: `#room/${encodeURIComponent(x.key || x.room_id)}`, t: x.name || x.key,
+    s: x.followers != null ? `フォロワー ${shortNum(x.followers)}` : "", note: x.source === "known" ? "視聴・記録の設定か記録したギフトにあるルーム (まだ情報を集めていません)" : "" }));
+  r.events.forEach((e) => items.push({ grp: "イベント", href: `#event/${e.event_id}`, t: e.name, s: e.state === "ongoing" ? "開催中" : e.end ? ymd(e.end) : "",
+    note: e.named === false ? "名前はまだ分かっていません (参加ルームを集めると分かります)" : "" }));
   qs.items = items; qs.hl = items.length ? 0 : -1;
   let grp = "";
-  box.innerHTML = items.length ? items.map((it, i) => `${it.grp !== grp ? `<div class="grp">${(grp = it.grp)}</div>` : ""}<a href="${esc(it.href)}" class="${i === qs.hl ? "hl" : ""}" data-i="${i}"><span>${esc(it.t)}</span><span class="s">${esc(it.s)}</span></a>`).join("")
+  box.innerHTML = items.length ? items.map((it, i) => `${it.grp !== grp ? `<div class="grp">${(grp = it.grp)}</div>` : ""}<a href="${esc(it.href)}" class="${i === qs.hl ? "hl" : ""}" data-i="${i}"><span>${esc(it.t)}${it.note ? `<small class="via">${esc(it.note)}</small>` : ""}</span><span class="s">${esc(it.s)}</span></a>`).join("")
     : `<div class="none">集めた情報には見つかりません。視聴・記録の設定は「設定」で SHOWROOM 全体から探せます。</div>`;
 }
 $("#q").addEventListener("input", () => { clearTimeout(qs.timer); qs.timer = setTimeout(runSearch, 300); });
