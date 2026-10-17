@@ -20,7 +20,8 @@ def _event(s, eid, end, rooms, start=None):
 
 
 def test_contribution_stats_and_event_median(tmp_path):
-    assert contribution_stats([5, 1, 10, 3]) == (4, 19, 10, 18, 19)
+    assert contribution_stats([5, 1, 10, 3]) == (4, 19, 10, 18, 19, 0)  # 100 人に届かないので 100 位は 0
+    assert contribution_stats(range(1, 151))[5] == 51  # 150 人なら、100 位は 51 pt
     assert median([3, 1, 2]) == 2 and median([1, 2, 3, 4]) == 2.5 and median([]) is None
     with Store(tmp_path) as s:
         _event(s, 1, NOW - DAY, {1: (100, 1, [60, 30, 10]), 2: (50, 2, []), 3: (0, 3, [])})
@@ -296,3 +297,30 @@ def test_momentum_ignores_tiny_events(tmp_path):
             _event(s, eid, NOW - days * DAY, {1: (100, rank, []), 9: (50, 3 - rank, [])})
         m = ra.momentum(s, 1, NOW)
         assert m["label"] is None and m["recent_events"] == 0
+
+
+def test_depth_from_100th_contributor(tmp_path):
+    with Store(tmp_path) as s:
+        # 25 ルーム × 3 イベント (同じ規模)。100 位のポイントがルームごとに違う。ルーム 25 は 50 人しかいない
+        for eid in (1, 2, 3):
+            rooms = {r: (100000, r, [1000] * 99 + [r * 10] if r < 25 else [1000] * 50) for r in range(1, 26)}
+            _event(s, eid, NOW - eid * 10 * DAY, rooms)
+        assert s.one("SELECT c_p100 FROM room_events WHERE room_id=7 AND event_id=1")[0] == 70
+        s.set_meta("room_stats_upto", True)
+        while ra.step(s, NOW):
+            pass
+        depth = {r["room_id"]: r["depth"] for r in s.all("SELECT room_id, depth FROM room_profile")}
+        assert depth[24] == "厚い" and depth[1] == "やや薄い" and depth[12] == "ふつう" and depth[25] == "薄い"
+        assert s.one("SELECT depth_pt FROM room_profile WHERE room_id=24")[0] == 240
+    lst = explore.room_profiles(tmp_path, depth="薄い")
+    assert [r["room_id"] for r in lst["rooms"]] == [25] and lst["depth_counts"]["厚い"] >= 1
+    assert explore.room_profiles(tmp_path, order="depth")["rooms"][0]["room_id"] == 24
+    d = explore.room_detail(tmp_path, "24")["analysis"]
+    assert d["depth"] == "厚い" and d["metrics"]["depth_pt"] == 240
+
+
+def test_depth_needs_enough_rooms_to_compare():
+    m = {"size_class": 1, "depth_pt": 50, "depth_rel": 0.5}
+    assert ra.depth_label(m, {"1": {"depth_n": 3, "depth_p25": 0.1, "depth_p75": 1}}) is None
+    assert ra.depth_label({**m, "depth_pt": 0, "depth_rel": 0}, None) == "薄い"  # 100 人に届かないのは、くらべなくても薄い
+    assert ra.depth_label(None, None) is None

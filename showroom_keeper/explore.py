@@ -205,10 +205,11 @@ def _overlap(s: Store, rid: int) -> list[dict[str, Any]]:
     return out
 
 
-def room_profiles(state_dir: Path, rtype: str | None = None, style: str | None = None, order: str = "momentum") -> dict[str, Any]:
-    """ルームの一覧の、タイプ・勢い・戦術 (1 日 1 回作り直した分)。"""
+def room_profiles(state_dir: Path, rtype: str | None = None, style: str | None = None, order: str = "momentum",
+                  depth: str | None = None) -> dict[str, Any]:
+    """ルームの一覧の、タイプ・勢い・戦術・層の厚さ (1 日 1 回作り直した分)。"""
     with Store(state_dir) as s:
-        return room_analysis.profile_list(s, rtype or None, style or None, order or "momentum")
+        return room_analysis.profile_list(s, rtype or None, style or None, order or "momentum", depth=depth or None)
 
 
 # ------------------------------------------------------------------ イベント

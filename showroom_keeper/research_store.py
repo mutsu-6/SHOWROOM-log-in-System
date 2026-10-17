@@ -96,10 +96,17 @@ ROOM_DAILY_KEEP = 400  # room_daily を残す日数
 DAY_SQL = "strftime('%Y-%m-%d', ? + 9 * 3600, 'unixepoch')"  # 日本時間の日付
 
 
-def contribution_stats(points: Iterable[Any]) -> tuple[int, int, int, int, int]:
-    """貢献ランキングの (人数, 合計, 1 位, 上位 3 人, 上位 10 人) のポイント (ルームのタイプ分けに使う)。"""
+CONTRIB_FULL = 100  # 貢献ランキングに載る人数 (この順位の人のポイントを、ファンの層の厚さに使う)
+
+
+def contribution_stats(points: Iterable[Any]) -> tuple[int, int, int, int, int, int]:
+    """貢献ランキングの (人数, 合計, 1 位, 上位 3 人, 上位 10 人, 100 位) のポイント (ルームのタイプ分けに使う)。
+
+    100 位のポイントは、100 人に届かなければ 0 (101 人目以降は誰も送っていないのと同じ扱い)。
+    """
     pts = sorted((int(p or 0) for p in points), reverse=True)
-    return len(pts), sum(pts), sum(pts[:1]), sum(pts[:3]), sum(pts[:10])
+    p100 = pts[CONTRIB_FULL - 1] if len(pts) >= CONTRIB_FULL else 0
+    return len(pts), sum(pts), sum(pts[:1]), sum(pts[:3]), sum(pts[:10]), p100
 
 
 def median(values: Iterable[Any]) -> float | None:
@@ -138,10 +145,15 @@ class Store:
                                    ("events", "median_point INTEGER"), ("events", "style_at REAL"),
                                    ("room_events", "c_count INTEGER"), ("room_events", "c_sum INTEGER"),
                                    ("room_events", "c_top1 INTEGER"), ("room_events", "c_top3 INTEGER"),
-                                   ("room_events", "c_top10 INTEGER"), ("contributions", "guessed INTEGER")):
+                                   ("room_events", "c_top10 INTEGER"), ("contributions", "guessed INTEGER"),
+                                   ("room_events", "c_p100 INTEGER"), ("room_profile", "depth_pt REAL"),
+                                   ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+                        if (table, col.split()[0]) == ("room_events", "c_p100"):
+                            # 100 位のポイントを、前に集めた分からも作り直す (build_room_stats が少しずつ)
+                            self.conn.execute("DELETE FROM meta WHERE k='room_stats_upto'")
                 _import_json(self)
                 _mark_guessed(self)
                 _ready.add(str(path))
@@ -283,12 +295,12 @@ class Store:
                                WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
                                ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
             # 名前で推測した分 (Internet Archive) は、分かった人だけの一部なので、ルームのタイプ分けの数字は作らない
-            stats = (None,) * 5 if any(r.get("guessed") for r in rows) else contribution_stats(r["point"] for r in rows)
-            c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final, c_count, c_sum, c_top1, c_top3, c_top10)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            stats = (None,) * 6 if any(r.get("guessed") for r in rows) else contribution_stats(r["point"] for r in rows)
+            c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final, c_count, c_sum, c_top1, c_top3, c_top10, c_p100)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
                            failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
-                           c_top3=excluded.c_top3, c_top10=excluded.c_top10""", (room_id, event_id, now, int(final), *stats))
+                           c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
             self._names(c, rows, now)
 
     # ---------------------------------------------------------------- 月ごとの集計 (user_month)
@@ -360,7 +372,8 @@ class Store:
             with self.tx() as c:
                 c.executemany("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
                               [(len(p), _median_point(p), e) for e, p in points.items()])
-                c.executemany("UPDATE room_events SET c_count=?, c_sum=?, c_top1=?, c_top3=?, c_top10=? WHERE event_id=? AND room_id=?",
+                c.executemany("""UPDATE room_events SET c_count=?, c_sum=?, c_top1=?, c_top3=?, c_top10=?, c_p100=?
+                                 WHERE event_id=? AND room_id=?""",
                               [(*contribution_stats(p), e, r) for (e, r), p in contrib.items()])
         done = len(ids) < step
         self.set_meta("room_stats_upto", True if done else ids[-1])
@@ -433,7 +446,7 @@ def _mark_guessed(store: Store) -> None:
                                JOIN room_events re ON re.event_id = e.event_id AND re.room_id = p.room_id
                              WHERE p.kind = 'contribution' AND p.fetched_at BETWEEN re.ranking_at AND re.ranking_at + 120""").fetchall()
         c.executemany("UPDATE contributions SET guessed=1 WHERE event_id=? AND room_id=?", [tuple(x) for x in pairs])
-        c.executemany("""UPDATE room_events SET c_count=NULL, c_sum=NULL, c_top1=NULL, c_top3=NULL, c_top10=NULL
+        c.executemany("""UPDATE room_events SET c_count=NULL, c_sum=NULL, c_top1=NULL, c_top3=NULL, c_top10=NULL, c_p100=NULL
                          WHERE event_id=? AND room_id=?""", [tuple(x) for x in pairs])
         c.execute("INSERT INTO meta(k, v) VALUES ('guessed_marked', 'true') ON CONFLICT(k) DO UPDATE SET v=excluded.v")
     if pairs:

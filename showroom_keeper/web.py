@@ -357,7 +357,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 if url.path == "/api/search":
                     self._json(explore.search(state_dir, q.get("q", "")))
                 elif url.path == "/api/room_profiles":
-                    self._json(explore.room_profiles(state_dir, q.get("type"), q.get("style"), q.get("order", "momentum")))
+                    self._json(explore.room_profiles(state_dir, q.get("type"), q.get("style"), q.get("order", "momentum"),
+                                                    q.get("depth")))
                 elif url.path == "/api/room":
                     self._json(explore.room_detail(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
                 elif url.path == "/api/events":

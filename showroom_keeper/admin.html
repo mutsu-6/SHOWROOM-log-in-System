@@ -2052,12 +2052,12 @@ const pctText = (x, d = 0) => x == null ? "—" : `${(x * 100).toFixed(d)}%`;
 const placeText = (x) => x == null ? "—" : `上から ${(x * 100).toFixed(0)}%`;
 const momentumHtml = (v, label) => v == null ? '<span class="uid">判定できない</span>'
   : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid" title="順位の位置 (上から何%) が、前の 60 日より何ポイント上がったか">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}</span>`;
-const roomFilter = { type: "", style: "", order: "momentum" };
+const roomFilter = { type: "", style: "", depth: "", order: "momentum" };
 async function showRoomProfiles() {
   const box = $("#rm-body");
   box.innerHTML = loadingHtml();
   let d;
-  try { d = await api(`/api/room_profiles?type=${encodeURIComponent(roomFilter.type)}&style=${encodeURIComponent(roomFilter.style)}&order=${roomFilter.order}`); }
+  try { d = await api(`/api/room_profiles?type=${encodeURIComponent(roomFilter.type)}&style=${encodeURIComponent(roomFilter.style)}&depth=${encodeURIComponent(roomFilter.depth)}&order=${roomFilter.order}`); }
   catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "rooms" || page.arg !== "profile") return;
   const opt = (v, l, cur) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`;
@@ -2069,10 +2069,13 @@ async function showRoomProfiles() {
   html += `<div class="row" style="margin-bottom:8px">
       <label>タイプ <select id="rmp-type">${opt("", "すべて", roomFilter.type)}${Object.keys(d.types).map((t) => opt(t, `${t} (${num(d.type_counts[t] || 0)})`, roomFilter.type)).join("")}</select></label>
       <label>戦術 <select id="rmp-style">${opt("", "すべて", roomFilter.style)}${Object.keys(d.styles).map((t) => opt(t, `${t} (${num(d.style_counts[t] || 0)})`, roomFilter.style)).join("")}</select></label>
-      <label>並べ方 <select id="rmp-order">${opt("momentum", "勢いのある順", roomFilter.order)}${opt("place", "直近の順位の良い順", roomFilter.order)}</select></label>
+      <label>層の厚さ <select id="rmp-depth">${opt("", "すべて", roomFilter.depth)}${Object.keys(d.depths).map((t) => opt(t, `${t} (${num(d.depth_counts[t] || 0)})`, roomFilter.depth)).join("")}</select></label>
+      <label>並べ方 <select id="rmp-order">${opt("momentum", "勢いのある順", roomFilter.order)}${opt("place", "直近の順位の良い順", roomFilter.order)}${opt("depth", "層の厚い順", roomFilter.order)}</select></label>
       <span class="uid">${ymd(d.at)} に作った分</span></div>`;
   html += `<details class="hint"><summary>タイプと戦術の見方</summary><ul>${Object.entries(d.types).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
       <ul>${Object.entries(d.styles).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
+      <div>層の厚さは、貢献ランキング 100 位の人のポイントです (100 人に届かないイベントは 0)。上の人だけでなく、100 人目までが大きく送っているほど、ファンの層が厚いと見ます。</div>
+      <ul>${Object.entries(d.depths).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
       <div>タイプは、同じくらいの規模のイベントに出ているルームの中でくらべます。勢いは、直近 60 日とその前の 60 日のイベントの順位 (参加ルームの中の位置) の違いです。勢いの横の数字 (例: +20) は、位置が「上から 50%」→「上から 30%」のように何ポイント上がったかです。</div></details>`;
   html += dataTable("room-profiles", [
     { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
@@ -2081,6 +2084,7 @@ async function showRoomProfiles() {
     { label: "勢い", num: true, value: (r) => r.momentum, html: (r) => momentumHtml(r.momentum) },
     { label: "直近の順位", num: true, value: (r) => r.recent_place == null ? null : -r.recent_place, html: (r) => placeText(r.recent_place) },
     { label: "前の順位", num: true, value: (r) => r.prev_place == null ? null : -r.prev_place, html: (r) => placeText(r.prev_place) },
+    { label: "層の厚さ", num: true, value: (r) => r.depth_rel, html: (r) => r.depth_pt == null ? "—" : `${r.depth ? `<span class="tag ${r.depth === "厚い" ? "ok" : r.depth === "薄い" ? "warn" : ""}">${esc(r.depth)}</span> ` : ""}<span class="uid">100 位 ${num(Math.round(r.depth_pt))} pt</span>` },
     { label: "1 位の人の割合", num: true, value: (r) => r.top1, html: (r) => pctText(r.top1) },
     { label: "貢献した人", num: true, value: (r) => r.contributors, html: (r) => r.contributors == null ? "—" : `${num(Math.round(r.contributors))} 人` },
     { label: "フォロワー", num: true, value: (r) => r.followers, html: (r) => r.followers == null ? "—" : num(r.followers) },
@@ -2089,9 +2093,9 @@ async function showRoomProfiles() {
   box.innerHTML = html;
 }
 document.addEventListener("change", (ev) => {
-  const t = ev.target.closest("#rmp-type, #rmp-style, #rmp-order");
+  const t = ev.target.closest("#rmp-type, #rmp-style, #rmp-depth, #rmp-order");
   if (!t) return;
-  roomFilter[{ "rmp-type": "type", "rmp-style": "style", "rmp-order": "order" }[t.id]] = t.value;
+  roomFilter[{ "rmp-type": "type", "rmp-style": "style", "rmp-depth": "depth", "rmp-order": "order" }[t.id]] = t.value;
   delete DT["room-profiles"];
   showRoomProfiles();
 });
@@ -2103,6 +2107,9 @@ function roomAnalysisHtml(d) {
     ${tile("タイプ", a.type ? esc(a.type) : '<small>判定できない</small>', a.type ? esc(a.type_note) : esc(a.type_why || ""))}
     ${tile("1 位の人の割合", m ? pctText(m.top1) : "—", m ? `上位 3 人で ${pctText(m.top3)} ・ ${esc(a.size_name)}` : "")}
     ${tile("貢献した人", m ? `${num(Math.round(m.contributors))} <small>人${m.capped ? "以上" : ""}</small>` : "—", m ? `直近 ${num(m.events)} イベントの真ん中` : "")}
+    ${tile("層の厚さ", a.depth ? esc(a.depth) : m && m.depth_pt != null ? '<small>判定できない</small>' : "—",
+      m && m.depth_pt != null ? `貢献ランキング 100 位の人 ${num(Math.round(m.depth_pt))} pt (真ん中の値)${a.depth_note ? `。${esc(a.depth_note)}` : ""}` : "",
+      a.depth === "厚い" ? "ok" : a.depth === "薄い" ? "warn" : "")}
     ${tile("勢い", mo.value == null ? '<small>判定できない</small>' : esc(mo.label), mo.value == null
       ? `直近 ${mo.days} 日とその前に、イベントが 2 件ずつ要ります (今 ${num(mo.recent_events)} 件・${num(mo.prev_events)} 件)`
       : `順位の位置 ${placeText(mo.prev_place)} → ${placeText(mo.recent_place)}`, mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}

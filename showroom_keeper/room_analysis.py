@@ -61,7 +61,7 @@ CAUTION = ("集めた範囲から出した「傾向」です。貢献ランキ�
 
 # ------------------------------------------------------------------ タイプ
 def _event_rows(s: Store, room_id: int, limit: int = PROFILE_EVENTS) -> list[Any]:
-    return s.all("""SELECT re.event_id, re.point, re.rank, re.c_count, re.c_sum, re.c_top1, re.c_top3, re.c_top10,
+    return s.all("""SELECT re.event_id, re.point, re.rank, re.c_count, re.c_sum, re.c_top1, re.c_top3, re.c_top10, re.c_p100,
                            e.end, e.room_count, e.median_point
                     FROM room_events re JOIN events e USING(event_id)
                     WHERE re.room_id=? AND re.final=1 AND e.show_ranking=1 AND e.end IS NOT NULL
@@ -87,11 +87,16 @@ def metrics(rows: list[Any]) -> dict[str, Any] | None:
         per.append({"top1": r["c_top1"] / denom, "top3": r["c_top3"] / denom, "contributors": r["c_count"],
                     "capped": r["c_count"] >= CAPPED, "rel_top10": r["c_top10"] / r["median_point"],
                     "rel_per_contrib": r["c_sum"] / r["c_count"] / r["median_point"],
-                    "rel_point": (r["point"] or 0) / r["median_point"], "room_count": r["room_count"]})
+                    "rel_point": (r["point"] or 0) / r["median_point"], "room_count": r["room_count"],
+                    "depth_pt": r["c_p100"], "depth_rel": None if r["c_p100"] is None else r["c_p100"] / r["median_point"]})
     if len(per) < MIN_EVENTS:
         return None
     out = {k: median(p[k] for p in per) for k in ("top1", "top3", "contributors", "rel_top10", "rel_per_contrib", "rel_point")}
     out["capped"] = sum(p["capped"] for p in per) * 2 > len(per)  # 半分より多くのイベントで上限に届いた
+    # 層の厚さ: 貢献ランキング 100 位の人のポイント (100 人に届かないイベントは 0)。上の人だけでなく、
+    # 100 人目までが大きく送っているほど、ファンの層が厚い
+    out["depth_pt"] = median(p["depth_pt"] for p in per)
+    out["depth_rel"] = median(p["depth_rel"] for p in per)
     out["size_class"] = _size_class(median(p["room_count"] for p in per))
     out["events"] = len(per)
     return out
@@ -114,6 +119,9 @@ def build_cuts(profiles: list[dict[str, Any]]) -> dict[str, Any]:
                            "rel_top10_p75": _pct(col["rel_top10"], 0.75), "contributors_p75": _pct(col["contributors"], 0.75),
                            "contributors_p25": _pct(col["contributors"], 0.25),
                            "rel_per_contrib_p50": _pct(col["rel_per_contrib"], 0.5), "rel_point_p50": _pct(col["rel_point"], 0.5)}
+        # 層の厚さの区切りは、100 人に届いたルームどうしでくらべる (届かないルームは 0 で、くらべるまでもなく薄い)
+        deep = sorted(p["depth_rel"] for p in ps if p.get("depth_rel"))
+        cuts[str(size)].update({"depth_n": len(deep), "depth_p25": _pct(deep, 0.25), "depth_p75": _pct(deep, 0.75)})
     return cuts
 
 
@@ -137,6 +145,30 @@ def classify(m: dict[str, Any] | None, cuts: dict[str, Any] | None) -> str | Non
     if m["contributors"] < c["contributors_p25"] and m["rel_point"] >= c["rel_point_p50"]:
         return "少数精鋭型"
     return "バランス型"
+
+
+DEPTH_NOTES = {
+    "厚い": "100 位の人も大きく送っている (同じ規模で 100 人に届くルームの、上から 4 分の 1)",
+    "ふつう": "100 位の人のポイントが、同じ規模で 100 人に届くルームの真ん中あたり",
+    "やや薄い": "100 人には届くが、100 位の人のポイントは小さい (同じ規模で下から 4 分の 1)",
+    "薄い": "多くのイベントで、貢献ランキングが 100 人に届かない",
+}
+
+
+def depth_label(m: dict[str, Any] | None, cuts: dict[str, Any] | None) -> str | None:
+    """層の厚さ (厚い・ふつう・やや薄い・薄い)。None は判定できない。"""
+    if m is None or m.get("depth_pt") is None:
+        return None
+    if not m["depth_pt"]:
+        return "薄い"
+    c = (cuts or {}).get(str(m["size_class"])) or {}
+    if c.get("depth_n", 0) < CUTS_MIN_ROOMS or m.get("depth_rel") is None:
+        return None
+    if m["depth_rel"] >= c["depth_p75"]:
+        return "厚い"
+    if m["depth_rel"] <= c["depth_p25"]:
+        return "やや薄い"
+    return "ふつう"
 
 
 # ------------------------------------------------------------------ 勢い
@@ -327,7 +359,9 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
            WHERE st.room_id=? ORDER BY e.end DESC LIMIT 30""", (int(room_id),))]
     daily = [dict(r) for r in s.all("""SELECT day, followers, lives, view_max, CASE WHEN view_n > 0 THEN view_sum / view_n END AS view_avg
                                        FROM room_daily WHERE room_id=? ORDER BY day DESC LIMIT 60""", (int(room_id),))]
+    depth = depth_label(m, cuts)
     return {"type": rtype, "type_note": TYPES.get(rtype or ""), "type_why": why, "metrics": m,
+            "depth": depth, "depth_note": DEPTH_NOTES.get(depth or ""), "depths": DEPTH_NOTES,
             "size_name": SIZE_NAMES[m["size_class"]] if m else None,
             "momentum": momentum(s, room_id, now), "style": room_style(s, room_id), "event_styles": styles,
             "new_share": new_share(s, room_id), "followers": followers_growth(s, room_id, now), "daily": daily[::-1],
@@ -378,9 +412,12 @@ def step(s: Store, now: float) -> bool:
         out.append((rid, now, m.get("events"), m.get("size_class"), m.get("top1"), m.get("top3"), m.get("contributors"),
                     int(bool(m.get("capped"))), m.get("rel_top10"), m.get("rel_per_contrib"), m.get("rel_point"),
                     classify(m or None, cuts), mo["value"], mo["recent_place"], mo["prev_place"], st["style"], st["events"],
-                    json.dumps(st["counts"], ensure_ascii=False)))
+                    json.dumps(st["counts"], ensure_ascii=False), m.get("depth_pt"), m.get("depth_rel"), depth_label(m or None, cuts)))
     with s.tx() as c:
-        c.executemany("INSERT OR REPLACE INTO room_profile VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", out)
+        c.executemany("""INSERT OR REPLACE INTO room_profile(room_id, at, events, size_class, top1, top3, contributors, capped,
+                           rel_top10, rel_per_contrib, rel_point, type, momentum, recent_place, prev_place, style, style_events,
+                           style_counts, depth_pt, depth_rel, depth)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
     if len(rooms) == PROFILE_CHUNK:
         s.set_meta("room_profile_run", {**state, "next": rooms[-1]})
         return True
@@ -389,8 +426,9 @@ def step(s: Store, now: float) -> bool:
     cuts = build_cuts(profiles)
     with s.tx() as c:
         c.execute("DELETE FROM room_profile WHERE at < ?", (state["started"],))
-        c.executemany("UPDATE room_profile SET type=? WHERE room_id=?",
-                      [(classify(p if p["top1"] is not None else None, cuts), p["room_id"]) for p in profiles])
+        c.executemany("UPDATE room_profile SET type=?, depth=? WHERE room_id=?",
+                      [(classify(p if p["top1"] is not None else None, cuts),
+                        depth_label(p if p["top1"] is not None else None, cuts), p["room_id"]) for p in profiles])
         c.execute("INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (CUTS_META, json.dumps(cuts)))
         c.execute("DELETE FROM meta WHERE k='room_profile_run'")
         c.execute("INSERT INTO meta(k, v) VALUES ('room_profile_at', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (json.dumps(now),))
@@ -398,7 +436,7 @@ def step(s: Store, now: float) -> bool:
 
 
 def profile_list(s: Store, rtype: str | None = None, style: str | None = None, order: str = "momentum",
-                 limit: int = 300) -> dict[str, Any]:
+                 limit: int = 300, depth: str | None = None) -> dict[str, Any]:
     """ルームの一覧に出す、タイプ・勢い・戦術 (1 日 1 回の分)。"""
     where, args = ["1=1"], []
     if rtype:
@@ -407,19 +445,25 @@ def profile_list(s: Store, rtype: str | None = None, style: str | None = None, o
     if style:
         where.append("p.style=?")
         args.append(style)
-    by = {"momentum": "p.momentum IS NULL, p.momentum DESC", "place": "p.recent_place IS NULL, p.recent_place"}.get(order)
+    if depth:
+        where.append("p.depth=?")
+        args.append(depth)
+    by = {"momentum": "p.momentum IS NULL, p.momentum DESC", "place": "p.recent_place IS NULL, p.recent_place",
+          "depth": "p.depth_rel IS NULL, p.depth_rel DESC"}.get(order)
     if by is None:
-        raise ValueError("order は momentum・place のどちらかです")
+        raise ValueError("order は momentum・place・depth のどれかです")
     rows = s.all(f"""SELECT p.*, r.key, COALESCE(r.name, r.key, p.room_id) AS name, r.followers FROM room_profile p
                      LEFT JOIN rooms r USING(room_id) WHERE {' AND '.join(where)} ORDER BY {by}, p.room_id LIMIT ?""",
                  (*args, int(limit)))
     total = s.scalar(f"SELECT COUNT(*) FROM room_profile p WHERE {' AND '.join(where)}", args)
     counts = {r[0]: r[1] for r in s.all("SELECT type, COUNT(*) FROM room_profile WHERE type IS NOT NULL GROUP BY type")}
     style_counts = {r[0]: r[1] for r in s.all("SELECT style, COUNT(*) FROM room_profile WHERE style IS NOT NULL GROUP BY style")}
+    depth_counts = {r[0]: r[1] for r in s.all("SELECT depth, COUNT(*) FROM room_profile WHERE depth IS NOT NULL GROUP BY depth")}
     return {"at": s.meta("room_profile_at"), "total": total, "type_counts": counts, "style_counts": style_counts,
-            "types": TYPES, "styles": STYLES, "caution": CAUTION,
+            "depth_counts": depth_counts, "types": TYPES, "styles": STYLES, "depths": DEPTH_NOTES, "caution": CAUTION,
             "rooms": [{k: r[k] for k in ("room_id", "key", "name", "followers", "type", "style", "style_events", "momentum",
-                                         "recent_place", "prev_place", "events", "top1", "contributors")} for r in rows]}
+                                         "recent_place", "prev_place", "events", "top1", "contributors", "depth",
+                                         "depth_pt", "depth_rel")} for r in rows]}
 
 
 # ------------------------------------------------------------------ コメントとギフトの釣り合い (記録しているルームだけ)
