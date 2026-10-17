@@ -102,7 +102,7 @@ def test_momentum(tmp_path):
         for eid, days, rank in ((1, 100, 8), (2, 90, 8), (3, 20, 2), (4, 10, 2)):
             _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r, []) for r in range(2, 11)}})
         m = ra.momentum(s, 1, NOW)
-        assert m["label"] == "上り調子" and abs(m["value"] - 0.6) < 1e-9
+        assert m["label"] == "上り調子" and m["value"] == 0.67  # (8-1)/9 - (2-1)/9
         assert ra.momentum(s, 2, NOW)["label"] == "変わらない"
         assert ra.momentum(s, 1, NOW - 50 * DAY)["label"] is None  # 直近のイベントが足りない
 
@@ -214,3 +214,41 @@ def test_comment_counter_flush_due():
     t[0] += 60
     c.flush_due("aaa")  # 新しいコメントが来なくても、配信の最後の分を書く
     assert comment_counts.load(d, "aaa")[0]["comments"] == 2
+
+
+def test_places_ties_get_the_same_worst_place():
+    assert ra._places([(5, 100), (1, 0), (2, 0), (3, 0)]) == {5: 0.0, 1: 1.0, 2: 1.0, 3: 1.0}
+    assert ra._places([(1, 9), (2, 5), (3, 5), (4, 1)]) == {1: 0.0, 2: 2 / 3, 3: 2 / 3, 4: 1.0}
+    assert ra._places([(1, 0)]) == {1: 0.0}
+
+
+def test_event_styles_ignore_room_numbers_when_tied(tmp_path):
+    with Store(tmp_path) as s:
+        start, end = NOW - 10 * DAY, NOW - 3 * DAY
+        s.upsert_events([{"event_id": 5, "start": start, "end": end}])
+        for i, f in enumerate((0.05, 0.25, 0.5, 0.75, 0.9, 1.0)):
+            at = start + f * (end - start)
+            # 序盤 (2 回目まで) は全員 0 ポイント。そのあとも全員同じポイント
+            s.add_progress(5, [{"room_id": r, "point": 0 if i < 2 else 100 * i} for r in range(1, 9)], at)
+        rows = {r[1]: r for r in ra.event_styles(s, 5)}
+        assert {r[3] for r in rows.values()} == {1.0}  # 序盤は全員同じ位置
+        assert {r[2] for r in rows.values()} == {None}  # 差し・逃げなどにならない
+        assert {r[9] for r in rows.values()} == {0.0}  # 0 ポイントや同点の回は、だれの 1 位にもしない
+
+
+def test_room_style_counts_events_without_style(tmp_path):
+    with Store(tmp_path) as s:
+        for eid in range(1, 11):
+            s.upsert_events([{"event_id": eid, "end": NOW - eid * DAY}])
+            s.conn.execute("INSERT INTO room_event_style(event_id, room_id, style) VALUES (?, 1, ?)", (eid, "逃げ" if eid <= 3 else None))
+        st = ra.room_style(s, 1)
+        assert st["style"] == "自在" and st["events"] == 10 and st["counts"] == {"逃げ": 3, "型なし": 7}
+
+
+def test_momentum_is_not_dragged_by_small_events(tmp_path):
+    with Store(tmp_path) as s:
+        # 前は 500 ルームのイベントで 1 位、直近は 5 ルームのイベントで 1 位: 同じ成績なので「変わらない」
+        for eid, days, n in ((1, 100, 500), (2, 90, 500), (3, 20, 5), (4, 10, 5)):
+            _event(s, eid, NOW - days * DAY, {1: (1000, 1, []), **{r: (10, r, []) for r in range(2, n + 1)}})
+        m = ra.momentum(s, 1, NOW)
+        assert m["value"] == 0 and m["label"] == "変わらない" and m["recent_place"] == 0

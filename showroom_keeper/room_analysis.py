@@ -138,10 +138,13 @@ def classify(m: dict[str, Any] | None, cuts: dict[str, Any] | None) -> str | Non
 
 # ------------------------------------------------------------------ 勢い
 def momentum(s: Store, room_id: int, now: float) -> dict[str, Any]:
-    """順位の位置 (順位 ÷ 参加ルーム数。小さいほど上) の、直近と前の期間の平均の違い。正の数なら上がっている。"""
+    """順位の位置 ((順位 - 1) ÷ (参加ルーム数 - 1)。1 位は 0、最下位は 1) の、直近と前の期間の平均の違い。
+    正の数なら上がっている。1 位をいつも 0 にするので、小さいイベントに出ても位置が悪く見えない。
+    """
     span = MOMENTUM_DAYS * 86400
-    rows = s.all("""SELECT e.end, CAST(re.rank AS REAL) / e.room_count AS place FROM room_events re JOIN events e USING(event_id)
-                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count > 0 AND e.end > ? AND e.end <= ?
+    rows = s.all("""SELECT e.end, MIN(1.0, CAST(re.rank - 1 AS REAL) / (e.room_count - 1)) AS place
+                    FROM room_events re JOIN events e USING(event_id)
+                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count > 1 AND e.end > ? AND e.end <= ?
                       AND e.rooms_at >= e.end""",
                  (int(room_id), now - 2 * span, now))
     recent = [r["place"] for r in rows if r["end"] > now - span]
@@ -150,13 +153,32 @@ def momentum(s: Store, room_id: int, now: float) -> dict[str, Any]:
                            "recent_place": sum(recent) / len(recent) if recent else None,
                            "prev_place": sum(prev) / len(prev) if prev else None, "value": None, "label": None}
     if len(recent) >= MOMENTUM_MIN and len(prev) >= MOMENTUM_MIN:
-        out["value"] = out["prev_place"] - out["recent_place"]
+        # 画面には 100 倍して整数で出すので、判定も同じ丸めた値で行う (「+10 なのに変わらない」と見えないように)
+        out["value"] = round((out["prev_place"] - out["recent_place"]) * 100) / 100
         out["label"] = ("上り調子" if out["value"] >= MOMENTUM_STEP else
                         "下り気味" if out["value"] <= -MOMENTUM_STEP else "変わらない")
     return out
 
 
 # ------------------------------------------------------------------ 戦術 (イベントの走り方)
+def _places(order: list[tuple[int, int]]) -> dict[int, float]:
+    """ポイントの多い順のルームの、位置 (0 = 1 位、1 = 最下位)。同じポイントのルームは、同じ位置 (いちばん悪い位置) にする
+    (序盤に 0 ポイントのルームがたくさん並んでも、ルーム番号の順で上位・下位が決まらないように)。
+    """
+    n = len(order)
+    if n <= 1:
+        return {rid: 0.0 for rid, _ in order}
+    out, i = {}, 0
+    while i < n:
+        j = i
+        while j + 1 < n and order[j + 1][1] == order[i][1]:
+            j += 1
+        for k in range(i, j + 1):
+            out[order[k][0]] = j / (n - 1)
+        i = j + 1
+    return out
+
+
 def _at_or_before(ats: list[float], t: float) -> float:
     best = ats[0]
     for a in ats:
@@ -187,12 +209,13 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
         order = [(r[0], r[1] or 0) for r in s.all("""SELECT room_id, point FROM event_progress WHERE event_id=? AND at=?
                                                     ORDER BY point DESC, room_id""", (eid, at))]
         snaps[at] = dict(order)
-        places[at] = {rid: (i + 1) / len(order) for i, (rid, _) in enumerate(order)}
+        places[at] = _places(order)
+    # 1 位の回: 1 位が 1 ルームだけで、ポイントがある回だけ数える (全員 0 や同点の回は、だれの 1 位にもしない)
     leads: dict[int, int] = {}
     for at in ats:
-        top = s.one("SELECT room_id FROM event_progress WHERE event_id=? AND at=? ORDER BY point DESC, room_id LIMIT 1", (eid, at))
-        if top is not None:
-            leads[top[0]] = leads.get(top[0], 0) + 1
+        top = s.all("SELECT room_id, point FROM event_progress WHERE event_id=? AND at=? ORDER BY point DESC LIMIT 2", (eid, at))
+        if top and (top[0][1] or 0) > 0 and (len(top) == 1 or (top[1][1] or 0) < top[0][1]):
+            leads[top[0][0]] = leads.get(top[0][0], 0) + 1
     out = []
     for rid, final_pt in snaps[final_at].items():
         if final_pt <= 0:
@@ -222,15 +245,16 @@ def classify_run(early: float, late: float, final: float, last_day: float | None
 
 
 def room_style(s: Store, room_id: int) -> dict[str, Any]:
+    """直近 STYLE_RECENT 件の、走り方を見たイベント (「型なし」も数に入れる) で、半分を超える走り方。無ければ「自在」。"""
     rows = s.all("""SELECT st.style FROM room_event_style st JOIN events e USING(event_id)
-                    WHERE st.room_id=? AND st.style IS NOT NULL ORDER BY e.end DESC LIMIT ?""", (int(room_id), STYLE_RECENT))
+                    WHERE st.room_id=? ORDER BY e.end DESC LIMIT ?""", (int(room_id), STYLE_RECENT))
     counts: dict[str, int] = {}
     for r in rows:
-        counts[r["style"]] = counts.get(r["style"], 0) + 1
+        counts[r["style"] or "型なし"] = counts.get(r["style"] or "型なし", 0) + 1
     if len(rows) < STYLE_EVENTS:
         return {"style": None, "events": len(rows), "counts": counts}
-    top, n = max(counts.items(), key=lambda kv: kv[1])
-    return {"style": top if n * 2 > len(rows) else "自在", "events": len(rows), "counts": counts}
+    top, n = max(((k, v) for k, v in counts.items() if k != "型なし"), key=lambda kv: kv[1], default=(None, 0))
+    return {"style": top if top and n * 2 > len(rows) else "自在", "events": len(rows), "counts": counts}
 
 
 # ------------------------------------------------------------------ ルームのページ
@@ -280,8 +304,16 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
 
 
 # ------------------------------------------------------------------ 1 日 1 回の作り直し
+STYLE_VERSION = 2  # 走り方の出し方を変えたら上げる (前に作った分を作り直す)
+
+
 def step(s: Store, now: float) -> bool:
     """作り直しの小さな仕事を 1 つ行う (SHOWROOM には問い合わせない)。することが無ければ False。"""
+    if s.meta("style_version", 1) != STYLE_VERSION:
+        with s.tx() as c:
+            c.execute("UPDATE events SET style_at=NULL WHERE style_at IS NOT NULL")
+            c.execute("DELETE FROM meta WHERE k IN ('room_profile_at', 'room_profile_run')")
+        s.set_meta("style_version", STYLE_VERSION)
     # 終わったイベントの走り方 (推移を残したもので、まだ作っていないもの)
     # (終わった時の最終結果を読んでから。読めないままなら STYLE_WAIT 秒で、あるだけで作る)
     e = s.one("""SELECT event_id FROM events WHERE progress_at IS NOT NULL AND end IS NOT NULL AND end < ? AND style_at IS NULL

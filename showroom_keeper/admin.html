@@ -2107,9 +2107,9 @@ function roomAnalysisHtml(d) {
       ? `直近 ${mo.days} 日とその前に、イベントが 2 件ずつ要ります (今 ${num(mo.recent_events)} 件・${num(mo.prev_events)} 件)`
       : `順位の位置 ${placeText(mo.prev_place)} → ${placeText(mo.recent_place)}`, mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}
     ${tile("戦術", st.style ? esc(st.style) : '<small>判定できない</small>', st.style ? `${num(st.events)} イベントから (${esc(styleCounts)})`
-      : `推移の分かったイベントが 3 件より少ない (今 ${num(st.events)} 件)`)}
+      : `走り方を見たイベント (推移の分かったもの) が 3 件より少ない (今 ${num(st.events)} 件)`)}
     ${tile("新しく来た人", a.new_share.value == null ? "—" : pctText(a.new_share.value), a.new_share.value == null ? "イベントが 2 件より少ない"
-      : "前のイベントの貢献ランキングにいなかった人の割合 (真ん中の値)")}
+      : "前のイベントの貢献ランキング (上位 100 人) にいなかった人の割合。前に 101 位より下だった常連も入るので、大きいルームほど高く出ます")}
     ${tile("フォロワーの増え方", a.followers ? `${a.followers.change >= 0 ? "+" : ""}${num(a.followers.change)}` : "—",
       a.followers ? `${esc(a.followers.from_day)} 〜 ${esc(a.followers.to_day)}` : "配信中のルームの一覧から、1 日ごとに残し始めました")}
   </div>`;
