@@ -1581,6 +1581,13 @@ document.addEventListener("mousemove", (ev) => {
 
 /* ------------------------------------------------------------ 分析の部品 */
 const durationText = (s) => s >= 86400 ? `約 ${Math.round(s / 86400)} 日` : s >= 3600 ? `約 ${Math.round(s / 3600)} 時間` : `約 ${Math.max(1, Math.round(s / 60))} 分`;
+function formerNames(name, rec, d) {
+  const seen = new Set([name, "退会済みユーザー"]), out = [];
+  for (const n of [...(rec ? rec.names.slice(1) : []), ...(d.former_names || []).map((r) => r.name)]) {
+    if (!seen.has(n) && !name.includes(n)) { seen.add(n); out.push(n); }
+  }
+  return out.slice(0, 4).join("、");
+}
 function sweepStatus(d) {
   const w = d.sweep || {}, s = d.store, t = d.throttle || {};
   if (!w.enabled || !s) return "";
@@ -1599,7 +1606,15 @@ function sweepStatus(d) {
     <div class="summary">${stat(num(s.rooms), "見つけたルーム")}${stat(num(s.collected), "集めたルーム")}${stat(num(s.rankings), "貢献ランキング (件)")}
       ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
     <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest}${anchor} ・ ルーム番号の調べ ${scan}
-      ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}</div>`;
+      ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}${archiveStatus(d)}</div>`;
+}
+function archiveStatus(d) {
+  const w = d.archive || {}, a = (d.store || {}).archive;
+  if (!w.enabled || !a) return "";
+  const pct = (p) => p[0] ? `${Math.floor(p[1] / p[0] * 100)}%` : "0%";
+  const doing = !a.index_done ? "ページの一覧を作っています" : `イベント ${pct(a.events)}・貢献ランキング ${pct(a.contributions)}`;
+  return `<br>Internet Archive から取り戻し: ${w.running ? doing : "止まっています"} ・ 消えたルーム ${num(a.gone_rooms)} (うち Archive で見つけた ${num(a.rooms)})
+    ・ 前の名前 ${num(a.names)} 件 (退会済みユーザー ${num(a.left_named)} 人)${w.last_error ? ` ・ 前回の失敗: ${esc(w.last_error)}` : ""}`;
 }
 const R_FILTERS = [["all", "すべて"], ["recorded", "行動がわかる (ギフトの記録あり)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
 const R_SORTS = [["other", "ほかのルームへのポイント順"], ["event", "イベントでのポイント順"], ["events", "参加イベントの多い順"], ["visits", "来場回数の多い順"], ["rooms", "送るルームの多い順"], ["last", "最近ギフトを送った順"]];
@@ -1949,7 +1964,7 @@ async function showGifter(uid) {
   const watch = d.watch;
   let html = `<div class="crumb"><a href="#gifters">ギフター</a> ›</div>
     <div class="page-head"><div class="grow"><h2>${esc(name)}</h2>
-      <div class="card-key">ユーザー ID ${esc(uid)}${s && s.signup_at ? ` ・ <span title="${esc(signupRange(s))}">登録 ${signupText(s)} (ID から推測)</span>` : ""}${rec && rec.names.length > 1 ? ` ・ 前の名前: ${esc(rec.names.slice(1, 4).join("、"))}` : ""}</div></div>
+      <div class="card-key">ユーザー ID ${esc(uid)}${s && s.signup_at ? ` ・ <span title="${esc(signupRange(s))}">登録 ${signupText(s)} (ID から推測)</span>` : ""}${formerNames(name, rec, d) ? ` ・ 前の名前: ${esc(formerNames(name, rec, d))}` : ""}</div></div>
       <div class="row"><button class="btn small ${watch ? "primary" : ""}" id="gp-watch" data-on="${watch ? 1 : 0}">${watch ? "★ 気になる (外す)" : "☆ 気になる"}</button></div></div>
     ${watch ? `<div class="row" style="margin:-4px 0 12px"><textarea id="gp-memo" class="grow" rows="2" maxlength="500" placeholder="メモ (例: 月末に大きく送る、歌の配信が好き)">${esc(watch.memo)}</textarea>
       <button class="btn small" id="gp-memo-save">メモを保存</button></div>` : ""}`;

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import research
-from .research import PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
+from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
 
 log = logging.getLogger("research")
 
@@ -344,11 +344,13 @@ class Sweeper:
             self.c.refresh_room(r["room_id"])
         except Exception as e:  # noqa: BLE001
             if is_missing(e):  # 無くなったルーム
-                self.store.conn.execute("UPDATE rooms SET collected_at=? WHERE room_id=?", (now, r["room_id"]))
+                self.store.conn.execute("UPDATE rooms SET collected_at=?, gone=1 WHERE room_id=?", (now, r["room_id"]))
             else:
                 self._failed("rooms", "room_id", r["room_id"], now, e)
         else:
-            self.store.conn.execute("UPDATE rooms SET retry_at=NULL WHERE room_id=?", (r["room_id"],))
+            with self.store.tx() as c:
+                c.execute("UPDATE rooms SET retry_at=NULL, gone=NULL WHERE room_id=?", (r["room_id"],))
+                c.execute("UPDATE room_events SET failures=0 WHERE room_id=? AND failures=?", (r["room_id"], ARCHIVE_HOLD))
         return True
 
     def _next_ranking(self, now: float) -> bool:
