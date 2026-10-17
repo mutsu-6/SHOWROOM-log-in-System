@@ -88,7 +88,12 @@ def metrics(rows: list[Any]) -> dict[str, Any] | None:
                     "capped": r["c_count"] >= CAPPED, "rel_top10": r["c_top10"] / r["median_point"],
                     "rel_per_contrib": r["c_sum"] / r["c_count"] / r["median_point"],
                     "rel_point": (r["point"] or 0) / r["median_point"], "room_count": r["room_count"],
-                    "depth_pt": r["c_p100"], "depth_rel": None if r["c_p100"] is None else r["c_p100"] / r["median_point"]})
+                    "depth_pt": r["c_p100"], "depth_rel": None if r["c_p100"] is None else r["c_p100"] / r["median_point"],
+                    # 100 位より下の人たちの分: ルームのポイント - 貢献ランキング (上位 100 人) の合計。
+                    # 100 人に届かないイベントは、101 人目がいないので出さない (差があっても、ギフト以外のポイント)
+                    "below_pt": max(0, (r["point"] or 0) - r["c_sum"]) if r["c_count"] >= CAPPED else None,
+                    "below_share": max(0, (r["point"] or 0) - r["c_sum"]) / r["point"]
+                    if r["c_count"] >= CAPPED and (r["point"] or 0) > 0 else None})
     if len(per) < MIN_EVENTS:
         return None
     out = {k: median(p[k] for p in per) for k in ("top1", "top3", "contributors", "rel_top10", "rel_per_contrib", "rel_point")}
@@ -97,6 +102,10 @@ def metrics(rows: list[Any]) -> dict[str, Any] | None:
     # 100 人目までが大きく送っているほど、ファンの層が厚い
     out["depth_pt"] = median(p["depth_pt"] for p in per)
     out["depth_rel"] = median(p["depth_rel"] for p in per)
+    # 100 位より下の分 (100 人に届いたイベントだけの真ん中の値。届いたイベントが無ければ None)
+    out["below_pt"] = median(p["below_pt"] for p in per)
+    out["below_share"] = median(p["below_share"] for p in per)
+    out["below_events"] = sum(p["below_pt"] is not None for p in per)
     out["size_class"] = _size_class(median(p["room_count"] for p in per))
     out["events"] = len(per)
     return out
@@ -412,12 +421,13 @@ def step(s: Store, now: float) -> bool:
         out.append((rid, now, m.get("events"), m.get("size_class"), m.get("top1"), m.get("top3"), m.get("contributors"),
                     int(bool(m.get("capped"))), m.get("rel_top10"), m.get("rel_per_contrib"), m.get("rel_point"),
                     classify(m or None, cuts), mo["value"], mo["recent_place"], mo["prev_place"], st["style"], st["events"],
-                    json.dumps(st["counts"], ensure_ascii=False), m.get("depth_pt"), m.get("depth_rel"), depth_label(m or None, cuts)))
+                    json.dumps(st["counts"], ensure_ascii=False), m.get("depth_pt"), m.get("depth_rel"), depth_label(m or None, cuts),
+                    m.get("below_pt"), m.get("below_share")))
     with s.tx() as c:
         c.executemany("""INSERT OR REPLACE INTO room_profile(room_id, at, events, size_class, top1, top3, contributors, capped,
                            rel_top10, rel_per_contrib, rel_point, type, momentum, recent_place, prev_place, style, style_events,
-                           style_counts, depth_pt, depth_rel, depth)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
+                           style_counts, depth_pt, depth_rel, depth, below_pt, below_share)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
     if len(rooms) == PROFILE_CHUNK:
         s.set_meta("room_profile_run", {**state, "next": rooms[-1]})
         return True
@@ -449,9 +459,9 @@ def profile_list(s: Store, rtype: str | None = None, style: str | None = None, o
         where.append("p.depth=?")
         args.append(depth)
     by = {"momentum": "p.momentum IS NULL, p.momentum DESC", "place": "p.recent_place IS NULL, p.recent_place",
-          "depth": "p.depth_rel IS NULL, p.depth_rel DESC"}.get(order)
+          "depth": "p.depth_rel IS NULL, p.depth_rel DESC", "below": "p.below_share IS NULL, p.below_share DESC"}.get(order)
     if by is None:
-        raise ValueError("order は momentum・place・depth のどれかです")
+        raise ValueError("order は momentum・place・depth・below のどれかです")
     rows = s.all(f"""SELECT p.*, r.key, COALESCE(r.name, r.key, p.room_id) AS name, r.followers FROM room_profile p
                      LEFT JOIN rooms r USING(room_id) WHERE {' AND '.join(where)} ORDER BY {by}, p.room_id LIMIT ?""",
                  (*args, int(limit)))
@@ -463,7 +473,7 @@ def profile_list(s: Store, rtype: str | None = None, style: str | None = None, o
             "depth_counts": depth_counts, "types": TYPES, "styles": STYLES, "depths": DEPTH_NOTES, "caution": CAUTION,
             "rooms": [{k: r[k] for k in ("room_id", "key", "name", "followers", "type", "style", "style_events", "momentum",
                                          "recent_place", "prev_place", "events", "top1", "contributors", "depth",
-                                         "depth_pt", "depth_rel")} for r in rows]}
+                                         "depth_pt", "depth_rel", "below_pt", "below_share")} for r in rows]}
 
 
 # ------------------------------------------------------------------ コメントとギフトの釣り合い (記録しているルームだけ)

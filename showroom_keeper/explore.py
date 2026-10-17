@@ -166,13 +166,16 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
             (rid, ROOM_GIFTERS))]
         event_total = s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=?", (rid,))
         events = []
-        for r in s.all("""SELECT e.*, re.point, re.rank, re.ranking_at, re.final,
+        for r in s.all("""SELECT e.*, re.point, re.rank, re.ranking_at, re.final, re.c_count, re.c_sum,
                                  (SELECT COUNT(*) FROM room_events o WHERE o.event_id=e.event_id) AS rooms,
                                  (SELECT COUNT(*) FROM contributions c WHERE c.event_id=e.event_id AND c.room_id=re.room_id) AS contributors
                           FROM room_events re JOIN events e USING(event_id) WHERE re.room_id=?
                           ORDER BY COALESCE(e.end, e.start, 0) DESC, e.event_id DESC LIMIT ?""", (rid, ROOM_EVENTS)):
             events.append({**_event_row(r, now), "point": r["point"], "rank": r["rank"], "rooms": r["rooms"],
-                           "contributors": r["contributors"], "ranking": bool(r["final"])})
+                           "contributors": r["contributors"], "ranking": bool(r["final"]),
+                           # 100 位より下の人たちの分 (100 人に届いたイベントだけ。ポイント - 上位 100 人の合計)
+                           "below": max(0, (r["point"] or 0) - r["c_sum"]) if r["final"] and (r["c_count"] or 0) >= 100
+                           and r["c_sum"] is not None else None})
         overlap = _overlap(s, rid)
         return {"key": row["key"], "room_id": rid, "found": True, "name": row["name"] or row["key"] or str(rid),
                 "followers": row["followers"], "live_at": row["live_at"], "collected_at": row["collected_at"],

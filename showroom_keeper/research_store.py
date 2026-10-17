@@ -147,7 +147,8 @@ class Store:
                                    ("room_events", "c_top1 INTEGER"), ("room_events", "c_top3 INTEGER"),
                                    ("room_events", "c_top10 INTEGER"), ("contributions", "guessed INTEGER"),
                                    ("room_events", "c_p100 INTEGER"), ("room_profile", "depth_pt REAL"),
-                                   ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT")):
+                                   ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT"),
+                                   ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")

@@ -317,6 +317,12 @@ def test_depth_from_100th_contributor(tmp_path):
     assert explore.room_profiles(tmp_path, order="depth")["rooms"][0]["room_id"] == 24
     d = explore.room_detail(tmp_path, "24")["analysis"]
     assert d["depth"] == "厚い" and d["metrics"]["depth_pt"] == 240
+    # 100 位より下の分: ルームのポイント 100000 - 上位 100 人の合計 (99000 + 240) = 760
+    assert d["metrics"]["below_pt"] == 760 and abs(d["metrics"]["below_share"] - 0.0076) < 1e-9
+    assert {e["below"] for e in explore.room_detail(tmp_path, "24")["events"]} == {760}
+    m25 = explore.room_detail(tmp_path, "25")
+    assert m25["analysis"]["metrics"]["below_pt"] is None and {e["below"] for e in m25["events"]} == {None}  # 100 人に届かない
+    assert explore.room_profiles(tmp_path, order="below")["rooms"][0]["room_id"] == 1  # 100 位が 10 pt で、下の分がいちばん多い
 
 
 def test_depth_needs_enough_rooms_to_compare():
