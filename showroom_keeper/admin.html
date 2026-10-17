@@ -377,6 +377,10 @@ td a.name-link, td a { word-break: break-word; }
   <section data-page="rooms">
     <div class="page-head"><div class="grow"><h2>ルーム</h2>
       <p class="sub" style="margin:0">ギフターの分かったルームです。名前をクリックすると、そのルームのギフターとイベントの成績を開きます。ほかのルームは上の検索欄で探せます。</p></div></div>
+    <nav class="subnav" id="rm-tabs">
+      <a href="#rooms" data-sub="list">ギフターの分かったルーム</a>
+      <a href="#rooms/profile" data-sub="profile">タイプ・勢い・戦術</a>
+    </nav>
     <div id="rm-body"></div>
   </section>
 
@@ -2002,12 +2006,15 @@ $("#gp").addEventListener("click", async (ev) => {
 
 
 /* ------------------------------------------------------------ ルーム (一覧) */
-async function showRooms() {
+async function showRooms(sub) {
+  sub = sub === "profile" ? "profile" : "list";
+  setSub("#rm-tabs", sub);
+  if (sub === "profile") return showRoomProfiles();
   const box = $("#rm-body");
   if (!research.data) box.innerHTML = loadingHtml("集計しています…");
   let d;
   try { d = research.data || await loadAnalysis(); } catch (e) { box.innerHTML = errorHtml(e); return; }
-  if (page.name !== "rooms") return;
+  if (page.name !== "rooms" || page.arg === "profile") return;
   if (noResearch(d)) { box.innerHTML = NO_RESEARCH; return; }
   const pct = (x) => `${(x * 100).toFixed(1)}%`;
   let html = `<div class="summary">${stat(num(d.room_count), "ギフターの分かったルーム")}${stat(num(d.gifter_count), "分かったギフター (人)")}</div>${SCOPE_NOTE}`;
@@ -2038,6 +2045,107 @@ async function showRooms() {
   box.innerHTML = html;
 }
 
+/* ------------------------------------------------------------ ルームのタイプ・勢い・戦術 */
+const pctText = (x, d = 0) => x == null ? "—" : `${(x * 100).toFixed(d)}%`;
+const placeText = (x) => x == null ? "—" : `上から ${(x * 100).toFixed(0)}%`;
+const momentumHtml = (v, label) => v == null ? '<span class="uid">判定できない</span>'
+  : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}</span>`;
+const roomFilter = { type: "", style: "", order: "momentum" };
+async function showRoomProfiles() {
+  const box = $("#rm-body");
+  box.innerHTML = loadingHtml();
+  let d;
+  try { d = await api(`/api/room_profiles?type=${encodeURIComponent(roomFilter.type)}&style=${encodeURIComponent(roomFilter.style)}&order=${roomFilter.order}`); }
+  catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "rooms" || page.arg !== "profile") return;
+  const opt = (v, l, cur) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`;
+  let html = `<div class="note-box">${esc(d.caution)}</div>`;
+  if (!d.at) {
+    html += `<div class="empty">まだ作っていません。全ルームの収集が動いていると、1 日 1 回作ります (SHOWROOM には問い合わせません)。</div>`;
+    box.innerHTML = html; return;
+  }
+  html += `<div class="row" style="margin-bottom:8px">
+      <label>タイプ <select id="rmp-type">${opt("", "すべて", roomFilter.type)}${Object.keys(d.types).map((t) => opt(t, `${t} (${num(d.type_counts[t] || 0)})`, roomFilter.type)).join("")}</select></label>
+      <label>戦術 <select id="rmp-style">${opt("", "すべて", roomFilter.style)}${Object.keys(d.styles).map((t) => opt(t, `${t} (${num(d.style_counts[t] || 0)})`, roomFilter.style)).join("")}</select></label>
+      <label>並べ方 <select id="rmp-order">${opt("momentum", "勢いのある順", roomFilter.order)}${opt("place", "直近の順位の良い順", roomFilter.order)}</select></label>
+      <span class="uid">${ymd(d.at)} に作った分</span></div>`;
+  html += `<details class="hint"><summary>タイプと戦術の見方</summary><ul>${Object.entries(d.types).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
+      <ul>${Object.entries(d.styles).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
+      <div>タイプは、同じくらいの規模のイベントに出ているルームの中でくらべます。勢いは、直近 60 日とその前の 60 日のイベントの順位 (参加ルームの中の位置) の違いです。</div></details>`;
+  html += dataTable("room-profiles", [
+    { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
+    { label: "タイプ", value: (r) => r.type || "", html: (r) => r.type ? `<span class="tag info">${esc(r.type)}</span>` : '<span class="uid">判定できない</span>' },
+    { label: "戦術", value: (r) => r.style || "", html: (r) => r.style ? `${esc(r.style)} <span class="uid">${num(r.style_events)} 件から</span>` : '<span class="uid">判定できない</span>' },
+    { label: "勢い", num: true, value: (r) => r.momentum, html: (r) => momentumHtml(r.momentum) },
+    { label: "直近の順位", num: true, value: (r) => r.recent_place == null ? null : -r.recent_place, html: (r) => placeText(r.recent_place) },
+    { label: "前の順位", num: true, value: (r) => r.prev_place == null ? null : -r.prev_place, html: (r) => placeText(r.prev_place) },
+    { label: "1 位の人の割合", num: true, value: (r) => r.top1, html: (r) => pctText(r.top1) },
+    { label: "貢献した人", num: true, value: (r) => r.contributors, html: (r) => r.contributors == null ? "—" : `${num(Math.round(r.contributors))} 人` },
+    { label: "フォロワー", num: true, value: (r) => r.followers, html: (r) => r.followers == null ? "—" : num(r.followers) },
+  ], d.rooms, { sort: null, limit: 50, total: d.total, csvName: "ルームのタイプ・勢い・戦術", rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"`,
+    empty: "当てはまるルームはありません", note: "数字はイベントごとの値の真ん中 (直近 10 件)" });
+  box.innerHTML = html;
+}
+document.addEventListener("change", (ev) => {
+  const t = ev.target.closest("#rmp-type, #rmp-style, #rmp-order");
+  if (!t) return;
+  roomFilter[{ "rmp-type": "type", "rmp-style": "style", "rmp-order": "order" }[t.id]] = t.value;
+  delete DT["room-profiles"];
+  showRoomProfiles();
+});
+
+function roomAnalysisHtml(d) {
+  const a = d.analysis, m = a.metrics, mo = a.momentum, st = a.style, b = d.balance;
+  const styleCounts = Object.entries(st.counts || {}).map(([k, v]) => `${k} ${v}`).join("・");
+  let html = `<h3>ルームの分析</h3><div class="note-box">${esc(a.caution)}</div><div class="tiles">
+    ${tile("タイプ", a.type ? esc(a.type) : '<small>判定できない</small>', a.type ? esc(a.type_note) : esc(a.type_why || ""))}
+    ${tile("1 位の人の割合", m ? pctText(m.top1) : "—", m ? `上位 3 人で ${pctText(m.top3)} ・ ${esc(a.size_name)}` : "")}
+    ${tile("貢献した人", m ? `${num(Math.round(m.contributors))} <small>人${m.capped ? "以上" : ""}</small>` : "—", m ? `直近 ${num(m.events)} イベントの真ん中` : "")}
+    ${tile("勢い", mo.value == null ? '<small>判定できない</small>' : esc(mo.label), mo.value == null
+      ? `直近 ${mo.days} 日とその前に、イベントが 2 件ずつ要ります (今 ${num(mo.recent_events)} 件・${num(mo.prev_events)} 件)`
+      : `順位の位置 ${placeText(mo.prev_place)} → ${placeText(mo.recent_place)}`, mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}
+    ${tile("戦術", st.style ? esc(st.style) : '<small>判定できない</small>', st.style ? `${num(st.events)} イベントから (${esc(styleCounts)})`
+      : `推移の分かったイベントが 3 件より少ない (今 ${num(st.events)} 件)`)}
+    ${tile("新しく来た人", a.new_share.value == null ? "—" : pctText(a.new_share.value), a.new_share.value == null ? "イベントが 2 件より少ない"
+      : "前のイベントの貢献ランキングにいなかった人の割合 (真ん中の値)")}
+    ${tile("フォロワーの増え方", a.followers ? `${a.followers.change >= 0 ? "+" : ""}${num(a.followers.change)}` : "—",
+      a.followers ? `${esc(a.followers.from_day)} 〜 ${esc(a.followers.to_day)}` : "配信中のルームの一覧から、1 日ごとに残し始めました")}
+  </div>`;
+  if (a.type) html += `<div class="hint">${esc(a.type)}: ${esc(a.type_note)}。同じくらいの規模のイベントに出ているルームの中でくらべています。</div>`;
+  if (a.event_styles.length) {
+    html += `<h3>イベントごとの走り方 <small class="muted">ポイントの推移を残したイベント</small></h3>` + dataTable("rp-styles", [
+      { label: "イベント", value: (e) => e.name, html: (e) => eventLink(e.event_id, e.name), cls: "name" },
+      { label: "終了", num: true, value: (e) => e.end, html: (e) => e.end ? ymd(e.end) : "-" },
+      { label: "走り方", value: (e) => e.style || "", html: (e) => e.style ? `<b title="${esc(a.styles[e.style] || "")}">${esc(e.style)}</b>` : '<span class="uid">型なし</span>' },
+      { label: "序盤", num: true, value: (e) => e.early == null ? null : -e.early, html: (e) => placeText(e.early) },
+      { label: "中盤", num: true, value: (e) => e.mid == null ? null : -e.mid, html: (e) => placeText(e.mid) },
+      { label: "終盤", num: true, value: (e) => e.late == null ? null : -e.late, html: (e) => placeText(e.late) },
+      { label: "最後", num: true, value: (e) => e.final == null ? null : -e.final, html: (e) => placeText(e.final) },
+      { label: "最終日の伸び", num: true, value: (e) => e.last_day_share, html: (e) => pctText(e.last_day_share), },
+    ], a.event_styles, { sort: 1, limit: 10, csvName: `${d.key}_走り方`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"`,
+      note: "位置は参加ルームの中の位置 (上から何%)。最終日の伸びは、最後の 24 時間に得たポイントの割合" });
+  }
+  if (b) {
+    const pl = b.per_live;
+    html += `<h3>コメントとギフトの釣り合い <small class="muted">記録した直近 ${num(b.days)} 日の ${num(b.lives.length)} 配信</small></h3><div class="tiles">
+      ${tile("釣り合い", b.label ? esc(b.label) : '<small>判定できない</small>', b.label ? `${esc(b.label_note)} (有料ギフトを送った人 ÷ コメントした人 = ${pctText(b.ratio)})` : "配信が 3 回より少ない")}
+      ${tile("1 配信のコメント", `${num(Math.round(pl.comments))} <small>件</small>`, `ほかに数字だけのコメント (カウント) ${num(Math.round(pl.numeric))} 件`)}
+      ${tile("1 配信のコメントした人", `${num(Math.round(pl.commenters))} <small>人</small>`)}
+      ${tile("1 配信の有料ギフト", `${num(Math.round(pl.paid_gifters))} <small>人</small>`, `${shortNum(pl.paid_points)} pt`)}
+    </div><div class="hint">コメントは数だけを残しています (本文やコメントした人は残しません)。${b.partial ? `${num(b.partial)} 配信は、つなぎ直したので一部だけです。` : ""}</div>`
+      + dataTable("rp-balance", [
+        { label: "配信", num: true, value: (x) => x.first, html: (x) => x.first ? `${tm(x.first, true)}${x.partial ? ' <span class="uid">一部</span>' : ""}` : "-" },
+        { label: "コメント", num: true, value: (x) => x.comments - x.numeric, html: (x) => num(x.comments - x.numeric) },
+        { label: "数字だけ", num: true, value: (x) => x.numeric, html: (x) => num(x.numeric) },
+        { label: "コメントした人", num: true, value: (x) => x.commenters, html: (x) => num(x.commenters) },
+        { label: "ギフト", num: true, value: (x) => x.gifts, html: (x) => num(x.gifts) },
+        { label: "有料を送った人", num: true, value: (x) => x.paid_gifters, html: (x) => num(x.paid_gifters) },
+        { label: "有料 pt", num: true, value: (x) => x.paid_points, html: (x) => num(x.paid_points) },
+      ], b.lives, { sort: 0, limit: 10, csvName: `${d.key}_コメントとギフト` });
+  }
+  return html;
+}
+
 /* ------------------------------------------------------------ ルームのページ */
 async function showRoom(key) {
   const box = $("#rp");
@@ -2064,7 +2172,7 @@ async function showRoom(key) {
       ${tile("参加したイベント", `${num(d.event_total)} <small>件</small>`, st.n ? `1 位 ${num(st.wins)} 回 ・ 3 位以内 ${num(st.top3)} 回` : "")}
       ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
     </div>${SCOPE_NOTE}
-    <div id="rp-chart"></div>`;
+    <div id="rp-chart"></div>${roomAnalysisHtml(d)}`;
   html += `<div class="cols">
     <div><h3>累計ランキング <small class="muted">上位 30 人</small></h3>${dataTable("rp-cum", [
       { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)}` : "-" },
@@ -2164,6 +2272,7 @@ async function showEvent(id) {
       { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
       { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
       { label: "pt", num: true, value: (r) => r.point, html: (r) => `<b>${num(r.point)}</b>` },
+      ...(d.styled ? [{ label: "走り方", value: (r) => r.style || "", html: (r) => r.style ? esc(r.style) : '<span class="uid">-</span>' }] : []),
       { label: "貢献者", num: true, value: (r) => r.contributors, html: (r) => r.final ? `${num(r.contributors)} 人` : '<span class="uid">まだ</span>' },
     ], d.rooms, { sort: 0, desc: false, limit: 50, total: d.room_total, csvName: `イベント_${d.event_id}_順位`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"` })}</div>
     <div><h3>貢献者 <small class="muted">イベント全体の合計</small></h3>${dataTable("ep-contrib", [

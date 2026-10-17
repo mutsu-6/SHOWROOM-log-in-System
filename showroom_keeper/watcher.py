@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
+from . import comment_counts
 from .api import RoomStatus
 from .activity import ActivityTracker, parse_message
 from .gifts import record_gift
@@ -325,6 +326,11 @@ class RoomWatcher:
         data = parse_message(payload)
         if data and data.get("t") == 1 and self._comment_waiters:  # コメント (自分の投稿も同じように届く)
             self._resolve_comment(data)
+        if data and data.get("t") == 1 and self.cfg.record_gifts and self.status:  # コメント (数だけ数える)
+            try:
+                comment_counts.counter(self._state_dir).feed(self.key, self.status.live_id, data)
+            except Exception as e:  # noqa: BLE001
+                self.log.debug("コメントの数の記録に失敗: %s", e)
         if data and data.get("t") == 2 and self.cfg.record_gifts:  # ギフト
             try:
                 record_gift(self._state_dir, self.key, self.status.live_id if self.status else None, data)

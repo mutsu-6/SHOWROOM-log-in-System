@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import comment_counts
 from .activity import parse_message
 from .api import BASE_URL
 from .config import Config
@@ -315,6 +316,8 @@ class GiftRecorder:
             # 接続の確立だけ同時数を抑え、つながったあとは件数の上限なく受信を続ける
             async with self._connect_slots:
                 ws = await connect_cm.__aenter__()
+            comments = comment_counts.counter(self.state_dir)
+            comments.start(key, live_id)
             try:
                 await ws.send(f"SUB\t{info['bcsvr_key']}")
                 pinger = asyncio.ensure_future(self._ping(ws))
@@ -326,10 +329,14 @@ class GiftRecorder:
                         if data.get("t") == 2:
                             record_gift(self.state_dir, key, live_id, data)
                             count += 1
+                        elif data.get("t") == 1:  # コメント (数だけ数える)
+                            comments.feed(key, live_id, data)
                         elif data.get("t") == 101:  # 配信終了
                             break
                 finally:
                     pinger.cancel()
+                    with suppress(Exception):
+                        comments.flush(key)
             finally:
                 await connect_cm.__aexit__(None, None, None)
             log.info("記録終了: %s (ギフト %d 件)", info.get("room_name") or key, count)

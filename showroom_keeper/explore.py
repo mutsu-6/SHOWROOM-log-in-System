@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import room_analysis
 from .research import LEFT_NAMES, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store
 
@@ -177,7 +178,8 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                 "followers": row["followers"], "live_at": row["live_at"], "collected_at": row["collected_at"],
                 "found_at": row["found_at"], "cumulative": cumulative, "gifters": gifters, "gifter_total": gifter_total,
                 "events": events, "event_total": event_total, "overlap": overlap,
-                "event_stats": _room_event_stats(s, rid)}
+                "event_stats": _room_event_stats(s, rid), "analysis": room_analysis.room_analysis(s, rid, now),
+                "balance": room_analysis.balance(state_dir, row["key"], now) if row["key"] else None}
 
 
 def _room_event_stats(s: Store, rid: int) -> dict[str, Any]:
@@ -201,6 +203,12 @@ def _overlap(s: Store, rid: int) -> list[dict[str, Any]]:
                     "name": (info["name"] if info is not None else None) or str(r["room_id"]),
                     "shared": r["shared"], "points": r["points"]})
     return out
+
+
+def room_profiles(state_dir: Path, rtype: str | None = None, style: str | None = None, order: str = "momentum") -> dict[str, Any]:
+    """ルームの一覧の、タイプ・勢い・戦術 (1 日 1 回作り直した分)。"""
+    with Store(state_dir) as s:
+        return room_analysis.profile_list(s, rtype or None, style or None, order or "momentum")
 
 
 # ------------------------------------------------------------------ イベント
@@ -246,8 +254,12 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
                ORDER BY re.rank IS NULL, re.rank, re.point DESC LIMIT ?""", (eid, EVENT_ROOMS))]
         # 開催中は順位が入っていないことがあるので、ポイントの多い順の位置を使う (place)
         points = sorted((r["point"] or 0 for r in rooms), reverse=True)
+        styles = {r["room_id"]: r for r in s.all("SELECT room_id, style, early, final, last_day_share FROM room_event_style WHERE event_id=?",
+                                                  (eid,))}
         for r in rooms:
             r["place"] = r["rank"] or (points.index(r["point"] or 0) + 1 if r["point"] else None)
+            st = styles.get(r["room_id"])
+            r["style"] = st["style"] if st is not None else None
         room_total = s.scalar("SELECT COUNT(*) FROM room_events WHERE event_id=?", (eid,))
         pending = s.scalar(f"""SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id)
                                WHERE re.event_id=? AND {PENDING_RANKING}""", (eid, now - 3600, RANKING_RETRIES))
@@ -263,7 +275,7 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
         return {**_event_row(e, now), "found": True, "type": e["type"], "show_ranking": bool(e["show_ranking"]),
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
-                "progress": _progress(s, eid, rooms)}
+                "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles)}
 
 
 def _progress(s: Store, eid: int, rooms: list[dict[str, Any]]) -> dict[str, Any]:

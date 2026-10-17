@@ -72,11 +72,42 @@ CREATE TABLE IF NOT EXISTS archive_contributions (
     event_id INTEGER, room_id INTEGER, rank INTEGER, name TEXT, point INTEGER, user_id INTEGER, at REAL,
     PRIMARY KEY (event_id, room_id, rank, name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+-- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
+CREATE TABLE IF NOT EXISTS room_daily (
+    room_id INTEGER, day TEXT, followers INTEGER, lives INTEGER DEFAULT 0, view_max INTEGER, view_sum INTEGER DEFAULT 0,
+    view_n INTEGER DEFAULT 0, last_start REAL, PRIMARY KEY (room_id, day)) WITHOUT ROWID;
+-- 終わったイベントの、ルームごとの走り方 (ポイントの推移から。room_analysis が作る)
+CREATE TABLE IF NOT EXISTS room_event_style (
+    event_id INTEGER, room_id INTEGER, style TEXT, early REAL, mid REAL, late REAL, final REAL, last_day_share REAL,
+    climb REAL, lead_share REAL, PRIMARY KEY (event_id, room_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS room_event_style_room ON room_event_style(room_id);
+-- ルームのタイプ・勢い・戦術 (room_analysis が 1 日 1 回作り直す。ルームの一覧の絞り込みに使う)
+CREATE TABLE IF NOT EXISTS room_profile (
+    room_id INTEGER PRIMARY KEY, at REAL, events INTEGER, size_class INTEGER, top1 REAL, top3 REAL, contributors REAL,
+    capped INTEGER, rel_top10 REAL, rel_per_contrib REAL, rel_point REAL, type TEXT,
+    momentum REAL, recent_place REAL, prev_place REAL, style TEXT, style_events INTEGER, style_counts TEXT);
 """
 
 MONTH_SQL = "strftime('%Y-%m', e.end + 9 * 3600, 'unixepoch')"  # イベントが終わった月 (日本時間)
 USER_MONTH_STEP = 2000  # user_month を前に集めた分から作るとき、1 回に足すイベントの数
 HISTORY_EVERY = 25 * 86400  # 累計ランキングの値を残す間隔 (ルームごと。月ごとの推移に使う)
+ROOM_STATS_STEP = 100  # 貢献ランキングの数字 (c_*) を前に集めた分から作るとき、1 回に作るイベントの数
+ROOM_DAILY_KEEP = 400  # room_daily を残す日数
+DAY_SQL = "strftime('%Y-%m-%d', ? + 9 * 3600, 'unixepoch')"  # 日本時間の日付
+
+
+def contribution_stats(points: Iterable[Any]) -> tuple[int, int, int, int, int]:
+    """貢献ランキングの (人数, 合計, 1 位, 上位 3 人, 上位 10 人) のポイント (ルームのタイプ分けに使う)。"""
+    pts = sorted((int(p or 0) for p in points), reverse=True)
+    return len(pts), sum(pts), sum(pts[:1]), sum(pts[:3]), sum(pts[:10])
+
+
+def median(values: Iterable[Any]) -> float | None:
+    v = sorted(x for x in values if x is not None)
+    if not v:
+        return None
+    m = len(v) // 2
+    return float(v[m]) if len(v) % 2 else (v[m - 1] + v[m]) / 2
 
 _ready: set[str] = set()
 _ready_lock = threading.Lock()
@@ -103,7 +134,11 @@ class Store:
                 self.conn.executescript(SCHEMA)
                 for table, col in (("rooms", "retry_at REAL"), ("rooms", "history_at REAL"), ("events", "retry_at REAL"), ("events", "progress_at REAL"),
                                    ("room_events", "point INTEGER"), ("room_events", "rank INTEGER"),
-                                   ("rooms", "gone INTEGER")):
+                                   ("rooms", "gone INTEGER"), ("events", "room_count INTEGER"),
+                                   ("events", "median_point INTEGER"), ("events", "style_at REAL"),
+                                   ("room_events", "c_count INTEGER"), ("room_events", "c_sum INTEGER"),
+                                   ("room_events", "c_top1 INTEGER"), ("room_events", "c_top3 INTEGER"),
+                                   ("room_events", "c_top10 INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -245,9 +280,12 @@ class Store:
                                SELECT o.user_id, {MONTH_SQL}, o.point FROM contributions o JOIN events e USING(event_id)
                                WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
                                ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
-            c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final) VALUES (?, ?, ?, ?)
+            stats = contribution_stats(r["point"] for r in rows)
+            c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final, c_count, c_sum, c_top1, c_top3, c_top10)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
-                           failures=0""", (room_id, event_id, now, int(final)))
+                           failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
+                           c_top3=excluded.c_top3, c_top10=excluded.c_top10""", (room_id, event_id, now, int(final), *stats))
             self._names(c, rows, now)
 
     # ---------------------------------------------------------------- 月ごとの集計 (user_month)
@@ -290,6 +328,54 @@ class Store:
                              ON CONFLICT(room_id, event_id) DO UPDATE SET point=excluded.point, rank=excluded.rank""",
                           [(int(r["room_id"]), event_id, r.get("point"), r.get("rank")) for r in rows if r.get("room_id")])
             c.execute("UPDATE events SET rooms_at=?, retry_at=NULL WHERE event_id=?", (now, event_id))
+            if rows:
+                c.execute("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
+                          (len(rows), _median_point(r.get("point") for r in rows), event_id))
+
+    def build_room_stats(self, step: int = ROOM_STATS_STEP) -> bool:
+        """前に集めたイベントの参加ルームの数・ポイントの真ん中と、貢献ランキングの数字 (c_*) を、少しずつ作る。
+
+        新しく集めた分は set_event_rooms・set_contributions が作る。戻り値は、まだ残りがあるか。
+        """
+        upto = self.meta("room_stats_upto", 0)
+        if upto is True:
+            return False
+        ids = [r[0] for r in self.all("SELECT event_id FROM events WHERE event_id > ? ORDER BY event_id LIMIT ?", (upto, step))]
+        if ids:
+            lo, hi = ids[0], ids[-1]
+            points: dict[int, list[Any]] = {}
+            for r in self.all("SELECT event_id, point FROM room_events WHERE event_id BETWEEN ? AND ?", (lo, hi)):
+                points.setdefault(r[0], []).append(r[1])
+            contrib: dict[tuple[int, int], list[int]] = {}
+            for r in self.all("SELECT event_id, room_id, point FROM contributions WHERE event_id BETWEEN ? AND ?", (lo, hi)):
+                contrib.setdefault((r[0], r[1]), []).append(r[2])
+            with self.tx() as c:
+                c.executemany("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
+                              [(len(p), _median_point(p), e) for e, p in points.items()])
+                c.executemany("UPDATE room_events SET c_count=?, c_sum=?, c_top1=?, c_top3=?, c_top10=? WHERE event_id=? AND room_id=?",
+                              [(*contribution_stats(p), e, r) for (e, r), p in contrib.items()])
+        done = len(ids) < step
+        self.set_meta("room_stats_upto", True if done else ids[-1])
+        return not done
+
+    def add_room_daily(self, lives: list[dict[str, Any]], now: float) -> None:
+        """配信中のルームの一覧 (5 分ごと) から、ルームの 1 日ごとの様子を足す。"""
+        rows = [(int(x["room_id"]), now, x.get("followers"), x.get("viewers"), x.get("started_at"))
+                for x in lives if x.get("room_id")]
+        with self.tx() as c:
+            c.executemany(f"""INSERT INTO room_daily(room_id, day, followers, lives, view_max, view_sum, view_n, last_start)
+                              VALUES (?1, {DAY_SQL.replace('?', '?2')}, ?3, 1, ?4, COALESCE(?4, 0), ?4 IS NOT NULL, ?5)
+                              ON CONFLICT(room_id, day) DO UPDATE SET followers=COALESCE(excluded.followers, followers),
+                                lives = lives + (COALESCE(excluded.last_start, 0) != COALESCE(last_start, 0)),
+                                last_start=COALESCE(excluded.last_start, last_start),
+                                view_max=MAX(COALESCE(view_max, 0), COALESCE(excluded.view_max, 0)),
+                                view_sum = view_sum + excluded.view_sum, view_n = view_n + excluded.view_n""", rows)
+            day = c.execute(f"SELECT {DAY_SQL}", (now,)).fetchone()[0]
+            row = c.execute("SELECT v FROM meta WHERE k='room_daily_cleaned'").fetchone()
+            if row is None or json.loads(row[0]) != day:  # 古い日の分は 1 日 1 回だけ消す
+                c.execute(f"DELETE FROM room_daily WHERE day < {DAY_SQL}", (now - ROOM_DAILY_KEEP * 86400,))
+                c.execute("INSERT INTO meta(k, v) VALUES ('room_daily_cleaned', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                          (json.dumps(day),))
 
     # ---------------------------------------------------------------- 気になるギフター
     def set_watch(self, user_id: int, watched: bool, memo: str | None, now: float) -> None:
@@ -319,6 +405,11 @@ class Store:
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, failures) VALUES (?, ?, 1)
                              ON CONFLICT(room_id, event_id) DO UPDATE SET failures = failures + 1""",
                           (int(room_id), int(event_id)))
+
+
+def _median_point(points: Iterable[Any]) -> int | None:
+    m = median(p for p in points if p and p > 0)
+    return None if m is None else int(m)
 
 
 def _import_json(store: Store) -> None:

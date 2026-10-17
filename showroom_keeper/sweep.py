@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import research
+from . import research, room_analysis
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
 
 log = logging.getLogger("research")
@@ -104,6 +104,8 @@ class Sweeper:
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
             return self._event_list(now)
         self._aggregate()
+        if room_analysis.step(st, now):  # ルームの分析 (SHOWROOM には問い合わせないので、仕事の順番には数えない)
+            self.doing = "ルームの分析"
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
@@ -122,10 +124,15 @@ class Sweeper:
         self.doing = "配信中のルーム"
         self.store.set_meta("live_at", now)  # 失敗しても次は LIVE_EVERY 秒後 (続けて問い合わせない)
         data = self.c.get("/api/live/onlives") or {}
+        lives = [x for g in data.get("onlives") or [] for x in g.get("lives") or [] if isinstance(x, dict)]
         rooms = [{"room_id": x.get("room_id"), "key": x.get("room_url_key"), "name": x.get("main_name"),
-                  "followers": x.get("follower_num"), "live_at": now}
-                 for g in data.get("onlives") or [] for x in g.get("lives") or [] if isinstance(x, dict)]
+                  "followers": x.get("follower_num"), "live_at": now, "viewers": x.get("view_num"),
+                  "started_at": x.get("started_at")} for x in lives]
         new = self.store.upsert_rooms(rooms, "live", now)
+        # 同じルームが「人気」などのまとめ枠にも出るので、1 ルーム 1 回にする
+        self.store.add_room_daily(list({r["room_id"]: r for r in rooms if r["room_id"]}.values()), now)
+        if lives and not self.store.meta("onlives_keys"):  # 一覧にどの項目があるか (視聴者数などを使えるか確かめるため)
+            self.store.set_meta("onlives_keys", sorted(lives[0]))
         if new:
             log.info("配信中のルームから %d ルームを新しく見つけました", new)
         return True
@@ -196,7 +203,8 @@ class Sweeper:
         if self._aggregated:
             return
         self.doing = "月ごとの集計"
-        self._aggregated = not self.store.build_user_month()
+        months = self.store.build_user_month()
+        self._aggregated = not (self.store.build_room_stats() or months)
 
     def _next_progress(self, now: float) -> bool:
         """開催中のイベントの参加ルームのポイントと順位を、PROGRESS_EVERY ごとに残す (ポイントの推移)。

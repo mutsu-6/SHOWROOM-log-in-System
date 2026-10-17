@@ -381,7 +381,9 @@ class FakeAll:
     def __call__(self, path):
         self.calls.append(path)
         if path == "/api/live/onlives":
-            return {"onlives": [{"lives": [{"room_id": 3, "room_url_key": "live3", "main_name": "配信中", "follower_num": 10}]}]}
+            live = {"room_id": 3, "room_url_key": "live3", "main_name": "配信中", "follower_num": 10, "view_num": 25,
+                    "started_at": NOW - 600}
+            return {"onlives": [{"lives": [live]}, {"lives": [live]}]}  # まとめ枠にも同じルームが出る
         if path.startswith("/api/event/search?status=4&page=1"):
             return {"event_list": [{"event_id": 3, "event_name": "終わった", "event_url_key": "done_ev",
                                     "started_at": NOW - 5 * 86400, "ended_at": NOW - 2 * 86400, "show_ranking": True}],
@@ -436,6 +438,10 @@ def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
         assert s.one("SELECT point FROM room_events WHERE room_id=6 AND event_id=2")[0] == 300  # 昔のイベントの成績
         assert s.room(room_id=4)["live_at"] == NOW - 86400  # 最後に配信した日時
         assert s.meta("history_done_at")
+        daily = s.one("SELECT * FROM room_daily WHERE room_id=3")
+        assert (daily["followers"], daily["lives"], daily["view_max"], daily["view_n"]) == (10, 1, 25, 1)
+        assert "view_num" in s.meta("onlives_keys")
+        assert s.meta("room_stats_upto") is True and s.meta("room_profile_at")  # ルームの分析も作った
     with Store(tmp_path) as s:
         assert s.room(key="scan1")["found_via"] == "scan" and s.room(room_id=3)["found_via"] == "live"
     assert [c["user_id"] for c in research.analyze(tmp_path, [])["candidates"]] == [77]
