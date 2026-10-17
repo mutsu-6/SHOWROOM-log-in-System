@@ -126,8 +126,8 @@ http://localhost:8080/
   ssh -t ユーザー名@サーバーのIP 'sudo bash SHOWROOM-log-in-System/deploy/setup-server.sh'
   ```
 
-  更新するときも同じ 2 行を実行します (リポジトリが公開されていれば、サーバー上で
-  `cd SHOWROOM-log-in-System && git pull && sudo bash deploy/setup-server.sh` でも更新できます)。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
+  2 回目からの更新は、Mac のデスクトップの「サーバーを更新する.command」(`tools/サーバーを更新する.command`) をダブルクリックするか、
+  サーバーで `cd ~/SHOWROOM-log-in-System && git pull && bash tools/update.sh` を実行します (くわしくは [docs/サーバーの更新.md](docs/サーバーの更新.md))。ログは `ssh ユーザー名@サーバーのIP 'cd SHOWROOM-log-in-System && sudo docker compose logs -f'` で見られます。
 - **メモリの目安**: 既定では指定した全ルームのページを常に開いておくため、ルームの数だけメモリを使います。
   計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB 増えました (3 ルームで約 1.9GB)。
   既定では、全ルームを開いてもメモリが足りる時だけ配信していないルームのページも開いておき、足りなければ配信中のルームだけ開きます
