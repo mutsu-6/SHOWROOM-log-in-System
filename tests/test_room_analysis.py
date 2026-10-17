@@ -231,7 +231,7 @@ def test_event_styles_ignore_room_numbers_when_tied(tmp_path):
             # 序盤 (2 回目まで) は全員 0 ポイント。そのあとも全員同じポイント
             s.add_progress(5, [{"room_id": r, "point": 0 if i < 2 else 100 * i} for r in range(1, 9)], at)
         rows = {r[1]: r for r in ra.event_styles(s, 5)}
-        assert {r[3] for r in rows.values()} == {1.0}  # 序盤は全員同じ位置
+        assert {r[3] for r in rows.values()} == {None}  # 序盤は誰もポイントが無いので、序盤の位置は分からない扱い
         assert {r[2] for r in rows.values()} == {None}  # 差し・逃げなどにならない
         assert {r[9] for r in rows.values()} == {0.0}  # 0 ポイントや同点の回は、だれの 1 位にもしない
 
@@ -242,7 +242,12 @@ def test_room_style_counts_events_without_style(tmp_path):
             s.upsert_events([{"event_id": eid, "end": NOW - eid * DAY}])
             s.conn.execute("INSERT INTO room_event_style(event_id, room_id, style) VALUES (?, 1, ?)", (eid, "逃げ" if eid <= 3 else None))
         st = ra.room_style(s, 1)
-        assert st["style"] == "自在" and st["events"] == 10 and st["counts"] == {"逃げ": 3, "型なし": 7}
+        # 逃げ 3 件・型なし 7 件は、いくつもの走り方をしているわけではないので「自在」ではなく「型なし」
+        assert st["style"] == "型なし" and st["events"] == 10 and st["counts"] == {"逃げ": 3, "型なし": 7}
+        # 逃げ 3・差し 3・型なし 4: 型の付いたイベントが半分以上で 2 種類 → 自在
+        for eid in (4, 5, 6):
+            s.conn.execute("UPDATE room_event_style SET style='差し' WHERE event_id=?", (eid,))
+        assert ra.room_style(s, 1)["style"] == "自在"
 
 
 def test_momentum_is_not_dragged_by_small_events(tmp_path):
@@ -252,3 +257,42 @@ def test_momentum_is_not_dragged_by_small_events(tmp_path):
             _event(s, eid, NOW - days * DAY, {1: (1000, 1, []), **{r: (10, r, []) for r in range(2, n + 1)}})
         m = ra.momentum(s, 1, NOW)
         assert m["value"] == 0 and m["label"] == "変わらない" and m["recent_place"] == 0
+
+
+def test_no_sashi_when_nobody_had_points_early(tmp_path):
+    with Store(tmp_path) as s:
+        start, end = NOW - 10 * DAY, NOW - 3 * DAY
+        s.upsert_events([{"event_id": 5, "start": start, "end": end}])
+        # 序盤 (4 分の 1 の時) まで全員 0 ポイント、そのあと差が付く: 上位で終えたルームを「差し」にしない
+        for i, f in enumerate((0.05, 0.25, 0.5, 0.75, 0.9, 1.0)):
+            s.add_progress(5, [{"room_id": r, "point": 0 if i < 2 else r * 100 * i} for r in range(1, 9)], start + f * (end - start))
+        rows = {r[1]: r for r in ra.event_styles(s, 5)}
+        assert rows[7][2] is None and rows[7][3] is None and rows[7][8] is None
+        # ルーム 8 は、ポイントの付いた回 (4 回) はずっと 1 位: 誰もポイントの無い回は数えないので「逃げ」
+        assert rows[8][2] == "逃げ" and rows[8][9] == 1.0
+        # 1 ルームでもポイントがあれば (8 ルームの 1 割以上)、遅れて来たルームは序盤が後ろだったと分かる
+        s.add_progress(5, [{"room_id": 1, "point": 50}], start + 0.25 * (end - start))
+        rows = {r[1]: r for r in ra.event_styles(s, 5)}
+        assert rows[7][2] == "差し"
+
+
+def test_new_share_ignores_regulars_seen_in_older_events(tmp_path):
+    with Store(tmp_path) as s:
+        # 常連 1〜3 は毎回。常連 4 は 1 回目と 3 回目だけ (2 回目は載らなかった)。5 は 3 回目に初めて来た
+        people = {1: [1, 2, 3, 4], 2: [1, 2, 3], 3: [1, 2, 3, 4, 5]}
+        for eid, users in people.items():
+            s.upsert_events([{"event_id": eid, "start": NOW - (40 - eid * 10) * DAY - DAY, "end": NOW - (40 - eid * 10) * DAY}])
+            s.set_event_rooms(eid, [{"room_id": 1, "point": 1000, "rank": 1}, {"room_id": 2, "point": 10, "rank": 2}], NOW)
+            s.set_contributions(eid, 1, [{"user_id": u, "point": 100 - u, "rank": u} for u in users], NOW, final=True)
+        ns = ra.new_share(s, 1)
+        # 2 回目: 新しい人 0、3 回目: 5 だけが新しい (4 は前に見ている) → 0 と 1/5 の真ん中
+        assert ns["events"] == 2 and abs(ns["value"] - 0.1) < 1e-9
+
+
+def test_momentum_ignores_tiny_events(tmp_path):
+    with Store(tmp_path) as s:
+        # 2 ルームのイベントでは、1 位か最下位しかないので勢いに使わない
+        for eid, days, rank in ((1, 100, 2), (2, 90, 2), (3, 20, 1), (4, 10, 1)):
+            _event(s, eid, NOW - days * DAY, {1: (100, rank, []), 9: (50, 3 - rank, [])})
+        m = ra.momentum(s, 1, NOW)
+        assert m["label"] is None and m["recent_events"] == 0

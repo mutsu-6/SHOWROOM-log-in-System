@@ -29,10 +29,12 @@ SIZE_NAMES = ("小さいイベント (50 ルーム未満)", "中くらいのイ�
 MOMENTUM_DAYS = 60
 MOMENTUM_MIN = 2  # 勢いを出すのに、それぞれの期間に要るイベントの数
 MOMENTUM_STEP = 0.1  # 位置がこれだけ変わったら「上り調子」「下り気味」
+MOMENTUM_MIN_ROOMS = 5  # これより参加ルームの少ないイベントは勢いに使わない (2 ルームなら位置が 0 か 1 しかなく、ぶれが大きい)
 STYLE_SNAPSHOTS = 6  # 走り方を出すのに要る、推移を残した回数
 STYLE_START = 0.3  # 推移を、イベントの期間のこの割合までに残し始めていること
 STYLE_EVENTS = 3  # ルームの戦術を出すのに要る、走り方の分かったイベントの数
 STYLE_RECENT = 10  # ルームの戦術に使う、直近のイベントの数
+STYLE_EARLY_ACTIVE = 0.1  # 序盤の回で、ポイントのあるルームがこの割合より少なければ、序盤の位置は分からない扱い
 STYLE_WAIT = 3 * 86400  # 終わった時の最終結果が読めない時に、走り方を作るまで待つ時間 (秒)
 PROFILE_EVERY = 86400  # 全部のルームの分を作り直す間隔 (秒)
 PROFILE_CHUNK = 300  # 1 回に作るルームの数
@@ -50,7 +52,8 @@ STYLES = {
     "先行": "序盤から上位 (上から 4 分の 1 以内) にいて、そのまま終える",
     "差し": "序盤は上位でなく、中盤から終盤に上げて上位で終える",
     "追い込み": "終盤まで下の方にいて、最終日に大きく伸ばす",
-    "自在": "イベントごとに走り方が違う (決まった型がない)",
+    "自在": "いくつもの走り方をする (イベントごとに走り方が違う)",
+    "型なし": "目立った走り方をしたイベントが少ない (中ほどで終えることが多いなど)",
 }
 CAUTION = ("集めた範囲から出した「傾向」です。貢献ランキングは上位 100 人までしか分からず、"
            "推移は集め始めてからのイベントだけです。外に出さず、中だけで使ってください。")
@@ -144,9 +147,9 @@ def momentum(s: Store, room_id: int, now: float) -> dict[str, Any]:
     span = MOMENTUM_DAYS * 86400
     rows = s.all("""SELECT e.end, MIN(1.0, CAST(re.rank - 1 AS REAL) / (e.room_count - 1)) AS place
                     FROM room_events re JOIN events e USING(event_id)
-                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count > 1 AND e.end > ? AND e.end <= ?
+                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count >= ? AND e.end > ? AND e.end <= ?
                       AND e.rooms_at >= e.end""",
-                 (int(room_id), now - 2 * span, now))
+                 (int(room_id), MOMENTUM_MIN_ROOMS, now - 2 * span, now))
     recent = [r["place"] for r in rows if r["end"] > now - span]
     prev = [r["place"] for r in rows if r["end"] <= now - span]
     out: dict[str, Any] = {"recent_events": len(recent), "prev_events": len(prev), "days": MOMENTUM_DAYS,
@@ -212,40 +215,53 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
         places[at] = _places(order)
     # 1 位の回: 1 位が 1 ルームだけで、ポイントがある回だけ数える (全員 0 や同点の回は、だれの 1 位にもしない)
     leads: dict[int, int] = {}
+    scored = 0
     for at in ats:
         top = s.all("SELECT room_id, point FROM event_progress WHERE event_id=? AND at=? ORDER BY point DESC LIMIT 2", (eid, at))
-        if top and (top[0][1] or 0) > 0 and (len(top) == 1 or (top[1][1] or 0) < top[0][1]):
-            leads[top[0][0]] = leads.get(top[0][0], 0) + 1
+        if top and (top[0][1] or 0) > 0:
+            scored += 1  # 誰かにポイントのある回 (1 位の割合は、この回の数で割る)
+            if len(top) == 1 or (top[1][1] or 0) < top[0][1]:
+                leads[top[0][0]] = leads.get(top[0][0], 0) + 1
+    # 序盤にほとんど誰もポイントを持っていない (まだ始まっていない) 時は、みな同じ「最下位」になり、
+    # 上位で終えたルームがみな「差し」に見えてしまう。その時は序盤の位置を使わない (先行・差しを付けない)
+    early_snap = snaps[t_early]
+    early_known = bool(early_snap) and sum(p > 0 for p in early_snap.values()) >= STYLE_EARLY_ACTIVE * len(early_snap)
     out = []
     for rid, final_pt in snaps[final_at].items():
         if final_pt <= 0:
             continue
-        early = places[t_early].get(rid, 1.0)
+        early = places[t_early].get(rid, 1.0) if early_known else None
         mid = places[t_mid].get(rid, 1.0)
         late = places[t_late].get(rid, 1.0)
         final = places[final_at][rid]
         day_pt = snaps[t_day].get(rid, 0) if t_day < end - 3600 else None
         last_day = (final_pt - day_pt) / final_pt if day_pt is not None else None
-        lead = leads.get(rid, 0) / len(ats)
+        lead = leads.get(rid, 0) / scored if scored else 0.0
         style = classify_run(early, late, final, last_day, lead)
-        out.append((eid, rid, style, early, mid, late, final, last_day, early - final, lead))
+        out.append((eid, rid, style, early, mid, late, final, last_day, None if early is None else early - final, lead))
     return out
 
 
-def classify_run(early: float, late: float, final: float, last_day: float | None, lead: float) -> str | None:
+def classify_run(early: float | None, late: float, final: float, last_day: float | None, lead: float) -> str | None:
+    """early が None (序盤の位置が分からない) の時は、先行・差しを付けない。"""
     if lead >= 0.5:
         return "逃げ"
-    if early <= 0.25 and final <= 0.25:
+    if early is not None and early <= 0.25 and final <= 0.25:
         return "先行"
     if late > 0.5 and final <= 0.5 and last_day is not None and last_day >= 0.4:
         return "追い込み"
-    if early > 0.25 and final <= 0.25 and final < early - 0.1:
+    if early is not None and early > 0.25 and final <= 0.25 and final < early - 0.1:
         return "差し"
     return None
 
 
 def room_style(s: Store, room_id: int) -> dict[str, Any]:
-    """直近 STYLE_RECENT 件の、走り方を見たイベント (「型なし」も数に入れる) で、半分を超える走り方。無ければ「自在」。"""
+    """直近 STYLE_RECENT 件の、走り方を見たイベント (「型なし」も数に入れる) から、ルームの戦術を決める。
+
+    - 1 つの走り方が半分を超える → その走り方
+    - 型の付いたイベントが半分以上あり、2 種類以上の走り方をしている → 自在
+    - それ以外 (型の付いたイベントが少ない) → 型なし (例: 逃げ 3 件・型なし 7 件。「自在」とは言えない)
+    """
     rows = s.all("""SELECT st.style FROM room_event_style st JOIN events e USING(event_id)
                     WHERE st.room_id=? ORDER BY e.end DESC LIMIT ?""", (int(room_id), STYLE_RECENT))
     counts: dict[str, int] = {}
@@ -253,21 +269,36 @@ def room_style(s: Store, room_id: int) -> dict[str, Any]:
         counts[r["style"] or "型なし"] = counts.get(r["style"] or "型なし", 0) + 1
     if len(rows) < STYLE_EVENTS:
         return {"style": None, "events": len(rows), "counts": counts}
-    top, n = max(((k, v) for k, v in counts.items() if k != "型なし"), key=lambda kv: kv[1], default=(None, 0))
-    return {"style": top if top and n * 2 > len(rows) else "自在", "events": len(rows), "counts": counts}
+    typed = {k: v for k, v in counts.items() if k != "型なし"}
+    top, n = max(typed.items(), key=lambda kv: kv[1], default=(None, 0))
+    if top and n * 2 > len(rows):
+        style = top
+    elif sum(typed.values()) * 2 >= len(rows) and len(typed) >= 2:
+        style = "自在"
+    else:
+        style = "型なし"
+    return {"style": style, "events": len(rows), "counts": counts}
 
 
 # ------------------------------------------------------------------ ルームのページ
 def new_share(s: Store, room_id: int) -> dict[str, Any]:
-    """直近のイベントで、前のイベントの貢献ランキングに載っていなかった人の割合 (真ん中の値)。人数の割合だけを出す。"""
-    events = [r["event_id"] for r in _event_rows(s, room_id, PROFILE_EVENTS + 1)][::-1]
+    """直近のイベントで、このルームの前のどのイベントの貢献ランキングにも載っていなかった人の割合 (真ん中の値)。
+
+    1 つ前のイベントだけとくらべると、前回たまたま 101 位より下だった常連も「新しく来た人」に入り、
+    大きいルームほど高く出る。前のイベントを全部見れば、そういう常連はほとんど外れる。人数の割合だけを出す。
+    """
+    rid = int(room_id)
+    events = [(r["event_id"], r["end"]) for r in _event_rows(s, rid, PROFILE_EVENTS + 1)][::-1]
+    if len(events) < 2:
+        return {"value": None, "events": 0}
+    seen = {r[0] for r in s.all("""SELECT DISTINCT c.user_id FROM contributions c JOIN events e USING(event_id)
+                                   WHERE c.room_id=? AND e.end < ?""", (rid, events[0][1]))}
     shares = []
-    prev: set[int] | None = None
-    for eid in events:
-        users = {r[0] for r in s.all("SELECT user_id FROM contributions WHERE event_id=? AND room_id=?", (eid, int(room_id)))}
-        if prev is not None and users:
-            shares.append(len(users - prev) / len(users))
-        prev = users
+    for i, (eid, _) in enumerate(events):
+        users = {r[0] for r in s.all("SELECT user_id FROM contributions WHERE event_id=? AND room_id=?", (eid, rid))}
+        if i > 0 and users:
+            shares.append(len(users - seen) / len(users))
+        seen |= users
     return {"value": median(shares), "events": len(shares)}
 
 
@@ -304,7 +335,7 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
 
 
 # ------------------------------------------------------------------ 1 日 1 回の作り直し
-STYLE_VERSION = 2  # 走り方の出し方を変えたら上げる (前に作った分を作り直す)
+STYLE_VERSION = 3  # 走り方の出し方を変えたら上げる (前に作った分を作り直す。3: 序盤にポイントの無い回を使わない)
 
 
 def step(s: Store, now: float) -> bool:
