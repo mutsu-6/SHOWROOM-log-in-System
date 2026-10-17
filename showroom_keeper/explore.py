@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import room_analysis
-from .research import LEFT_NAMES, PENDING_RANKING, RANKING_RETRIES
+from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store
 
 SEARCH_LIMIT = 20  # 検索で種類ごとに返す数
@@ -263,14 +263,18 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
         room_total = s.scalar("SELECT COUNT(*) FROM room_events WHERE event_id=?", (eid,))
         pending = s.scalar(f"""SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id)
                                WHERE re.event_id=? AND {PENDING_RANKING}""", (eid, now - 3600, RANKING_RETRIES))
-        left = tuple(LEFT_NAMES)
+        # 退会したユーザーも出す (イベントの実際の顔ぶれなので)。前の名前が分かれば、それも出す
         contributors = [dict(r) for r in s.all(
-            f"""SELECT c.user_id, COALESCE(u.name, '') AS name, SUM(c.point) AS point, COUNT(*) AS rooms, MIN(c.rank) AS best_rank,
-                       (SELECT COALESCE(r.name, r.key) FROM contributions c2 LEFT JOIN rooms r USING(room_id)
-                         WHERE c2.event_id=c.event_id AND c2.user_id=c.user_id ORDER BY c2.point DESC LIMIT 1) AS top_room
-                FROM contributions c LEFT JOIN users u USING(user_id) WHERE c.event_id=?
-                  AND COALESCE(u.name, '') NOT IN ({','.join('?' * len(left))})
-                GROUP BY c.user_id ORDER BY point DESC LIMIT ?""", (eid, *left, CONTRIBUTORS))]
+            """SELECT c.user_id, COALESCE(u.name, '') AS name, SUM(c.point) AS point, COUNT(*) AS rooms, MIN(c.rank) AS best_rank,
+                      MAX(c.guessed IS NOT NULL) AS guessed,
+                      (SELECT COALESCE(r.name, r.key) FROM contributions c2 LEFT JOIN rooms r USING(room_id)
+                        WHERE c2.event_id=c.event_id AND c2.user_id=c.user_id ORDER BY c2.point DESC LIMIT 1) AS top_room
+               FROM contributions c LEFT JOIN users u USING(user_id) WHERE c.event_id=?
+               GROUP BY c.user_id ORDER BY point DESC LIMIT ?""", (eid, CONTRIBUTORS))]
+        shown = _user_names(s, None, [c["user_id"] for c in contributors if c["name"] in LEFT_NAMES])
+        for c in contributors:
+            c["left"] = c["name"] in LEFT_NAMES
+            c["name"] = shown.get(c["user_id"], c["name"])
         contributor_total = s.scalar("SELECT COUNT(DISTINCT user_id) FROM contributions WHERE event_id=?", (eid,))
         return {**_event_row(e, now), "found": True, "type": e["type"], "show_ranking": bool(e["show_ranking"]),
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),

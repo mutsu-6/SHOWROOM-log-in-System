@@ -69,8 +69,9 @@ def test_event_detail(db):
     d = explore.event_detail(db, 10)
     assert d["found"] and d["state"] == "ended" and d["room_total"] == 3
     assert [(r["name"], r["rank"], r["contributors"]) for r in d["rooms"]] == [("ルームA", 1, 2), ("ルームB", 2, 2), ("ルームC", 3, 0)]
-    # 退会したユーザーは貢献者に出さない。複数のルームに送った人は合計する
-    assert [(c["user_id"], c["point"], c["rooms"], c["top_room"]) for c in d["contributors"]] == [(7, 6500, 2, "ルームA"), (8, 1000, 1, "ルームA")]
+    # 退会したユーザーも出す (印つき)。複数のルームに送った人は合計する
+    assert [(c["user_id"], c["point"], c["rooms"], c["top_room"], c["left"]) for c in d["contributors"]] == [
+        (7, 6500, 2, "ルームA", False), (8, 1000, 1, "ルームA", False), (9, 500, 1, "ルームB", True)]
     assert d["rankings"] == 2 and d["rankings_pending"] == 0  # ポイント 0 のルームは取らない
     p = explore.event_detail(db, "now_ev")["progress"]
     assert len(p["times"]) == 2 and [r["name"] for r in p["rooms"]] == ["ルームB", "ルームA"]

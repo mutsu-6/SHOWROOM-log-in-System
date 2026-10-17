@@ -2278,7 +2278,7 @@ async function showEvent(id) {
       { label: "貢献者", num: true, value: (r) => r.contributors, html: (r) => r.final ? `${num(r.contributors)} 人` : '<span class="uid">まだ</span>' },
     ], d.rooms, { sort: 0, desc: false, limit: 50, total: d.room_total, csvName: `イベント_${d.event_id}_順位`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"` })}</div>
     <div><h3>貢献者 <small class="muted">イベント全体の合計</small></h3>${dataTable("ep-contrib", [
-      { label: "ギフター", value: (c) => c.name, html: (c) => gifterLink(c.user_id, c.name), cls: "name" },
+      { label: "ギフター", value: (c) => c.name, html: (c) => `${gifterLink(c.user_id, c.name)}${c.left ? ' <span class="tag">退会</span>' : ""}${c.guessed ? ' <span class="tag warn" title="名前だけで、この人と決めた分 (同じ名前の別の人のこともあります)">名前で推測</span>' : ""}`, cls: "name" },
       { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
       { label: "ルーム", num: true, value: (c) => c.rooms, html: (c) => num(c.rooms) },
       { label: "最高順位", num: true, value: (c) => c.best_rank, html: (c) => c.best_rank ? `${num(c.best_rank)} 位` : "-" },

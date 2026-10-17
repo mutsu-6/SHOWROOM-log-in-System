@@ -606,12 +606,13 @@ def _event_stats(store: Store, uids: list[int]) -> dict[int, Any]:
     return out
 
 
-def _user_names(store: Store, rec: _Recorded, uids: list[int]) -> dict[int, str]:
+def _user_names(store: Store, rec: _Recorded | None, uids: list[int]) -> dict[int, str]:
     out = {}
     for part in _chunks(uids):
         for r in store.all(f"SELECT user_id, name FROM users WHERE user_id IN ({','.join('?' * len(part))})", part):
             out[r["user_id"]] = r["name"]
-    out.update({u: rec.names[u] for u in uids if u in rec.names})
+    if rec is not None:
+        out.update({u: rec.names[u] for u in uids if u in rec.names})
     left = [u for u, n in out.items() if n in LEFT_NAMES]
     for part in _chunks(left):
         # 退会したユーザーは、分かっていれば前の名前も出す (いちばん後に使っていた名前)
