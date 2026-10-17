@@ -509,6 +509,7 @@ td a.name-link, td a { word-break: break-word; }
       <div id="r-status" class="hint"></div>
       <div id="r-sweep"></div>
       <div class="hint" id="r-backup"></div>
+      <div class="hint" id="r-version"></div>
     </div>
     <h3>月ごとの集まり具合</h3>
     <div id="c-coverage"><div class="loading"><span class="spinner"></span>数えています…</div></div>
@@ -1745,6 +1746,20 @@ function watchSection() {
 }
 
 /* ------------------------------------------------------------ 上の状態の表示と、つなぎ道 */
+// サーバーで動いている版が、GitHub の作業ブランチの最新より古い時に知らせる
+const versionText = (v) => v ? `${v.commit.slice(0, 7)}${v.date ? ` (${String(v.date).slice(0, 16).replace("T", " ")})` : ""}` : "不明";
+function versionPill(v) {
+  if (!v || !v.outdated) return "";
+  return `<a class="pill warn" href="#collect" title="動いている版 ${esc(versionText(v.current))}\nGitHub の最新 ${esc(versionText(v.latest))}: ${esc(v.latest.message || "")}">新しい版があります</a>`;
+}
+function renderVersion(v) {
+  const box = $("#r-version");
+  if (!box || !v) return;
+  box.innerHTML = !v.current ? "動いている版: 不明 (tools/update.sh か「サーバーを更新する」で更新すると出ます)"
+    : `動いている版: ${esc(versionText(v.current))}${v.latest ? ` ・ GitHub の最新: ${esc(versionText(v.latest))} 「${esc(v.latest.message || "")}」` : ""}`
+      + (v.outdated === true ? ` ・ <b style="color:var(--warn)">更新が残っています。Mac の「サーバーを更新する.command」をダブルクリックしてください</b>`
+        : v.outdated === false ? " ・ 最新です" : "");
+}
 function renderOverview() {
   const o = overview;
   const login = o.login || {};
@@ -1756,7 +1771,8 @@ function renderOverview() {
   const browserCls = o.browser === "動作中" ? "ok" : o.browser.startsWith("障害") ? "warn" : "";
   $("#badges").innerHTML = `${loginPill}
     <a class="pill ${liveCount ? "live" : ""}" href="#live">配信中 ${liveCount} / ${o.rooms.length}</a>
-    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>${pausePill(o.research_pause)}`;
+    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>${pausePill(o.research_pause)}${versionPill(o.version)}`;
+  renderVersion(o.version);
   $("#rooms").innerHTML = o.rooms.length ? o.rooms.map(roomCard).join("") : `
     <div class="empty" style="grid-column:1/-1">視聴するルームがありません。<br><a class="btn primary" href="#settings">ルームを追加する</a></div>`;
   $("#rec-count").textContent = o.recording.length;

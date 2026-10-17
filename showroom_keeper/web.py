@@ -139,7 +139,14 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
         "settings": {key: list(getattr(cfg, key)) for key in SETTINGS_KEYS},
         "password": bool(cfg.web_password),
         "research_pause": _pause_view(),
+        "version": _version(),
     }
+
+
+def _version() -> dict[str, Any]:
+    from . import version
+
+    return version.info()
 
 
 def _pause_view() -> dict[str, Any]:

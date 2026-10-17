@@ -15,3 +15,9 @@ def no_gift_updates(monkeypatch):
     monkeypatch.setattr(keeper.Keeper, "_gift_updates", idle)
     monkeypatch.setattr(keeper.Keeper, "_research_updates", idle)
     monkeypatch.setattr(keeper.Keeper, "_backup_updates", idle)
+    # 管理画面のテストで、GitHub に最新の版を問い合わせない
+    import time
+
+    from showroom_keeper import version
+
+    monkeypatch.setitem(version._latest, "at", time.time())
