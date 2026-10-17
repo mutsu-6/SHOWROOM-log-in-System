@@ -138,11 +138,12 @@ class Store:
                                    ("events", "median_point INTEGER"), ("events", "style_at REAL"),
                                    ("room_events", "c_count INTEGER"), ("room_events", "c_sum INTEGER"),
                                    ("room_events", "c_top1 INTEGER"), ("room_events", "c_top3 INTEGER"),
-                                   ("room_events", "c_top10 INTEGER")):
+                                   ("room_events", "c_top10 INTEGER"), ("contributions", "guessed INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 _import_json(self)
+                _mark_guessed(self)
                 _ready.add(str(path))
 
     def close(self) -> None:
@@ -270,8 +271,9 @@ class Store:
                                WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
                                ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
             c.execute("DELETE FROM contributions WHERE event_id=? AND room_id=?", (event_id, room_id))
-            c.executemany("INSERT OR REPLACE INTO contributions(event_id, room_id, user_id, point, rank) VALUES (?, ?, ?, ?, ?)",
-                          [(event_id, room_id, r["user_id"], r["point"], r.get("rank")) for r in rows])
+            c.executemany("""INSERT OR REPLACE INTO contributions(event_id, room_id, user_id, point, rank, guessed)
+                             VALUES (?, ?, ?, ?, ?, ?)""",
+                          [(event_id, room_id, r["user_id"], r["point"], r.get("rank"), 1 if r.get("guessed") else None) for r in rows])
             c.executemany("""INSERT INTO user_room(user_id, room_id, events) VALUES (?, ?, ?)
                              ON CONFLICT(user_id, room_id) DO UPDATE SET events = events + excluded.events""",
                           [(r["user_id"], room_id, r["point"]) for r in rows])
@@ -280,7 +282,8 @@ class Store:
                                SELECT o.user_id, {MONTH_SQL}, o.point FROM contributions o JOIN events e USING(event_id)
                                WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
                                ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
-            stats = contribution_stats(r["point"] for r in rows)
+            # 名前で推測した分 (Internet Archive) は、分かった人だけの一部なので、ルームのタイプ分けの数字は作らない
+            stats = (None,) * 5 if any(r.get("guessed") for r in rows) else contribution_stats(r["point"] for r in rows)
             c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final, c_count, c_sum, c_top1, c_top3, c_top10)
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
@@ -347,8 +350,13 @@ class Store:
             for r in self.all("SELECT event_id, point FROM room_events WHERE event_id BETWEEN ? AND ?", (lo, hi)):
                 points.setdefault(r[0], []).append(r[1])
             contrib: dict[tuple[int, int], list[int]] = {}
-            for r in self.all("SELECT event_id, room_id, point FROM contributions WHERE event_id BETWEEN ? AND ?", (lo, hi)):
+            guessed = set()
+            for r in self.all("SELECT event_id, room_id, point, guessed FROM contributions WHERE event_id BETWEEN ? AND ?", (lo, hi)):
                 contrib.setdefault((r[0], r[1]), []).append(r[2])
+                if r[3]:
+                    guessed.add((r[0], r[1]))
+            for k in guessed:
+                del contrib[k]
             with self.tx() as c:
                 c.executemany("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
                               [(len(p), _median_point(p), e) for e, p in points.items()])
@@ -410,6 +418,26 @@ class Store:
 def _median_point(points: Iterable[Any]) -> int | None:
     m = median(p for p in points if p and p > 0)
     return None if m is None else int(m)
+
+
+def _mark_guessed(store: Store) -> None:
+    """前の版が Internet Archive から名前だけで決めて足した貢献ランキングに、「名前で推測」の印を 1 回だけ付ける。
+
+    前の版は印を残していないので、貢献ランキングのページを読んだ時刻 (archive_pages.fetched_at) と、
+    その直前に保存した時刻 (room_events.ranking_at) が同じ時のものを、名前で決めた分とみなす。
+    """
+    if store.meta("guessed_marked"):
+        return
+    with store.tx() as c:
+        pairs = c.execute("""SELECT re.event_id, re.room_id FROM archive_pages p JOIN events e ON e.key = p.event_key
+                               JOIN room_events re ON re.event_id = e.event_id AND re.room_id = p.room_id
+                             WHERE p.kind = 'contribution' AND p.fetched_at BETWEEN re.ranking_at AND re.ranking_at + 120""").fetchall()
+        c.executemany("UPDATE contributions SET guessed=1 WHERE event_id=? AND room_id=?", [tuple(x) for x in pairs])
+        c.executemany("""UPDATE room_events SET c_count=NULL, c_sum=NULL, c_top1=NULL, c_top3=NULL, c_top10=NULL
+                         WHERE event_id=? AND room_id=?""", [tuple(x) for x in pairs])
+        c.execute("INSERT INTO meta(k, v) VALUES ('guessed_marked', 'true') ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+    if pairs:
+        log.info("名前で推測した貢献ランキングに印を付けました (%d ルーム・イベント)", len(pairs))
 
 
 def _import_json(store: Store) -> None:

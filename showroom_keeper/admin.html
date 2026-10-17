@@ -1970,8 +1970,10 @@ async function showGifter(uid) {
   }
   html += `<div id="r-charts">${rec ? loadingHtml("行動のグラフを描いています…") : `<h3>行動のくせ</h3><div class="hint" style="margin-top:0">曜日・時間帯・1 回の大きさなどは、記録したギフトから分かります。この人のギフトはまだ記録していません (送っているルームを「設定」の「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)。</div>`}</div>`;
   if (d.found) {
-    html += `<h3>イベントの実績</h3>` + dataTable("gp-events", [
-      { label: "イベント", value: (e) => e.event, html: (e) => eventLink(e.event_id, e.event), cls: "name" },
+    const gs = d.guessed || { events: 0 };
+    html += `<h3>イベントの実績</h3>${gs.events ? `<div class="note-box">このうち <b>${num(gs.events)} 件・${num(gs.points)} pt</b> は「名前で推測」した分です。消えたルームの貢献ランキング (Internet Archive の古いページ。ユーザー ID が載っていない) を、名前が 1 人に決まる時だけこの人に結び付けました。同じ名前の別の人のこともあります。分かったポイントなどの合計には入っています。</div>` : ""}` + dataTable("gp-events", [
+      { label: "イベント", value: (e) => e.event, html: (e) => `${eventLink(e.event_id, e.event)}${e.guessed ? ' <span class="tag warn" title="名前だけで、この人と決めた分 (同じ名前の別の人のこともあります)">名前で推測</span>' : ""}`, cls: "name",
+        csv: (e) => `${e.event}${e.guessed ? " (名前で推測)" : ""}` },
       { label: "ルーム", value: (e) => e.room_name, html: (e) => roomLink(e.room, e.room_name) },
       { label: "順位", num: true, value: (e) => e.rank || null, html: (e) => e.rank ? `${num(e.rank)} 位` : "-" },
       { label: "pt", num: true, value: (e) => e.point, html: (e) => num(e.point) },

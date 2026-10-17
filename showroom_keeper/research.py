@@ -519,7 +519,7 @@ class _Signup:
     @classmethod
     def build(cls, s: Store, rec: _Recorded) -> _Signup:
         seen = [(r[0], r[1]) for r in s.all("""SELECT e.end, m.uid FROM (SELECT event_id, MAX(user_id) AS uid FROM contributions
-                                               GROUP BY event_id) m JOIN events e USING(event_id) WHERE e.end IS NOT NULL""")]
+                                               WHERE guessed IS NULL GROUP BY event_id) m JOIN events e USING(event_id) WHERE e.end IS NOT NULL""")]
         seen += [(min(g[0] for g in gifts), uid) for uid, gifts in rec.gifts.items() if gifts]
         steps, top = [], 0
         for at, uid in sorted(seen):
@@ -923,10 +923,13 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
     with Store(state_dir) as s:
         rooms = _Rooms(s, state_dir)
         slots = _slots(s, rooms, rec, [uid]).get(uid, {})
-        events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end
+        events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end,
+                                                   c.guessed IS NOT NULL AS guessed
                                             FROM contributions c LEFT JOIN events e USING(event_id)
                                             WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC LIMIT ?""", (uid, DETAIL_ROWS))]
         event_total = s.scalar("SELECT COUNT(*) FROM contributions WHERE user_id=?", (uid,))
+        g = s.one("SELECT COUNT(*) AS n, SUM(point) AS points FROM contributions WHERE user_id=? AND guessed IS NOT NULL", (uid,))
+        guessed = {"events": g["n"], "points": g["points"] or 0}
         gifts = rec.gifts.get(uid, [])
         if not slots and not events and not gifts:
             return {"user_id": uid, "found": False}
@@ -942,6 +945,7 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
     with Store(state_dir) as s:
         return {"user_id": uid, "found": True,
                 "coverage": {k: cov[k] for k in ("complete_from", "last_full", "cumulative_from")}, "room_total": len(room_list), "event_total": event_total,
+                "guessed": guessed,
                 "watch": {"memo": w["memo"] or "", "added_at": w["added_at"]} if w else None,
                 "former_names": [dict(r) for r in s.all("""SELECT name, at, source FROM user_names WHERE user_id=?
                                                           ORDER BY at DESC LIMIT 20""", (uid,))],

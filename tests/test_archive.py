@@ -1,7 +1,7 @@
 import json
 import urllib.error
 
-from showroom_keeper import archive, research
+from showroom_keeper import archive, research, research_store
 from showroom_keeper.research_store import Store
 
 NOW = 1_800_000_000.0
@@ -83,7 +83,7 @@ def test_recovers_gone_room_and_former_names(tmp_path):
         s.upsert_events([{"event_id": 26419, "key": None, "name": None}])
         # 生きているルームは SHOWROOM から取ってある (退会した人は名前が「退会済みユーザー」)
         s.set_contributions(26419, 100, [{"user_id": 1, "name": "退会済みユーザー", "point": 500, "rank": 1},
-                                         {"user_id": 2, "name": "今の名前", "point": 300, "rank": 2}], NOW, final=True)
+                                         {"user_id": 2, "name": "今の名前", "point": 300, "rank": 2}], NOW - 3600, final=True)
         s.set_cumulative(300, [{"user_id": 3, "name": "ひとりだけの名前", "point": 10, "visits": None}], NOW)
     c, fake = collector(tmp_path, {
         "showNumPages": "1",
@@ -110,11 +110,25 @@ def test_recovers_gone_room_and_former_names(tmp_path):
         # 消えたルームは、名前が 1 人に決まる人だけ貢献ランキングに足す
         got = {r["user_id"]: r["point"] for r in s.all("SELECT * FROM contributions WHERE room_id=200")}
         assert got == {3: 900}
+        # 名前で決めた分には「名前で推測」の印を付ける (SHOWROOM から取った分には付けない)。合計には入れる
+        assert {r["room_id"]: r["guessed"] for r in s.all("SELECT room_id, guessed FROM contributions")} == {100: None, 200: 1}
+        assert s.one("SELECT c_count FROM room_events WHERE room_id=200 AND event_id=26419")[0] is None  # タイプ分けに使わない
+        assert s.one("SELECT c_count FROM room_events WHERE room_id=100 AND event_id=26419")[0] == 2
+        assert s.one("SELECT events FROM user_room WHERE user_id=3 AND room_id=200")[0] == 900
         st = archive.status(s)
         assert st["rooms"] == 1 and st["names"] == 2 and st["left_named"] == 1
         assert st["events"] == (1, 1) and st["contributions"] == (2, 2) and st["index_done"]
         assert research._user_names(s, research._Recorded(tmp_path), [1])[1] == "退会済みユーザー (前の名前: あぐまる)"
     assert not any("event/search" in u for u in fake.asked)
+    d = research.gifter_detail(tmp_path, 3, [])
+    assert d["guessed"] == {"events": 1, "points": 900} and [e["guessed"] for e in d["events"]] == [1]
+    # 前の版で足した分 (印が無い) にも、起動した時に 1 回だけ印を付ける
+    with Store(tmp_path) as s:
+        s.conn.execute("UPDATE contributions SET guessed=NULL")
+        s.conn.execute("DELETE FROM meta WHERE k='guessed_marked'")
+    research_store._ready.clear()
+    with Store(tmp_path) as s:
+        assert {r["room_id"]: r["guessed"] for r in s.all("SELECT room_id, guessed FROM contributions")} == {100: None, 200: 1}
 
 
 def test_tries_older_snapshot_then_gives_up(tmp_path):

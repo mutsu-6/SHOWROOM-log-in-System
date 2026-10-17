@@ -7,7 +7,8 @@ SHOWROOM は、消えたルームを参加ルームの一覧から外し、退�
 - 貢献ランキングのページ (/event/contribution/<key>?room_id=N): 上位 100 人の順位・名前・ポイント (ユーザー ID は無い)
   - 同じイベント・ルームの貢献ランキングを SHOWROOM から取ってあれば、順位とポイントで突き合わせて、
     その人の当時の名前を user_names に残す (退会したユーザーの、退会前の名前も分かる)
-  - 消えたルームの分は、名前が 1 人に決まる人だけユーザー ID に結び付けて contributions に足す
+  - 消えたルームの分は、名前が 1 人に決まる人だけユーザー ID に結び付けて contributions に足す (「名前で推測」の印 guessed=1。
+    分析の合計には入れ、ギフターのページで分けて見せる)
 
 問い合わせ先は SHOWROOM ではないので、research.THROTTLE とは別に ARCHIVE_GAP 秒に 1 回まで (混んでいれば広げる)。
 """
@@ -284,7 +285,8 @@ class ArchiveCollector:
             matched = st.all("""SELECT user_id, name, point, rank FROM archive_contributions
                                 WHERE event_id=? AND room_id=? AND user_id IS NOT NULL""", (event_id, room_id))
             if matched:
-                rows = list({r["user_id"]: {"user_id": r["user_id"], "name": None, "point": r["point"], "rank": r["rank"]}
+                rows = list({r["user_id"]: {"user_id": r["user_id"], "name": None, "point": r["point"], "rank": r["rank"],
+                                            "guessed": True}
                              for r in matched}.values())
                 st.set_contributions(event_id, room_id, rows, self._clock(), final=True)
 
