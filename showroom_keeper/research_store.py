@@ -155,6 +155,9 @@ class Store:
                         if (table, col.split()[0]) == ("room_events", "c_p100"):
                             # 100 位のポイントを、前に集めた分からも作り直す (build_room_stats が少しずつ)
                             self.conn.execute("DELETE FROM meta WHERE k='room_stats_upto'")
+                # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る
+                self.conn.execute("""CREATE INDEX IF NOT EXISTS contributions_guessed ON contributions(room_id, event_id)
+                                     WHERE guessed IS NOT NULL""")
                 _import_json(self)
                 _mark_guessed(self)
                 _ready.add(str(path))

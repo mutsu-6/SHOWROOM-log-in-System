@@ -66,6 +66,7 @@ def _event_rows(s: Store, room_id: int, limit: int = PROFILE_EVENTS) -> list[Any
                     FROM room_events re JOIN events e USING(event_id)
                     WHERE re.room_id=? AND re.final=1 AND e.show_ranking=1 AND e.end IS NOT NULL
                       AND re.c_count > 0 AND e.median_point > 0
+                      AND e.rooms_at >= e.end  -- 終わったあとに読み直した最終のポイント (途中のポイントで比べない)
                     ORDER BY e.end DESC LIMIT ?""", (int(room_id), limit))
 
 
@@ -332,8 +333,11 @@ def new_share(s: Store, room_id: int) -> dict[str, Any]:
     events = [(r["event_id"], r["end"]) for r in _event_rows(s, rid, PROFILE_EVENTS + 1)][::-1]
     if len(events) < 2:
         return {"value": None, "events": 0}
-    seen = {r[0] for r in s.all("""SELECT DISTINCT c.user_id FROM contributions c JOIN events e USING(event_id)
-                                   WHERE c.room_id=? AND e.end < ?""", (rid, events[0][1]))}
+    # このルームの前のイベントを room_events (主キーが room_id から) で引き、貢献ランキングは主キーで読む
+    # (contributions を room_id で探すと、表を全部読むことになるため)
+    seen = {r[0] for r in s.all("""SELECT DISTINCT c.user_id FROM room_events re JOIN events e USING(event_id)
+                                   JOIN contributions c ON c.event_id = re.event_id AND c.room_id = re.room_id
+                                   WHERE re.room_id=? AND e.end < ?""", (rid, events[0][1]))}
     shares = []
     for i, (eid, _) in enumerate(events):
         users = {r[0] for r in s.all("SELECT user_id FROM contributions WHERE event_id=? AND room_id=?", (eid, rid))}

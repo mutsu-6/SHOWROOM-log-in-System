@@ -175,7 +175,7 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                            "contributors": r["contributors"], "ranking": bool(r["final"]),
                            # 100 位より下の人たちの分 (100 人に届いたイベントだけ。ポイント - 上位 100 人の合計)
                            "below": max(0, (r["point"] or 0) - r["c_sum"]) if r["final"] and (r["c_count"] or 0) >= 100
-                           and r["c_sum"] is not None else None})
+                           and r["c_sum"] is not None and r["end"] and (r["rooms_at"] or 0) >= r["end"] else None})
         overlap = _overlap(s, rid)
         return {"key": row["key"], "room_id": rid, "found": True, "name": row["name"] or row["key"] or str(rid),
                 "followers": row["followers"], "live_at": row["live_at"], "collected_at": row["collected_at"],
