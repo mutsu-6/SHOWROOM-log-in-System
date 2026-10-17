@@ -10,3 +10,5 @@ logs/
 uv.lock
 # 動いている版 (tools/update.sh が作り直す前に書く)
 showroom_keeper/VERSION
+.auto-update-failed
+.no-auto-update
