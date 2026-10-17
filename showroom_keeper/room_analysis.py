@@ -141,7 +141,8 @@ def momentum(s: Store, room_id: int, now: float) -> dict[str, Any]:
     """順位の位置 (順位 ÷ 参加ルーム数。小さいほど上) の、直近と前の期間の平均の違い。正の数なら上がっている。"""
     span = MOMENTUM_DAYS * 86400
     rows = s.all("""SELECT e.end, CAST(re.rank AS REAL) / e.room_count AS place FROM room_events re JOIN events e USING(event_id)
-                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count > 0 AND e.end > ? AND e.end <= ?""",
+                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count > 0 AND e.end > ? AND e.end <= ?
+                      AND e.rooms_at >= e.end""",
                  (int(room_id), now - 2 * span, now))
     recent = [r["place"] for r in rows if r["end"] > now - span]
     prev = [r["place"] for r in rows if r["end"] <= now - span]
@@ -171,21 +172,27 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
         return None
     start, end = e["start"], e["end"]
     dur = end - start
-    snaps: dict[float, dict[int, int]] = {}
-    for r in s.all("SELECT at, room_id, point FROM event_progress WHERE event_id=?", (int(event_id),)):
-        snaps.setdefault(r["at"], {})[r["room_id"]] = r["point"] or 0
-    ats = sorted(snaps)
+    eid = int(event_id)
+    ats = [r[0] for r in s.all("SELECT DISTINCT at FROM event_progress WHERE event_id=? ORDER BY at", (eid,))]
     if len(ats) < STYLE_SNAPSHOTS or ats[0] > start + STYLE_START * dur or ats[-1] < end - 3600:
         return None
-    places: dict[float, dict[int, float]] = {}
-    for at in ats:
-        order = sorted(snaps[at].items(), key=lambda kv: (-kv[1], kv[0]))
-        n = len(order)
-        places[at] = {rid: (i + 1) / n for i, (rid, _) in enumerate(order)}
-    first_place = {at: next(iter(sorted(snaps[at].items(), key=lambda kv: (-kv[1], kv[0]))), (None, 0))[0] for at in ats}
+    # 全部の回を一度に読むと、長いイベントでは数百万行になる (サーバーのメモリが 2GB なので)。
+    # 位置を使う回 (序盤・中盤・終盤・最終日の前・最後) だけを読み、1 位は回ごとに 1 行だけ読む
     t_early, t_mid, t_late = (_at_or_before(ats, start + f * dur) for f in (0.25, 0.5, 0.75))
     t_day = _at_or_before(ats, end - 86400)
     final_at = ats[-1]
+    snaps: dict[float, dict[int, int]] = {}
+    places: dict[float, dict[int, float]] = {}
+    for at in {t_early, t_mid, t_late, t_day, final_at}:
+        order = [(r[0], r[1] or 0) for r in s.all("""SELECT room_id, point FROM event_progress WHERE event_id=? AND at=?
+                                                    ORDER BY point DESC, room_id""", (eid, at))]
+        snaps[at] = dict(order)
+        places[at] = {rid: (i + 1) / len(order) for i, (rid, _) in enumerate(order)}
+    leads: dict[int, int] = {}
+    for at in ats:
+        top = s.one("SELECT room_id FROM event_progress WHERE event_id=? AND at=? ORDER BY point DESC, room_id LIMIT 1", (eid, at))
+        if top is not None:
+            leads[top[0]] = leads.get(top[0], 0) + 1
     out = []
     for rid, final_pt in snaps[final_at].items():
         if final_pt <= 0:
@@ -196,9 +203,9 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
         final = places[final_at][rid]
         day_pt = snaps[t_day].get(rid, 0) if t_day < end - 3600 else None
         last_day = (final_pt - day_pt) / final_pt if day_pt is not None else None
-        lead = sum(first_place[at] == rid for at in ats) / len(ats)
+        lead = leads.get(rid, 0) / len(ats)
         style = classify_run(early, late, final, last_day, lead)
-        out.append((int(event_id), rid, style, early, mid, late, final, last_day, early - final, lead))
+        out.append((eid, rid, style, early, mid, late, final, last_day, early - final, lead))
     return out
 
 

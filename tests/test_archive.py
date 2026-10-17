@@ -198,3 +198,26 @@ def test_sweep_releases_hold_when_room_exists(tmp_path):
     assert sw._next_room(NOW)
     with Store(tmp_path) as s:
         assert s.one("SELECT failures FROM room_events WHERE room_id=8")["failures"] == 0
+
+
+def test_guessed_ranking_is_refetched_when_room_exists(tmp_path):
+    from showroom_keeper import sweep
+
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 8, "key": "y", "name": "y", "live_at": NOW}], "archive", NOW)
+        s.upsert_events([{"event_id": 1, "key": "e", "end": NOW - 86400}, {"event_id": 2, "key": "f", "end": NOW - 86400}])
+        for eid in (1, 2):
+            s.set_contributions(eid, 8, [{"user_id": 5, "point": 100, "rank": 1, "guessed": True}], NOW - 60, final=True)
+    answers = {"event_id=1&": {"ranking": [{"user_id": 6, "name": "本物", "point": 120, "rank": 1}]}, "event_id=2&": {"ranking": []}}
+    get = lambda path, **p: next((v for k, v in answers.items() if k in path), {})  # noqa: E731
+    c = research.Collector(tmp_path, get=get, throttle=research.Throttle(0.0, sleep=lambda s: None))
+    c.refresh_room = lambda room_id: None
+    sw = sweep.Sweeper(tmp_path, collector=c, scan=False)
+    assert sw._next_room(NOW)  # ルームがあると分かったので、名前で推測した分を取り直す
+    while sw._next_ranking(NOW):
+        pass
+    with Store(tmp_path) as s:
+        rows = {(r["event_id"], r["user_id"]): r["guessed"] for r in s.all("SELECT * FROM contributions")}
+        # 本物が取れたイベントは置き換える。SHOWROOM に残っていなかったイベントは、推測した分を残す
+        assert rows == {(1, 6): None, (2, 5): 1}
+        assert s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=8 AND final=1") == 2

@@ -268,6 +268,12 @@ class RoomWatcher:
         self._went_offline = bool(prev is not None and prev.is_live and not self.status.is_live)
         if prev is None or (prev.room_name, prev.room_id) != (self.status.room_name, self.status.room_id):
             self._remember_name()
+        if self.cfg.record_gifts:  # コメントの数 (配信の最後の分や、終わった時の分も書く)
+            try:
+                comments = comment_counts.counter(self._state_dir)
+                comments.flush(self.key) if self._went_offline else comments.flush_due(self.key)
+            except Exception as e:  # noqa: BLE001
+                self.log.debug("コメントの数を書けません: %s", e)
         if prev is None or prev.is_live != self.status.is_live:
             state = "配信中" if self.status.is_live else "配信していません"
             self.log.info("%s: %s", self.status.room_name, state)

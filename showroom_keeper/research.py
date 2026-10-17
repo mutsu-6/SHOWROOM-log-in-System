@@ -307,7 +307,14 @@ class Collector:
         if isinstance(ev, dict) and ev.get("ended_at"):
             # 番号で読んだ古いイベントは、ここで初めて日付が分かる (「順位を公開しない」はここでは見ない)
             self.store.upsert_events([{**_event_info({**ev, "event_id": event_id}), "show_ranking": None}])
-        self.store.set_contributions(event_id, room_id, _rows(data), self._clock(), final)
+        rows = _rows(data)
+        if not rows and self.store.one("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? AND guessed IS NOT NULL",
+                                       (event_id, room_id)):
+            # SHOWROOM に残っていなかった: 名前で推測した分 (Internet Archive) を消さずに残す
+            self.store.conn.execute("UPDATE room_events SET final=1, ranking_at=?, failures=0 WHERE event_id=? AND room_id=?",
+                                    (self._clock(), event_id, room_id))
+            return True
+        self.store.set_contributions(event_id, room_id, rows, self._clock(), final)
         return True
 
 

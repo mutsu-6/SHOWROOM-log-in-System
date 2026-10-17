@@ -48,6 +48,7 @@ class CommentCounter:
         self._lives: dict[tuple[str, Any], dict[str, Any]] = {}
         self._users: dict[tuple[str, Any], set[Any]] = {}
         self._flushed: dict[str, float] = {}
+        self._dirty: set[str] = set()
 
     def start(self, room: str, live_id: Any) -> None:
         """配信につながった時に呼ぶ。同じ配信に 2 回目につながった (途中が切れていた) 時は「一部だけ」の印を付ける。"""
@@ -85,7 +86,13 @@ class CommentCounter:
             live["users"] = max(live["users"], len(users))
             live["first"] = live["first"] or int(now)
             live["last"] = int(now)
+            self._dirty.add(room)
         if now - self._flushed.get(room, 0) >= FLUSH_EVERY:
+            self.flush(room)
+
+    def flush_due(self, room: str) -> None:
+        """まだ書いていない数があり、前に書いてから FLUSH_EVERY 秒たっていれば書く (配信の最後の 1 分も残すため)。"""
+        if room in self._dirty and self._clock() - self._flushed.get(room, 0) >= FLUSH_EVERY:
             self.flush(room)
 
     def flush(self, room: str) -> None:
@@ -93,6 +100,7 @@ class CommentCounter:
         now = self._clock()
         with self._lock:
             self._flushed[room] = now
+            self._dirty.discard(room)
             current = {k[1]: dict(v) for k, v in self._lives.items() if k[0] == room}
             for k in [k for k, v in self._lives.items() if k[0] == room and now - (v["last"] or now) > FORGET_AFTER]:
                 self._lives.pop(k, None)

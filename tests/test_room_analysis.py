@@ -196,3 +196,21 @@ def test_balance(tmp_path):
     assert b["per_live"]["comments"] == 10 and b["per_live"]["paid_gifters"] == 5 and b["per_live"]["paid_points"] == 500
     assert b["ratio"] == 0.5 and b["label"] == "ギフト寄り"
     assert ra.balance(tmp_path, "zzz", NOW) is None
+
+
+def test_comment_counter_flush_due():
+    import tempfile
+    from pathlib import Path as P
+
+    d = P(tempfile.mkdtemp())
+    t = [NOW]
+    c = comment_counts.CommentCounter(d, clock=lambda: t[0])
+    c.feed("aaa", 1, {"t": 1, "u": 1, "cm": "a"})  # 最初の 1 件は書く
+    t[0] += 10
+    c.feed("aaa", 1, {"t": 1, "u": 2, "cm": "b"})  # 1 分たっていないので、まだ書かない
+    assert comment_counts.load(d, "aaa")[0]["comments"] == 1
+    c.flush_due("aaa")
+    assert comment_counts.load(d, "aaa")[0]["comments"] == 1
+    t[0] += 60
+    c.flush_due("aaa")  # 新しいコメントが来なくても、配信の最後の分を書く
+    assert comment_counts.load(d, "aaa")[0]["comments"] == 2

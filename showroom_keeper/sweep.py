@@ -359,6 +359,11 @@ class Sweeper:
             with self.store.tx() as c:
                 c.execute("UPDATE rooms SET retry_at=NULL, gone=NULL WHERE room_id=?", (r["room_id"],))
                 c.execute("UPDATE room_events SET failures=0 WHERE room_id=? AND failures=?", (r["room_id"], ARCHIVE_HOLD))
+                # ルームがあると分かった: Internet Archive から名前で推測して足した貢献ランキングは、
+                # SHOWROOM から本物 (ユーザー ID つき・全員) を取り直す
+                c.execute("""UPDATE room_events SET final=0, ranking_at=NULL WHERE room_id=? AND event_id IN (
+                               SELECT event_id FROM contributions WHERE room_id=? AND guessed IS NOT NULL)""",
+                          (r["room_id"], r["room_id"]))
         return True
 
     def _next_ranking(self, now: float) -> bool:

@@ -2051,7 +2051,7 @@ async function showRooms(sub) {
 const pctText = (x, d = 0) => x == null ? "—" : `${(x * 100).toFixed(d)}%`;
 const placeText = (x) => x == null ? "—" : `上から ${(x * 100).toFixed(0)}%`;
 const momentumHtml = (v, label) => v == null ? '<span class="uid">判定できない</span>'
-  : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}</span>`;
+  : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid" title="順位の位置 (上から何%) が、前の 60 日より何ポイント上がったか">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}</span>`;
 const roomFilter = { type: "", style: "", order: "momentum" };
 async function showRoomProfiles() {
   const box = $("#rm-body");
@@ -2073,7 +2073,7 @@ async function showRoomProfiles() {
       <span class="uid">${ymd(d.at)} に作った分</span></div>`;
   html += `<details class="hint"><summary>タイプと戦術の見方</summary><ul>${Object.entries(d.types).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
       <ul>${Object.entries(d.styles).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join("")}</ul>
-      <div>タイプは、同じくらいの規模のイベントに出ているルームの中でくらべます。勢いは、直近 60 日とその前の 60 日のイベントの順位 (参加ルームの中の位置) の違いです。</div></details>`;
+      <div>タイプは、同じくらいの規模のイベントに出ているルームの中でくらべます。勢いは、直近 60 日とその前の 60 日のイベントの順位 (参加ルームの中の位置) の違いです。勢いの横の数字 (例: +20) は、位置が「上から 50%」→「上から 30%」のように何ポイント上がったかです。</div></details>`;
   html += dataTable("room-profiles", [
     { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
     { label: "タイプ", value: (r) => r.type || "", html: (r) => r.type ? `<span class="tag info">${esc(r.type)}</span>` : '<span class="uid">判定できない</span>' },
