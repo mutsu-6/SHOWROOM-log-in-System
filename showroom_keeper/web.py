@@ -379,15 +379,19 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _research_progress(self) -> dict[str, Any]:
         """情報収集の進み具合 (分析は数え直さないので軽い。集めている間の画面の更新に使う)。"""
-        from . import backup, research, sweep
+        from . import archive, backup, research, sweep
 
         cfg = self.keeper.cfg
         out = {"job": research.JOB.state(), "status": research.status(self._state_dir(), research.research_keys(cfg)),
-               "throttle": research.THROTTLE.state(), "sweep": sweep.state(), "backup": backup.last_backup(self._state_dir())}
+               "throttle": research.THROTTLE.state(), "sweep": sweep.state(), "backup": backup.last_backup(self._state_dir()),
+               "archive": archive.state()}
         if cfg.research_all:
             now = time.time()
             if now - _store_status["at"] > STORE_STATUS_TTL:  # 全体の件数は数えるのに時間がかかるので使い回す
-                _store_status.update(at=now, data=research.store_status(self._state_dir()))
+                data = research.store_status(self._state_dir())
+                with research.Store(self._state_dir()) as s:
+                    data["archive"] = archive.status(s)
+                _store_status.update(at=now, data=data)
             out["store"] = _store_status["data"]
         return out
 

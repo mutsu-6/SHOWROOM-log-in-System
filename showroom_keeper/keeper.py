@@ -417,6 +417,10 @@ class Keeper:
             from . import sweep
 
             sweep.start(state_dir, scan=self.cfg.research_scan)
+            if self.cfg.research_archive:
+                from . import archive
+
+                archive.start(state_dir)
         loop = asyncio.get_running_loop()
         first = True
         while True:

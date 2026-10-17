@@ -56,6 +56,21 @@ CREATE TABLE IF NOT EXISTS user_month (
     user_id INTEGER, month TEXT, points INTEGER, PRIMARY KEY (user_id, month)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS user_month_month ON user_month(month);
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT);
+-- 前に使っていた名前 (名前を変えた時・退会した時に前の名前を残す。Internet Archive の古いページからも足す)
+CREATE TABLE IF NOT EXISTS user_names (
+    user_id INTEGER, name TEXT, at REAL, source TEXT, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS user_names_name ON user_names(name);
+CREATE INDEX IF NOT EXISTS events_key ON events(key);
+CREATE INDEX IF NOT EXISTS users_name ON users(name);
+-- Internet Archive に残っている SHOWROOM のページ (消えたルーム・退会したユーザーの情報を取り戻すため)
+CREATE TABLE IF NOT EXISTS archive_pages (
+    page TEXT PRIMARY KEY, kind TEXT, event_key TEXT, room_id INTEGER, url TEXT, stamps TEXT,
+    tries INTEGER DEFAULT 0, fetched_at REAL, rows INTEGER);
+CREATE INDEX IF NOT EXISTS archive_pages_todo ON archive_pages(kind, fetched_at);
+-- Internet Archive の貢献ランキング (ユーザー ID は載っていない。突き合わせて分かった人だけ user_id を入れる)
+CREATE TABLE IF NOT EXISTS archive_contributions (
+    event_id INTEGER, room_id INTEGER, rank INTEGER, name TEXT, point INTEGER, user_id INTEGER, at REAL,
+    PRIMARY KEY (event_id, room_id, rank, name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -87,7 +102,8 @@ class Store:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.executescript(SCHEMA)
                 for table, col in (("rooms", "retry_at REAL"), ("rooms", "history_at REAL"), ("events", "retry_at REAL"), ("events", "progress_at REAL"),
-                                   ("room_events", "point INTEGER"), ("room_events", "rank INTEGER")):
+                                   ("room_events", "point INTEGER"), ("room_events", "rank INTEGER"),
+                                   ("rooms", "gone INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -176,9 +192,14 @@ class Store:
                         (int(room_id),))
 
     # ---------------------------------------------------------------- ランキング
-    def _names(self, c: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    def _names(self, c: sqlite3.Connection, rows: list[dict[str, Any]], now: float | None = None) -> None:
+        named = [(r["user_id"], r["name"]) for r in rows if r.get("name")]
+        # 名前が変わった (退会して「退会済みユーザー」になった時も) なら、前の名前を残す
+        c.executemany("""INSERT OR IGNORE INTO user_names(user_id, name, at, source)
+                         SELECT user_id, name, ?, 'showroom' FROM users WHERE user_id=? AND name IS NOT NULL AND name != ?""",
+                      [(now, u, n) for u, n in named])
         c.executemany("INSERT INTO users(user_id, name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name",
-                      [(r["user_id"], r["name"]) for r in rows if r.get("name")])
+                      named)
 
     def set_cumulative(self, room_id: int, rows: list[dict[str, Any]], now: float) -> None:
         """ルームの累計ランキング (上位 30 人) を置き換える。user_room の累計は小さくしない (上位から外れても送った分は残る)。"""
@@ -197,7 +218,7 @@ class Store:
                    ON CONFLICT(user_id, room_id) DO UPDATE SET cumulative=MAX(cumulative, excluded.cumulative),
                      cumulative_rank=excluded.cumulative_rank, visits=MAX(visits, excluded.visits)""",
                 [(r["user_id"], room_id, r["point"], r.get("rank"), r["visits"]) for r in rows])
-            self._names(c, rows)
+            self._names(c, rows, now)
 
     def set_contributions(self, event_id: int, room_id: int, rows: list[dict[str, Any]], now: float, final: bool) -> None:
         """イベントの貢献ランキングを置き換える (取り直したときは前の分を user_room から引いてから足す)。"""
@@ -227,7 +248,7 @@ class Store:
             c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
                            failures=0""", (room_id, event_id, now, int(final)))
-            self._names(c, rows)
+            self._names(c, rows, now)
 
     # ---------------------------------------------------------------- 月ごとの集計 (user_month)
     def _user_month_ready(self, c: sqlite3.Connection, event_id: int) -> bool:

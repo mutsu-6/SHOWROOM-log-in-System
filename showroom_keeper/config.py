@@ -125,6 +125,9 @@ class Config:
     # research.db (SQLite) が数 GB になる (2015 年ごろからの貢献ランキング)。research_scan はルーム番号を 1 から順に 1 回だけ調べる (約 58 万回)
     research_all: bool = False
     research_scan: bool = True
+    # 全ルームの収集と一緒に、Internet Archive に残っている SHOWROOM の古いページから、消えたルームと
+    # 退会したユーザーの前の名前を取り戻す (問い合わせ先は SHOWROOM ではない。4 秒に 1 回、数日かかる)
+    research_archive: bool = True
     research_gap: float = 1.0
     # research.db のバックアップ (state_dir/backup/ に SQLite のバックアップの仕組みで写す) の時刻 (日本時間、毎日) と残す数
     research_backup_times: str = "4:00"

@@ -45,6 +45,7 @@ PAUSE_LOG = 20  # 覚えておく、止めた記録の数
 PAST_EVENT_PAGES = 100  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
 ROOM_REFRESH = 20 * 3600  # 累計ランキングなどを取り直すまでの時間 (秒)
 RANKING_RETRIES = 3  # 貢献ランキングの取得に続けて失敗したら、それ以上は自動で取り直さない
+ARCHIVE_HOLD = RANKING_RETRIES + 1  # Internet Archive で見つけたルームの貢献ランキング: ルームがあると分かるまで取りに行かない
 WEEKDAYS = "月火水木金土日"
 LEFT_NAMES = {"退会済みユーザー"}  # SHOWROOM をやめたユーザー (誘導できないので候補に出さない)
 ANALYSIS_TTL = 600  # 分析の結果を使い回す時間 (秒)。全ルーム分の集計は重いので、そのたびには数え直さない
@@ -611,6 +612,12 @@ def _user_names(store: Store, rec: _Recorded, uids: list[int]) -> dict[int, str]
         for r in store.all(f"SELECT user_id, name FROM users WHERE user_id IN ({','.join('?' * len(part))})", part):
             out[r["user_id"]] = r["name"]
     out.update({u: rec.names[u] for u in uids if u in rec.names})
+    left = [u for u, n in out.items() if n in LEFT_NAMES]
+    for part in _chunks(left):
+        # 退会したユーザーは、分かっていれば前の名前も出す (いちばん後に使っていた名前)
+        for r in store.all(f"""SELECT user_id, name FROM user_names WHERE user_id IN ({','.join('?' * len(part))})
+                               AND name NOT IN ({','.join('?' * len(LEFT_NAMES))}) ORDER BY at""", (*part, *LEFT_NAMES)):
+            out[r["user_id"]] = f"{sorted(LEFT_NAMES)[0]} (前の名前: {r['name']})"
     return out
 
 
@@ -936,6 +943,8 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         return {"user_id": uid, "found": True,
                 "coverage": {k: cov[k] for k in ("complete_from", "last_full", "cumulative_from")}, "room_total": len(room_list), "event_total": event_total,
                 "watch": {"memo": w["memo"] or "", "added_at": w["added_at"]} if w else None,
+                "former_names": [dict(r) for r in s.all("""SELECT name, at, source FROM user_names WHERE user_id=?
+                                                          ORDER BY at DESC LIMIT 20""", (uid,))],
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid)}
