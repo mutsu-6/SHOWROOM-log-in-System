@@ -1,57 +1,77 @@
-"""視聴はしないルームに、配信が始まったら一度だけ入室する。"""
+"""視聴はしないルームに、配信が始まったら一度だけ入室する (ブラウザのページは開かない)。
+
+配信ページは、ログインしていれば開いてから 10 秒後に /api/room/greeting を呼ぶ。SHOWROOM はこれを受けて
+入室のお知らせ (リアルタイム通信の t=18。「○○さんが初訪問」など) を流し、観客席にアバターが出る。
+配信ページを開いて受け取る Cookie (uuid) を付けたまま、ページと同じ順に API を呼べば、ブラウザがなくても同じになる
+(2026-10 に確かめた。ページを 10 秒より前に閉じると、人数には数えられるがアバターは出ない)。
+"""
 
 from __future__ import annotations
 
 import asyncio
+import http.cookiejar
 import json
 import logging
 import os
+import urllib.request
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .api import RoomStatus
-from .watcher import Page
+from .api import BASE_URL, RoomStatus
 
 log = logging.getLogger("entrance")
 
 ENTERED_FILE = "entered.json"
-# 配信ページは読み込み (load) のあとにリアルタイム通信へつなぎ、SUB を送って配信に参加する (計測では開いてから約 6 秒)。
-# 重いサーバーでは読み込み自体が遅いため、全体の上限は長めに取る
-ENTER_TIMEOUT = 30.0  # 開いてから参加を確認するまでの上限 (秒)
-STAY_AFTER_JOIN = 5.0  # 参加を確認してから閉じるまで (秒)
+GREETING_DELAY = 10.0  # 配信ページが greeting を呼ぶまでの時間 (秒)
+REQUEST_TIMEOUT = 20.0
+USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36")
+
+# Get(path) -> 応答の本文。1 回の入室の間、Cookie (配信ページで受け取る uuid も) を引き継ぐ
+Get = Callable[[str], str]
 
 
-def is_join_frame(payload: Any) -> bool:
-    """配信への参加 (リアルタイム通信で送る SUB) か。"""
-    if isinstance(payload, (bytes, bytearray)):
-        payload = payload.decode("utf-8", "replace")
-    return isinstance(payload, str) and payload.startswith("SUB\t")
+def cookie_session(cookies: list[dict[str, Any]]) -> Get:
+    """ブラウザのログイン状態の Cookie を持った、1 回の入室用の問い合わせ。"""
+    jar = http.cookiejar.CookieJar()
+    for c in cookies:
+        domain = c.get("domain") or ""
+        if "showroom-live.com" not in domain:
+            continue
+        jar.set_cookie(http.cookiejar.Cookie(
+            0, c["name"], c["value"], None, False, domain, True, domain.startswith("."), c.get("path") or "/", True,
+            bool(c.get("secure")), None, False, None, None, {}))
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener.addheaders = [("User-Agent", USER_AGENT), ("Accept-Language", "ja")]
+
+    def get(path: str) -> str:
+        with opener.open(BASE_URL + path, timeout=REQUEST_TIMEOUT) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    return get
 
 
 class RoomEntrance:
-    """配信状況を順に確かめ、新しい配信を見つけたらページを開き、配信に参加したのを確かめてから閉じる。
-
-    ページは同時に 1 つしか開かない (小さいサーバーで視聴やコメントを遅くしないため)。
-    """
+    """配信状況を順に確かめ、新しい配信を見つけたら入室する (同時に 1 ルームずつ)。"""
 
     def __init__(
         self,
         rooms: list[str],
         interval: float,
         fetch_status: Callable[[str], Awaitable[RoomStatus]],
-        new_page: Callable[[], Awaitable[Page]],
+        cookies: Callable[[], Awaitable[list[dict[str, Any]]]],
         state_dir: Path | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        enter_timeout: float = ENTER_TIMEOUT,
-        stay: float = STAY_AFTER_JOIN,
+        session: Callable[[list[dict[str, Any]]], Get] = cookie_session,
+        greeting_delay: float = GREETING_DELAY,
     ):
         self.rooms = rooms
         self.interval = interval
         self._fetch_status = fetch_status
-        self._new_page = new_page
+        self._cookies = cookies
         self._sleep = sleep
-        self.enter_timeout = enter_timeout
-        self.stay = stay
+        self._session = session
+        self.greeting_delay = greeting_delay
         # 再起動や設定の反映のあとに同じ配信へ入室し直さないよう、ファイルにも残す
         self._path = Path(state_dir) / ENTERED_FILE if state_dir is not None else None
         # ルームごとに、入室を済ませた配信の live_id
@@ -102,36 +122,42 @@ class RoomEntrance:
                 self._save()
 
     async def _enter(self, status: RoomStatus) -> bool:
+        if status.room_id is None:
+            return False
         log.info("%s の配信が始まったので入室します", status.room_name)
-        joined = asyncio.Event()
-
-        def on_websocket(ws: Any) -> None:
-            ws.on("framesent", lambda payload: joined.set() if is_join_frame(payload) else None)
-
-        page = await self._new_page()
         try:
-            if hasattr(page, "on"):
-                page.on("websocket", on_websocket)
-            await asyncio.wait_for(self._join(page, status, joined), timeout=self.enter_timeout + self.stay)
-            log.info("%s に入室しました", status.room_name)
-            return True
+            get = self._session(await self._cookies())
+            if not await asyncio.to_thread(self._open, get, status):
+                log.warning("%s に入室できません: ログインしていません (次の確認で入室し直します)", status.room_name)
+                return False
+            # 配信ページと同じく、開いてから greeting_delay 秒たってから呼ぶ (これで入室のお知らせとアバターが出る)
+            await self._sleep(self.greeting_delay)
+            answer = await asyncio.to_thread(get, f"/api/room/greeting?room_id={status.room_id}")
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
-            log.warning("%s で配信への参加を %.0f 秒以内に確認できませんでした。次の確認で入室し直します",
-                        status.room_name, self.enter_timeout)
-            return False
         except Exception as e:  # noqa: BLE001 - 次の確認でもう一度試す
-            log.warning("%s に入室できませんでした: %s", status.room_name, str(e).splitlines()[0])
+            log.warning("%s に入室できませんでした: %s", status.room_name, str(e).splitlines()[0] if str(e) else type(e).__name__)
             return False
-        finally:
-            try:
-                await page.close()
-            except Exception as e:  # noqa: BLE001
-                log.debug("ページのクローズに失敗: %s", e)
+        if not _ok(answer):
+            log.warning("%s に入室できませんでした (greeting の応答: %s)", status.room_name, answer[:100])
+            return False
+        log.info("%s に入室しました", status.room_name)
+        return True
 
-    async def _join(self, page: Page, status: RoomStatus, joined: asyncio.Event) -> None:
-        # watcher と同じく応答が始まった時点で次へ進む (重いサーバーでは load まで待つと遅い)
-        await page.goto(status.url, wait_until="commit", timeout=self.enter_timeout * 1000)
-        await joined.wait()
-        await asyncio.sleep(self.stay)
+    @staticmethod
+    def _open(get: Get, status: RoomStatus) -> bool:
+        """配信ページを開いたときと同じ順に問い合わせる。ログインしていれば True。"""
+        rid = status.room_id
+        get(f"/r/{status.room_url_key}")  # ここで受け取る Cookie (uuid) が無いと、greeting を呼んでもアバターが出ない
+        get(f"/api/live/live_info?room_id={rid}")
+        user = json.loads(get(f"/api/live/current_user?room_id={rid}") or "{}")
+        get(f"/api/live/polling?room_id={rid}")
+        return bool(user.get("is_login"))
+
+
+def _ok(answer: str) -> bool:
+    try:
+        return bool(json.loads(answer).get("ok"))
+    except (ValueError, AttributeError):
+        return False
+
