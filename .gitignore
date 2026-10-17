@@ -12,3 +12,4 @@ uv.lock
 showroom_keeper/VERSION
 .auto-update-failed
 .no-auto-update
+.auto-update-build-failed

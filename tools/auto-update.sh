@@ -23,6 +23,10 @@ if [ -n "$running" ] && [ "$(git rev-parse -q --verify "$running^{commit}" 2>/de
   exit 0
 fi
 short=$(git rev-parse --short "$latest")
+# 作り直しに失敗した版は、5 分ごとにやり直さない (サーバーの CPU を使い続けないように)。新しい版が来たらまた試す
+if [ "$(cat .auto-update-build-failed 2>/dev/null)" = "$latest" ]; then
+  exit 0
+fi
 # 自動テストの結果 (公開リポジトリなので、ログインなしで読める)
 checks=$(curl -fsS -m 30 -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/$REPO/commits/$latest/check-runs") || { echo "テストの結果を読めませんでした (次の回にもう一度試します)"; exit 0; }
@@ -49,4 +53,9 @@ case "$verdict" in
     exit 0 ;;
 esac
 echo "新しい版 $short の自動テストが通ったので、更新します"
-bash tools/update.sh
+if ! bash tools/update.sh; then
+  echo "$latest" > .auto-update-build-failed
+  echo "版 $short の更新に失敗しました。この版ではもうやり直しません (次の新しい版で、また試します)"
+  exit 1
+fi
+rm -f .auto-update-build-failed

@@ -24,11 +24,18 @@ else
 fi
 
 echo "== 2. 版の番号を書きます"
+previous=$(cat showroom_keeper/VERSION 2>/dev/null || true)
 git log -1 --format='%h %ci' > showroom_keeper/VERSION
 cat showroom_keeper/VERSION
 
 echo "== 3. 作り直して起動し直します (数分かかることがあります)"
-sudo docker compose up -d --build
+if ! sudo docker compose up -d --build; then
+  # 作り直しに失敗した時は、前の版が動いたままなので、版の番号も前に戻す
+  # (戻さないと、新しい版が動いていると思い込み、自動の更新もやり直さない)
+  if [ -n "$previous" ]; then echo "$previous" > showroom_keeper/VERSION; else rm -f showroom_keeper/VERSION; fi
+  echo "   作り直しに失敗しました。前の版のまま動いています。上のメッセージを確かめてください"
+  exit 1
+fi
 
 echo "== 4. 起動したか確かめます"
 for _ in $(seq 1 30); do
