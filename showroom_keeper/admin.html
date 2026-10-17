@@ -2051,7 +2051,7 @@ async function showRooms(sub) {
 const pctText = (x, d = 0) => x == null ? "—" : `${(x * 100).toFixed(d)}%`;
 const placeText = (x) => x == null ? "—" : `上から ${(x * 100).toFixed(0)}%`;
 const momentumHtml = (v, label) => v == null ? '<span class="uid">判定できない</span>'
-  : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid" title="順位の位置 (上から何%) が、前の 60 日より何ポイント上がったか">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}</span>`;
+  : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid" title="順位の位置 (上から何%) が、前の 60 日より何ポイント上がったか">${v > 0 ? "+" : ""}${Math.trunc(v * 100)}</span>`;
 const roomFilter = { type: "", style: "", order: "momentum" };
 async function showRoomProfiles() {
   const box = $("#rm-body");

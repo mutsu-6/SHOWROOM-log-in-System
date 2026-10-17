@@ -74,9 +74,14 @@ def test_event_styles_and_room_style(tmp_path):
         assert rows[1][2] == "逃げ" and rows[4][2] == "追い込み"
         assert rows[4][7] > 0.9  # 最終日のポイントの割合
         s.conn.execute("UPDATE events SET rooms_at=? WHERE event_id=5", (end + 60,))
+        assert ra.step(s, NOW) is True and s.meta(ra.STYLE_VERSION_META) == ra.STYLE_VERSION  # 決め方の版を書く
         assert ra.step(s, NOW) is True  # 走り方を作る
         assert s.scalar("SELECT COUNT(*) FROM room_event_style WHERE event_id=5") == 4
         assert s.one("SELECT style_at FROM events WHERE event_id=5")[0] == NOW
+        # 決め方の版が変わったら、作った分を作り直す
+        s.set_meta(ra.STYLE_VERSION_META, 1)
+        assert ra.step(s, NOW + 1) is True and s.one("SELECT style_at FROM events WHERE event_id=5")[0] is None
+        assert ra.step(s, NOW + 1) is True and s.one("SELECT style_at FROM events WHERE event_id=5")[0] == NOW + 1
         assert ra.room_style(s, 1) == {"style": None, "events": 1, "counts": {"逃げ": 1}}  # 3 件より少ない
         # 推移が足りないイベントは走り方を出さない
         s.upsert_events([{"event_id": 6, "start": start, "end": end}])
@@ -96,15 +101,49 @@ def test_room_style_majority(tmp_path):
         assert ra.room_style(s, 1)["style"] == "自在"  # 半分を超える型がない
 
 
+def test_room_style_counts_events_without_a_style(tmp_path):
+    with Store(tmp_path) as s:
+        # 逃げ 3 件・型なし 7 件: 型なしも数に入れるので、半分を超える型はなく「自在」
+        for eid in range(1, 11):
+            s.upsert_events([{"event_id": eid, "end": NOW - eid * DAY}])
+            s.conn.execute("INSERT INTO room_event_style(event_id, room_id, style) VALUES (?, 1, ?)",
+                           (eid, "逃げ" if eid <= 3 else None))
+        st = ra.room_style(s, 1)
+        assert st["style"] == "自在" and st["events"] == 10 and st["counts"] == {"逃げ": 3, "型なし": 7}
+
+
+def test_event_styles_ties_share_the_same_place(tmp_path):
+    with Store(tmp_path) as s:
+        start, end = NOW - 10 * DAY, NOW - 3 * DAY
+        s.upsert_events([{"event_id": 7, "start": start, "end": end}])
+        # 序盤 (4 分の 1 まで) はルーム 8 だけがポイントを持ち、ほかの 7 ルームは 0 で並ぶ
+        for i, f in enumerate((0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)):
+            s.add_progress(7, [{"room_id": r, "point": (100 if r == 8 else 0) if f <= 0.25 else r * 100 * (i + 1)}
+                               for r in range(1, 9)], start + f * (end - start))
+        rows = {r[1]: r for r in ra.event_styles(s, 7)}
+        # 0 ポイントで並んだルームは、ルーム番号にかかわらず同じ位置 (いちばん下)
+        assert {rows[r][3] for r in range(1, 8)} == {1.0} and rows[8][3] == 1 / 8
+        assert rows[7][2] == "差し" and rows[1][2] is None
+        # 誰もポイントの無い回は、だれの 1 位にも数えない
+        s.add_progress(7, [{"room_id": r, "point": 0} for r in range(1, 9)], start - 3600)
+        assert all(r[9] < 0.5 for r in ra.event_styles(s, 7) if r[1] != 8)
+
+
 def test_momentum(tmp_path):
     with Store(tmp_path) as s:
         # 前の期間は 10 ルーム中 8 位、直近は 2 位
         for eid, days, rank in ((1, 100, 8), (2, 90, 8), (3, 20, 2), (4, 10, 2)):
             _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r, []) for r in range(2, 11)}})
         m = ra.momentum(s, 1, NOW)
-        assert m["label"] == "上り調子" and abs(m["value"] - 0.6) < 1e-9
+        # 位置は (順位 - 1) ÷ (参加ルーム数 - 1): 8 位は 7/9、2 位は 1/9
+        assert m["label"] == "上り調子" and abs(m["value"] - 6 / 9) < 1e-9
         assert ra.momentum(s, 2, NOW)["label"] == "変わらない"
         assert ra.momentum(s, 1, NOW - 50 * DAY)["label"] is None  # 直近のイベントが足りない
+        # 1 位は、出たイベントの規模にかかわらず位置 0 (小さいイベントに移っただけで下り気味にしない)
+        for eid, days, n in ((5, 100, 500), (6, 90, 500), (7, 20, 5), (8, 10, 5)):
+            _event(s, eid, NOW - days * DAY, {50: (1000, 1, []), **{r: (10, r - 99, []) for r in range(101, 100 + n)}})
+        m = ra.momentum(s, 50, NOW)
+        assert m["recent_place"] == 0 and m["prev_place"] == 0 and m["label"] == "変わらない"
 
 
 def test_profile_rebuild_and_list(tmp_path):
