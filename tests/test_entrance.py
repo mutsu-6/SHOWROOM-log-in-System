@@ -153,3 +153,103 @@ def test_entry_needs_no_page_in_the_memory_estimate():
     # 入室はブラウザのページを開かないので、入室するルームがあってもメモリの見積もりは変わらない
     assert kp.resolve_keep_open(Config(rooms=rooms), mem=2.0) is True
     assert kp.resolve_keep_open(Config(rooms=rooms, enter_rooms=["x"]), mem=2.0) is True
+
+
+def make_all(lives, state_dir=None, clock=None, **kw):
+    from showroom_keeper.entrance import AllRoomsEntrance
+
+    showroom = FakeShowroom(**kw)
+
+    async def fetch():
+        if isinstance(lives[0], Exception):
+            raise lives[0]
+        return list(lives[0])
+
+    async def cookies():
+        return COOKIES
+
+    async def sleep(s):
+        pass
+
+    now = clock or [1000.0]
+    entrance = AllRoomsEntrance(60, fetch, cookies, skip=["watched"], state_dir=state_dir, sleep=sleep,
+                                session=showroom, clock=lambda: now[0], parallel=2)
+    return entrance, showroom, now
+
+
+async def test_all_rooms_enters_every_new_live_once():
+    lives = [[live("a", 10, 1), live("b", 20, 2), live("c", 30, 3), live("watched", 40, 4)]]
+    entrance, showroom, _ = make_all(lives)
+    await entrance.step()
+    await entrance.wait_idle()
+    # 視聴しているルームは視聴ページで入室済みなので入らない
+    entered = sorted(s["asked"][0] for s in showroom.sessions)
+    assert entered == ["/r/a", "/r/b", "/r/c"] and entrance.entered == {"a": 10, "b": 20, "c": 30}
+    await entrance.step()
+    await entrance.wait_idle()
+    assert len(showroom.sessions) == 3
+    # 新しく始まった配信と、次の配信にだけ入る
+    lives[0] = [live("a", 11, 1), live("b", 20, 2), live("d", 50, 5)]
+    await entrance.step()
+    await entrance.wait_idle()
+    assert sorted(s["asked"][0] for s in showroom.sessions[3:]) == ["/r/a", "/r/d"]
+
+
+async def test_all_rooms_limits_parallel_entries():
+    import asyncio
+
+    from showroom_keeper.entrance import AllRoomsEntrance
+
+    running, peak = [0], [0]
+
+    async def slow_enter(self, status):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        await asyncio.sleep(0.01)
+        running[0] -= 1
+        return True
+
+    lives = [[live(k, i, i) for i, k in enumerate("abcdef", 1)]]
+    entrance, _, _ = make_all(lives)
+    entrance._enter = slow_enter.__get__(entrance, AllRoomsEntrance)
+    await entrance.step()
+    # 一覧を取ったらすぐ戻る (入室は裏で同時に 2 件まで)
+    assert entrance.entered == {}
+    await entrance.wait_idle()
+    assert peak[0] == 2 and len(entrance.entered) == 6
+
+
+async def test_all_rooms_forgets_rooms_that_stopped_and_survives_restart(tmp_path):
+    lives = [[live("a", 10, 1)]]
+    entrance, showroom, now = make_all(lives, state_dir=tmp_path)
+    await entrance.step()
+    await entrance.wait_idle()
+    # 起動し直しても、同じ配信には入り直さない
+    again, showroom2, now2 = make_all(lives, state_dir=tmp_path)
+    await again.step()
+    await again.wait_idle()
+    assert showroom2.sessions == [] and again.entered == {"a": 10}
+    # 1 時間以上配信中の一覧に出てこないルームは、入室済みの記録から消す (記録を小さく保つ)
+    lives[0] = []
+    now2[0] += 3601
+    await again.step()
+    assert again.entered == {} and json.loads((tmp_path / "entered.json").read_text()) == {}
+
+
+async def test_all_rooms_keeps_going_when_the_list_fails():
+    lives = [RuntimeError("HTTP 503")]
+    entrance, showroom, _ = make_all(lives)
+    await entrance.step()
+    assert showroom.sessions == []
+
+
+def test_parse_onlives_dedupes_and_skips_paid_lives():
+    from showroom_keeper.api import parse_onlives
+
+    data = {"onlives": [
+        {"lives": [{"room_url_key": "a", "room_id": 1, "main_name": "A", "live_id": 10},
+                   {"room_url_key": "paid", "room_id": 2, "live_id": 20, "premium_room_type": 1}]},
+        {"lives": [{"room_url_key": "a", "room_id": 1, "main_name": "A", "live_id": 10}, {"room_id": 3}]},
+    ]}
+    got = parse_onlives(data)
+    assert [(s.room_url_key, s.room_id, s.room_name, s.live_id, s.is_live) for s in got] == [("a", 1, "A", 10, True)]

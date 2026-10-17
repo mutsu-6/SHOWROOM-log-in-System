@@ -33,6 +33,18 @@ class RoomStatus:
         return f"{BASE_URL}/r/{self.room_url_key}"
 
 
+def parse_onlives(data: dict[str, Any]) -> list[RoomStatus]:
+    out: dict[str, RoomStatus] = {}
+    for genre in data.get("onlives") or []:
+        for live in genre.get("lives") or []:  # 同じ配信がいくつかのジャンルに出る
+            key, room_id = live.get("room_url_key"), live.get("room_id")
+            if not key or not room_id or live.get("premium_room_type"):
+                continue
+            out[key] = RoomStatus(room_url_key=key, room_id=int(room_id), room_name=live.get("main_name") or key,
+                                  is_live=True, live_id=int(live["live_id"]) if live.get("live_id") else None)
+    return list(out.values())
+
+
 def parse_room_status(room_url_key: str, data: dict[str, Any]) -> RoomStatus:
     is_live = data.get("is_live")
     if is_live is None:
@@ -88,6 +100,11 @@ class ShowroomAPI:
         except Exception as e:  # noqa: BLE001 - 判定不能として扱う
             log.debug("ログイン状態の確認に失敗: %s", e)
             return None
+
+    async def onlives(self) -> list[RoomStatus]:
+        """配信中のルームの一覧 (SHOWROOM 全体。1 回の問い合わせで取れる)。有料の配信は除く。"""
+        data = await self._get_json("/api/live/onlives")
+        return parse_onlives(data)
 
     async def live_room_id(self) -> int | None:
         """ログイン状態の確認に使うため、配信中のルームを 1 つ探す。見つからなければ None。"""

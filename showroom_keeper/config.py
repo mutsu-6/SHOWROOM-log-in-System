@@ -75,6 +75,9 @@ class Config:
     events: list[str] = field(default_factory=list)
     # 視聴はせず、配信が始まったら一度だけ入室するルーム (視聴するルームと重なる分は除く)
     enter_rooms: list[str] = field(default_factory=list)
+    # SHOWROOM の全ルームで、配信が始まったら一度だけ入室する (配信中の一覧を status_poll_interval ごとに 1 回取る。
+    # 1 日に数千回入室するので、アカウントが制限されるおそれがある)。入室するルーム (enter_rooms) も含む
+    enter_all: bool = False
     # 応援しているルーム (分析の基準) と、ギフターを調べるルーム。どちらも累計ランキングとイベントの
     # 貢献ランキングを集める (research_days / research_times の時刻に、問い合わせの間隔を空けて)
     support_rooms: list[str] = field(default_factory=list)
