@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitHub の作業ブランチに新しい版があり、自動テスト (GitHub Actions) が全部通っていたら、tools/update.sh で更新する。
+# GitHub の作業ブランチに、動いている版 (showroom_keeper/VERSION) より新しい版があり、自動テスト (GitHub Actions) が全部通っていたら、tools/update.sh で更新する。
 # サーバーで 5 分ごとに動かす (tools/install-auto-update.sh で入れる)。Claude Code や Cursor がマージした変更が、
 # 誰も操作しなくてもサーバーに入る。
 #
@@ -15,9 +15,11 @@ if [ -e .no-auto-update ]; then
   exit 0
 fi
 git fetch -q origin "$BRANCH" || { echo "GitHub から取れませんでした (次の回にもう一度試します)"; exit 0; }
-current=$(git rev-parse HEAD)
 latest=$(git rev-parse "origin/$BRANCH")
-if [ "$current" = "$latest" ]; then
+# 比べるのは git の HEAD ではなく、動いている版 (tools/update.sh が作り直す時に書く VERSION)。
+# git pull だけを先にした時も、作り直していなければ更新する。VERSION が無ければ (版が分からなければ) 更新する
+running=$(cut -d' ' -f1 showroom_keeper/VERSION 2>/dev/null)
+if [ -n "$running" ] && [ "$(git rev-parse -q --verify "$running^{commit}" 2>/dev/null)" = "$latest" ]; then
   exit 0
 fi
 short=$(git rev-parse --short "$latest")
