@@ -1,49 +1,40 @@
-import asyncio
+import json
 
 from showroom_keeper.api import RoomStatus
 from showroom_keeper.config import Config
-from showroom_keeper.entrance import RoomEntrance, is_join_frame
+from showroom_keeper.entrance import RoomEntrance, cookie_session
+
+COOKIES = [{"name": "sr_id", "value": "abc", "domain": "www.showroom-live.com", "path": "/"},
+           {"name": "other", "value": "x", "domain": "example.com", "path": "/"}]
 
 
-class FakeWS:
-    def __init__(self):
-        self.handlers = {}
+class FakeShowroom:
+    """入室ごとに問い合わせを記録する (is_login=False ならログインしていない応答、fail なら通信の失敗)。"""
 
-    def on(self, event, cb):
-        self.handlers[event] = cb
+    def __init__(self, is_login=True, fail=False, greeting='{"ok":1}'):
+        self.is_login, self.fail, self.greeting = is_login, fail, greeting
+        self.sessions = []
 
+    def __call__(self, cookies):
+        asked = []
+        self.sessions.append({"cookies": cookies, "asked": asked})
 
-class FakePage:
-    """goto のあと、少し遅れて配信ページのリアルタイム通信が SUB を送る (send_sub=False なら送らない)。"""
+        def get(path):
+            asked.append(path)
+            if self.fail:
+                raise OSError("Connection reset")
+            if path.startswith("/api/live/current_user"):
+                return json.dumps({"is_login": self.is_login, "user_id": 9 if self.is_login else 0})
+            if path.startswith("/api/room/greeting"):
+                return self.greeting
+            return "{}"
 
-    def __init__(self, send_sub=True, fail=False):
-        self.send_sub, self.fail = send_sub, fail
-        self.visited, self.closed, self.closed_before_sub = [], False, None
-        self._on_ws = None
-
-    def on(self, event, cb):
-        if event == "websocket":
-            self._on_ws = cb
-
-    async def goto(self, url, **kw):
-        self.visited.append((url, kw.get("wait_until")))
-        if self.fail:
-            raise RuntimeError("net::ERR_CONNECTION_RESET")
-        if self.send_sub:
-            asyncio.get_running_loop().call_later(0.02, self._send_sub)
-
-    def _send_sub(self):
-        self.closed_before_sub = self.closed
-        ws = FakeWS()
-        self._on_ws(ws)
-        ws.handlers["framesent"]("SUB\tabc123")
-
-    async def close(self):
-        self.closed = True
+        return get
 
 
-def make(statuses, state_dir=None, **page_kw):
-    pages = []
+def make(statuses, state_dir=None, **kw):
+    showroom = FakeShowroom(**kw)
+    waits = []
 
     async def fetch(key):
         value = statuses[key]
@@ -51,70 +42,114 @@ def make(statuses, state_dir=None, **page_kw):
             raise value
         return value
 
-    async def new_page():
-        pages.append(FakePage(**page_kw))
-        return pages[-1]
+    async def cookies():
+        return COOKIES
 
-    entrance = RoomEntrance(list(statuses), 60, fetch, new_page, state_dir=state_dir, enter_timeout=0.2, stay=0.01)
-    return entrance, pages
+    async def sleep(s):
+        waits.append(s)
 
-
-def live(key, live_id):
-    return RoomStatus(key, 1, key, is_live=live_id is not None, live_id=live_id)
+    entrance = RoomEntrance(list(statuses), 60, fetch, cookies, state_dir=state_dir, sleep=sleep, session=showroom)
+    return entrance, showroom, waits
 
 
-def test_join_frame():
-    assert is_join_frame("SUB\tabc") and is_join_frame(b"SUB\tabc")
-    assert not is_join_frame("PING\tshowroom") and not is_join_frame(None)
+def live(key, live_id, room_id=1):
+    return RoomStatus(key, room_id, key, is_live=live_id is not None, live_id=live_id)
 
 
-async def test_enters_once_per_live_after_joining_and_closes_the_page():
-    statuses = {"a": live("a", 10), "b": live("b", None)}
-    entrance, pages = make(statuses)
+async def test_enters_once_per_live_like_the_room_page():
+    statuses = {"a": live("a", 10, room_id=5), "b": live("b", None)}
+    entrance, showroom, waits = make(statuses)
     await entrance.step()
     await entrance.step()
-    # 配信中の a に 1 回だけ入室する。配信に参加 (SUB) する前には閉じない。配信していない b は開かない
-    assert len(pages) == 1 and pages[0].closed and pages[0].closed_before_sub is False
-    assert pages[0].visited == [("https://www.showroom-live.com/r/a", "commit")]
+    # 配信中の a に 1 回だけ入室する。配信していない b には入室しない
+    assert len(showroom.sessions) == 1 and entrance.entered == {"a": 10}
+    # 配信ページと同じ順に問い合わせ、10 秒たってから greeting を呼ぶ (これでアバターが出る)
+    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/live_info?room_id=5", "/api/live/current_user?room_id=5",
+                                             "/api/live/polling?room_id=5", "/api/room/greeting?room_id=5"]
+    assert waits == [10.0]
+    assert showroom.sessions[0]["cookies"] == COOKIES
     # 次の配信が始まったらもう一度入室する
-    statuses["a"] = live("a", 11)
+    statuses["a"] = live("a", 11, room_id=5)
     await entrance.step()
-    assert len(pages) == 2 and entrance.entered == {"a": 11}
+    assert len(showroom.sessions) == 2 and entrance.entered == {"a": 11}
 
 
-async def test_gives_up_when_the_page_never_joins():
-    entrance, pages = make({"a": live("a", 10)}, send_sub=False)
+async def test_not_logged_in_is_not_counted_as_entered():
+    entrance, showroom, waits = make({"a": live("a", 10)}, is_login=False)
     await entrance.step()
-    # 上限で打ち切って閉じ、入室済みにはしない (次の確認で入室し直す)
-    assert len(pages) == 1 and pages[0].closed and entrance.entered == {}
+    # ログインしていなければ greeting を呼ばず、入室済みにもしない (次の確認で入室し直す)
+    assert not any("greeting" in p for p in showroom.sessions[0]["asked"]) and entrance.entered == {} and waits == []
 
 
 async def test_failed_entry_is_retried_and_other_rooms_continue():
     statuses = {"broken": RuntimeError("HTTP 500"), "a": live("a", 10)}
-    entrance, pages = make(statuses, fail=True)
+    entrance, showroom, _ = make(statuses, fail=True)
     await entrance.step()
-    assert len(pages) == 1 and pages[0].closed and entrance.entered == {}
+    assert len(showroom.sessions) == 1 and entrance.entered == {}
     await entrance.step()
-    assert len(pages) == 2
+    assert len(showroom.sessions) == 2
+
+
+async def test_gives_up_on_a_live_after_repeated_failures():
+    statuses = {"a": live("a", 10)}
+    entrance, showroom, _ = make(statuses, is_login=False)
+    for _ in range(5):
+        await entrance.step()
+    # 同じ配信には 3 回まで (配信が終わるまで 1 分ごとに入り直し続けない)
+    assert len(showroom.sessions) == 3
+    # 次の配信ではまた試す
+    statuses["a"] = live("a", 11)
+    await entrance.step()
+    assert len(showroom.sessions) == 4
+
+
+async def test_greeting_refused_is_retried():
+    entrance, showroom, _ = make({"a": live("a", 10)}, greeting='{"errors":[{"code":1}]}')
+    await entrance.step()
+    assert entrance.entered == {}
 
 
 async def test_entered_lives_survive_a_restart(tmp_path):
-    entrance, pages = make({"a": live("a", 10)}, state_dir=tmp_path)
+    entrance, showroom, _ = make({"a": live("a", 10)}, state_dir=tmp_path)
     await entrance.step()
-    assert len(pages) == 1
+    assert len(showroom.sessions) == 1
     # ブラウザの再起動や設定の反映のあとも、同じ配信には入室し直さない
-    again, pages = make({"a": live("a", 10)}, state_dir=tmp_path)
+    again, showroom, _ = make({"a": live("a", 10)}, state_dir=tmp_path)
     await again.step()
-    assert pages == [] and again.entered == {"a": 10}
+    assert showroom.sessions == [] and again.entered == {"a": 10}
 
 
-def test_entry_page_is_counted_in_the_memory_estimate():
+def test_cookie_session_keeps_only_showroom_cookies(monkeypatch):
+    import urllib.request
+
+    sent = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok":1}'
+
+    def fake_open(self, req, timeout=None):
+        jar = next(h for h in self.handlers if isinstance(h, urllib.request.HTTPCookieProcessor)).cookiejar
+        sent.append((req if isinstance(req, str) else req.full_url, sorted(c.name for c in jar)))
+        return Resp()
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", fake_open)
+    get = cookie_session(COOKIES)
+    assert get("/api/room/greeting?room_id=1") == '{"ok":1}'
+    assert sent == [("https://www.showroom-live.com/api/room/greeting?room_id=1", ["sr_id"])]
+
+
+def test_entry_needs_no_page_in_the_memory_estimate():
     import pytest
 
     kp = pytest.importorskip("showroom_keeper.keeper")
     rooms = ["a", "b", "c"]
-    # 3 ルームは約 2GB。入室用のページ 1 つ分を足すと 2.0GB では足りない
+    # 入室はブラウザのページを開かないので、入室するルームがあってもメモリの見積もりは変わらない
     assert kp.resolve_keep_open(Config(rooms=rooms), mem=2.0) is True
-    assert kp.resolve_keep_open(Config(rooms=rooms, enter_rooms=["x"]), mem=2.0) is False
-    # 視聴するルームと重なる分は入室しないので数えない
-    assert kp.resolve_keep_open(Config(rooms=rooms, enter_rooms=["a"]), mem=2.0) is True
+    assert kp.resolve_keep_open(Config(rooms=rooms, enter_rooms=["x"]), mem=2.0) is True
