@@ -405,7 +405,6 @@ td a.name-link, td a { word-break: break-word; }
     <nav class="subnav" id="lv-tabs">
       <a href="#live" data-sub="watch">視聴中</a>
       <a href="#live/gifts" data-sub="gifts">記録したギフト</a>
-      <a href="#live/listeners" data-sub="listeners">記録したリスナー</a>
       <a href="#live/comment" data-sub="comment">コメント</a>
     </nav>
 
@@ -446,37 +445,6 @@ td a.name-link, td a { word-break: break-word; }
         </form>
       </div>
       <div id="g-result"></div>
-    </div>
-
-    <div class="sub-panel" data-panel="listeners">
-      <p class="sub">記録したギフトのリスナー一覧です。行をクリックすると、その人のページを開きます。</p>
-      <div class="card">
-        <div class="row">
-          <input type="search" id="l-q" class="grow" placeholder="名前の一部かユーザー ID で絞り込む (記録に無い ID は SHOWROOM で調べます)">
-          <select id="l-days" title="期間">
-            <option value="1">直近 24 時間</option>
-            <option value="7">直近 7 日</option>
-            <option value="30" selected>直近 30 日</option>
-            <option value="0">記録のすべて</option>
-          </select>
-          <input type="search" id="l-room" autocomplete="off" data-suggest="room" placeholder="ルームで絞り込む (空ならすべて)" style="flex:0 1 240px">
-          <select id="l-sort" title="並び順">
-            <option value="points">ポイントの多い順</option>
-            <option value="paid">有料ポイントの多い順</option>
-            <option value="times">回数の多い順</option>
-            <option value="last">最近ギフトを送った順</option>
-            <option value="rooms">送ったルームの多い順</option>
-          </select>
-          <label class="row" style="gap:4px;color:var(--muted)">最低 <input type="number" id="l-min" min="0" step="100" value="0" style="width:90px"> pt</label>
-        </div>
-        <div class="filters" id="l-filters" style="margin-top:10px">
-          <button type="button" class="fchip active" data-f="all">すべて</button>
-          <button type="button" class="fchip" data-f="paid">有料ギフトあり</button>
-          <button type="button" class="fchip" data-f="multi">複数のルームに送っている</button>
-          <button type="button" class="fchip" data-f="today">今日送った</button>
-        </div>
-      </div>
-      <div id="l-list"></div>
     </div>
 
     <div class="sub-panel" data-panel="comment">
@@ -633,7 +601,7 @@ async function api(path, body) {
 
 /* ------------------------------------------------------------ ページの切り替え (アドレスの # で開く) */
 // #ページ/引数 (例: #gifter/123、#room/abc、#event/456、#gifters/trend)。前の画面のアドレスも開けるようにする
-const OLD_PAGES = { dashboard: "home", research: "gifters", logs: "collect", comment: "live/comment", gifts: "live/gifts", listeners: "live/listeners" };
+const OLD_PAGES = { dashboard: "home", research: "gifters", logs: "collect", comment: "live/comment", gifts: "live/gifts", listeners: "gifters" };
 const NAV_OF = { gifter: "gifters", room: "rooms", event: "events" };
 const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
 const openListener = (uid) => go(`#gifter/${encodeURIComponent(uid)}`);
@@ -1143,7 +1111,6 @@ function afterPick(input, key) {
   const card = input.closest("[data-list]");
   if (card) { setPicked(input, "", ""); return addSetting(card.dataset.list, key); }
   if (input.id === "g-room" || input.id === "g-event") loadGifts();
-  if (input.id === "l-room") loadListeners();
 }
 const typedQuery = (input) => (input.dataset.key && input.value.trim() === input.dataset.label ? "" : input.value);
 
@@ -1302,55 +1269,6 @@ $("#pk-q").addEventListener("keydown", (ev) => {
 });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#picker").hidden) closePicker(); });
 
-/* ------------------------------------------------------------ リスナー */
-const listeners = { key: null, rows: [], shown: 200, selected: null };
-async function loadListeners(force = false) {
-  const days = $("#l-days").value, room = pickedValue($("#l-room")), key = `${days}|${room}`;
-  if (!force && listeners.key === key) return renderListeners();
-  $("#l-list").innerHTML = `<div class="loading"><span class="spinner"></span>記録を集計しています…</div>`;
-  try {
-    const r = await api(`/api/listeners?days=${encodeURIComponent(days)}&room=${encodeURIComponent(room)}`);
-    Object.assign(listeners, { key, rows: r.listeners, shown: 200, catalog: r.catalog });
-    renderListeners();
-  } catch (e) {
-    $("#l-list").innerHTML = `<div class="empty">取得できませんでした: ${esc(e.message)}</div>`;
-  }
-}
-function listenerRows() {
-  const q = $("#l-q").value.trim().toLowerCase(), min = Number($("#l-min").value) || 0;
-  const f = $("#l-filters .active").dataset.f, todayStart = new Date().setHours(0, 0, 0, 0) / 1000;
-  const sorts = { points: (u) => u.points, paid: (u) => u.paid_points, times: (u) => u.times, last: (u) => u.last_at, rooms: (u) => u.room_count };
-  const key = sorts[$("#l-sort").value];
-  return listeners.rows.filter((u) => (!q || String(u.user_id) === q || u.names.some((n) => n.toLowerCase().includes(q)))
-    && u.points >= min
-    && (f === "all" || (f === "paid" && u.paid_points > 0) || (f === "multi" && u.room_count > 1) || (f === "today" && u.last_at >= todayStart)))
-    .sort((a, b) => key(b) - key(a));
-}
-function renderListeners() {
-  const rows = listenerRows();
-  const head = `<div class="summary"><div class="stat"><div class="v">${num(rows.length)}</div><div class="l">人 (全 ${num(listeners.rows.length)} 人中)</div></div>
-    <div class="stat"><div class="v">${num(rows.reduce((t, u) => t + u.points, 0))} pt</div><div class="l">合計 (有料 ${num(rows.reduce((t, u) => t + u.paid_points, 0))})</div></div></div>
-    ${listeners.catalog ? "" : `<div class="hint">ギフトのポイント表をまだ取得できていないため、ポイントが 0 になっています (視聴かギフト記録を始めると取得します)。</div>`}`;
-  if (!rows.length) {
-    const q = $("#l-q").value.trim();
-    $("#l-list").innerHTML = head + `<div class="empty">当てはまるリスナーはいません${/^\d{1,12}$/.test(q) ? `<div id="l-lookup" class="hint">ユーザー ID ${esc(q)} を SHOWROOM で調べています…</div>` : ""}</div>`;
-    if (/^\d{1,12}$/.test(q)) lookupUser(q).then((p) => {
-      const box = $("#l-lookup");
-      if (!box || $("#l-q").value.trim() !== q) return;
-      box.innerHTML = p ? `<div class="pick" style="justify-content:center;cursor:default">${thumb(p.avatar)}<div style="text-align:left"><div class="t">${esc(p.name)}</div>
-          <div class="s">ID ${esc(p.user_id)}${p.level ? ` ・ ファンレベル ${num(p.level)}` : ""} ・ SHOWROOM にいるユーザーですが、ギフトの記録はまだありません</div></div></div>`
-        : `SHOWROOM にもユーザー ID ${esc(q)} は見つかりませんでした`;
-    });
-    return;
-  }
-  $("#l-list").innerHTML = head + `<div class="row"><h3 style="flex:1">一覧</h3>${legend}</div><div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">回数</th><th>送ったルーム</th><th class="num">最後</th></tr></thead>
-    <tbody>${rows.slice(0, listeners.shown).map((u, i) => `<tr class="clickable ${listeners.selected == u.user_id ? "selected" : ""}" data-uid="${esc(u.user_id)}">
-      <td class="rank">${i + 1}</td><td class="name"><b>${esc(u.name || "(名前なし)")}</b> <span class="uid">ID ${esc(u.user_id)}</span>${u.names.length > 1 ? `<div class="uid">旧名: ${esc(u.names.slice(1, 3).join("、"))}</div>` : ""}</td>
-      <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num">${num(u.paid_points)}</td><td class="num">${num(u.free_points)}</td><td class="num">${num(u.times)}</td>
-      <td>${esc(u.rooms.slice(0, 2).map((r) => r.name).join("、"))}${u.room_count > 2 ? ` ほか ${u.room_count - 2}` : ""}</td><td class="num">${tm(u.last_at, true).slice(0, 11)}</td></tr>`).join("")}</tbody></table></div>`
-    + (rows.length > listeners.shown ? `<div class="row" style="margin-top:8px"><button class="btn small" id="l-more">さらに表示 (${num(rows.length - listeners.shown)} 人)</button></div>` : "");
-}
 /* ------------------------------------------------------------ リスナーの行動のグラフ */
 // ルームの色は、有料 (赤)・無料 (青) と見分けがつくように別の色にする
 const ROOM_COLORS = ["#12a594", "#8e4ec6", "#e38a1e", "#d6409f", "#5b8a3a"], OTHER_COLOR = "#a0a8b8";
@@ -1462,7 +1380,7 @@ function renderListenerCharts(d, sel = "#l-charts", period = null) {
   const other = listenerChart.heat === "paid" ? "free" : "paid";
   const heatKind = !has(listenerChart.heat) && has(other) ? other : listenerChart.heat, heatHas = has(heatKind);
   const toggle = (name, options, current = listenerChart[name]) => `<div class="seg" role="group">${options.map(([v, l]) => `<button type="button" class="${current === v ? "active" : ""}" aria-pressed="${current === v}" data-chart="${name}" data-v="${v}">${l}</button>`).join("")}</div>`;
-  if (period === null) period = $("#l-days").selectedOptions[0]?.textContent || "";
+  if (period === null) period = "";
   box.innerHTML = `<h3>行動のグラフ <small class="muted">${esc(period)}</small></h3>
     ${chartSummary(d, c)}
     <div class="charts${avail >= 720 ? "" : " one"}">
@@ -1618,7 +1536,7 @@ function archiveStatus(d) {
   return `<br>Internet Archive から取り戻し: ${w.running ? doing : "止まっています"} ・ 消えたルーム ${num(a.gone_rooms)} (うち Archive で見つけた ${num(a.rooms)})
     ・ 前の名前 ${num(a.names)} 件 (退会済みユーザー ${num(a.left_named)} 人)${w.last_error ? ` ・ 前回の失敗: ${esc(w.last_error)}` : ""}`;
 }
-const R_FILTERS = [["all", "すべて"], ["recorded", "行動がわかる (ギフトの記録あり)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
+const R_FILTERS = [["all", "すべて"], ["recorded", "記録したギフトがある"], ["paid", "有料ギフトを送った (記録)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
 const R_SORTS = [["other", "ほかのルームへのポイント順"], ["event", "イベントでのポイント順"], ["events", "参加イベントの多い順"], ["visits", "来場回数の多い順"], ["rooms", "送るルームの多い順"], ["last", "最近ギフトを送った順"]];
 const jstParts = (t) => { const d = new Date((t + 9 * 3600) * 1000); return [d.getUTCFullYear(), d.getUTCMonth() + 1]; };
 const SIGNUP_CLOSE = 92 * 86400;  // 前後の目印の間がこれより狭ければ月まで出す
@@ -1811,27 +1729,12 @@ $("#rooms").addEventListener("click", (ev) => {
 
 /* ------------------------------------------------------------ ライブ */
 function showLive(sub) {
-  sub = ["watch", "gifts", "listeners", "comment"].includes(sub) ? sub : "watch";
+  if (sub === "listeners") { go("#gifters"); return; }  // 前の「記録したリスナー」は、ギフターの一覧にまとめた
+  sub = ["watch", "gifts", "comment"].includes(sub) ? sub : "watch";
   setSub("#lv-tabs", sub);
   $$("#lv-tabs ~ .sub-panel").forEach((p) => { p.hidden = p.dataset.panel !== sub; });
-  if (sub === "listeners") loadListeners();
   if (sub === "comment") setTimeout(() => $("#c-text").focus(), 0);
 }
-$("#l-list").addEventListener("click", (ev) => {
-  if (ev.target.id === "l-more") { listeners.shown += 200; return renderListeners(); }
-  const tr = ev.target.closest("tr[data-uid]");
-  if (tr) openListener(tr.dataset.uid);
-});
-$("#l-filters").addEventListener("click", (ev) => {
-  const f = ev.target.closest("[data-f]");
-  if (!f) return;
-  $$("#l-filters .fchip").forEach((x) => x.classList.toggle("active", x === f));
-  listeners.shown = 200; renderListeners();
-});
-["#l-q", "#l-min"].forEach((id) => $(id).addEventListener("input", () => { listeners.shown = 200; renderListeners(); }));
-$("#l-sort").addEventListener("change", renderListeners);
-$("#l-days").addEventListener("change", () => loadListeners());
-$("#l-room").addEventListener("input", () => { if (!$("#l-room").value.trim()) { setPicked($("#l-room"), "", ""); loadListeners(); } });
 // 記録したギフトの画面を、ルームかイベントを選んだ状態で開く
 function openRecorded(kind, key, label) {
   setGiftMode(kind);
@@ -1843,7 +1746,7 @@ function openRecorded(kind, key, label) {
 }
 
 /* ------------------------------------------------------------ 分析 (ギフター・ルームの一覧で使う集計) */
-const research = { data: null, filter: "all", signup: "all", selected: null, watch: [], loading: null };
+const research = { data: null, filter: "all", signup: "all", recDays: "0", q: "", selected: null, watch: [], loading: null };
 const hourText = (hs) => hs && hs.length ? hs.map((h) => `${h}時`).join("・") : "";
 const currentSupport = () => $("#r-support").value;
 // 全ルーム分の集計は重いので、サーバーで 10 分使い回す。画面でも、読み込んだものを使う
@@ -1874,15 +1777,26 @@ $("#r-refresh").addEventListener("click", async () => { try { await loadAnalysis
 $("#r-support").addEventListener("change", async () => { research.data = null; route(); });
 
 /* ------------------------------------------------------------ ギフター (一覧) */
+// 記録したギフトの送り主 (期間ごと)。ギフターの一覧に、有料 pt・回数・最後に送った日として足す
+const REC_PERIODS = [["0", "記録: すべての期間"], ["1", "記録: 直近 24 時間に送った人"], ["7", "記録: 直近 7 日に送った人"], ["30", "記録: 直近 30 日に送った人"]];
+const recorded = {};  // 期間 → {at, rows, catalog}
+async function loadRecorded(days) {
+  const hit = recorded[days];
+  if (hit && Date.now() - hit.at < 60000) return hit;
+  const r = await api(`/api/listeners?days=${encodeURIComponent(days)}`);
+  return (recorded[days] = { at: Date.now(), rows: r.listeners, catalog: r.catalog });
+}
 async function showGifters(sub) {
   sub = ["list", "trend", "watch"].includes(sub) ? sub : "list";
   setSub("#gf-tabs", sub);
   const box = $("#gf-body");
   if (!research.data) box.innerHTML = loadingHtml("集計しています (全ルーム分だと、初めは数十秒かかることがあります)…");
-  let d;
-  try { d = research.data || await loadAnalysis(); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  let d, rec = null;
+  try {
+    [d, rec] = await Promise.all([research.data || loadAnalysis(), loadRecorded(research.recDays).catch(() => null)]);
+  } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "gifters") return;
-  if (noResearch(d)) { box.innerHTML = NO_RESEARCH; return; }
+  if (noResearch(d) && !(rec && rec.rows.length)) { box.innerHTML = NO_RESEARCH; return; }
   const w = research.watch || [];
   $("#gf-tabs [data-sub=watch]").innerHTML = `気になる${w.length ? `<span class="n">${num(w.length)}</span>` : ""}`;
   if (sub === "trend") { box.innerHTML = trendSection(d) || `<div class="empty">まだありません</div>`; return; }
@@ -1890,46 +1804,72 @@ async function showGifters(sub) {
     box.innerHTML = w.length ? watchTable(w) : `<div class="empty">まだいません。ギフターのページの「☆ 気になる」で印を付けると、ここに並びます (メモも残せます)。</div>`;
     return;
   }
-  box.innerHTML = gifterList(d);
+  box.innerHTML = gifterList(d, rec);
 }
-function gifterList(d) {
-  const all = d.mode === "all";
-  const rows = (research.signup === "all" ? d.candidates : d.candidates.concat(d.signup_candidates || [])).filter((u) => {
+// 集計 (ランキング) で分かった人と、記録したギフトの送り主を 1 つの一覧にする
+function mergeGifters(d, rec) {
+  const base = research.signup === "all" ? d.candidates : d.candidates.concat(d.signup_candidates || []);
+  const byId = new Map(base.map((u) => [String(u.user_id), { ...u, rec: null }]));
+  for (const l of (rec && rec.rows) || []) {
+    const id = String(l.user_id), u = byId.get(id);
+    if (u) { u.rec = l; continue; }
+    // ランキングに出ていない (または上位に入っていない) 人は、記録したギフトだけで分かっている
+    byId.set(id, { user_id: l.user_id, name: l.name || (l.names || [])[0] || "(名前なし)", other_points: l.points, total_points: l.points, support_points: 0,
+      top_rooms: (l.rooms || []).slice(0, 3).map((r) => ({ key: r.key, name: r.name, points: r.points })), room_count: l.room_count,
+      event_count: 0, best_rank: null, visits: 0, focus: null, signup_at: null, habits: null, rec: l, rec_only: true });
+  }
+  return [...byId.values()];
+}
+function gifterList(d, rec) {
+  const all = d.mode === "all", period = research.recDays !== "0";
+  const q = research.q.trim().toLowerCase();
+  const rows = mergeGifters(d, rec).filter((u) => {
     const f = research.filter;
-    return signupMatch(u) && (f === "all" || (f === "recorded" ? u.habits : f === "events" ? u.best_rank && u.best_rank <= 10
-      : f === "multi" ? u.room_count > 1 : u.focus !== null && u.focus < 0.7));
+    if (period && !u.rec) return false;  // 期間を選んだ時は、その期間に記録したギフトを送った人だけ
+    if (q && !(String(u.user_id) === q || String(u.name).toLowerCase().includes(q) || ((u.rec && u.rec.names) || []).some((n) => n.toLowerCase().includes(q)))) return false;
+    return (research.signup === "all" || signupMatch(u)) && (f === "all" || (f === "recorded" ? u.rec : f === "paid" ? u.rec && u.rec.paid_points > 0
+      : f === "events" ? u.best_rank && u.best_rank <= 10 : f === "multi" ? u.room_count > 1 : u.focus !== null && u.focus < 0.7));
   });
   const years = d.signup_years || [];
   if (research.signup !== "all" && !research.signup.startsWith("within") && !years.some((y) => String(y.year) === research.signup)) research.signup = "all";
   const signupSelect = years.length ? `<select id="r-signup" title="ユーザー ID から推測した登録時期で絞り込む">${[["all", "すべての登録時期"], ["within1", "ここ 1 年以内に登録"], ["within3", "ここ 3 年以内に登録"],
     ...years.map((y) => [String(y.year), `${y.year} 年ごろに登録 (${y.rough ? "大まか・" : ""}${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
+  const periodSelect = `<select id="r-rec" title="記録したギフトの期間 (記録しているルームの分だけ)">${REC_PERIODS.map(([v, l]) => `<option value="${v}" ${v === research.recDays ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  const recCount = rec ? rec.rows.length : 0;
   let html = `<div class="summary">${all
     ? stat(num(d.gifter_count), "分かったギフター (人)") + stat(num(d.multi_count), "複数のルームに送る人") + stat(num(d.room_count), "ギフターの分かったルーム")
-    : stat(num(d.candidate_count), "誘導の候補 (人)") + stat(num(d.fan_count), "応援ルームのギフター (人)") + stat(num(d.gifter_count), "分かったギフター (人)")}</div>${SCOPE_NOTE}`;
-  html += `<div class="row" style="margin:8px 0"><div class="filters grow" id="r-filters">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div>${signupSelect}</div>`;
+    : stat(num(d.candidate_count), "誘導の候補 (人)") + stat(num(d.fan_count), "応援ルームのギフター (人)") + stat(num(d.gifter_count), "分かったギフター (人)")}
+    ${stat(num(recCount), period ? `${esc(REC_PERIODS.find(([v]) => v === research.recDays)[1].replace("記録: ", ""))} (記録)` : "記録したギフトの送り主 (人)")}</div>${SCOPE_NOTE}`;
+  if (rec && !rec.catalog) html += `<div class="hint">ギフトのポイント表をまだ取得できていないため、記録したギフトのポイントが 0 になっています (視聴かギフト記録を始めると取得します)。</div>`;
+  html += `<div class="row" style="margin:8px 0"><div class="filters grow" id="r-filters">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div></div>
+    <div class="row" style="margin:0 0 8px"><input type="search" id="r-q" class="grow" placeholder="この一覧を名前・ユーザー ID で絞り込む" value="${esc(research.q)}">${periodSelect}${signupSelect}</div>`;
   const cols = [
-    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
+    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${u.rec_only ? ' <span class="tag info" title="集めたランキング (上位 30 人・100 人) には出ていない、または上位に入っていない人">記録だけ</span>' : ""}`, cls: "name" },
     ...(all ? [{ label: "分かった pt", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]
       : [{ label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]),
     { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
     { label: "ルーム", num: true, value: (u) => u.room_count, html: (u) => num(u.room_count) },
-    { label: "イベント", num: true, value: (u) => u.event_count, html: (u) => u.event_count ? num(u.event_count) : "-" },
-    { label: "最高順位", num: true, value: (u) => u.best_rank || null, html: (u) => u.best_rank ? `${num(u.best_rank)} 位` : "-" },
+    { label: "イベント", num: true, value: (u) => u.event_count, html: (u) => u.event_count ? `${num(u.event_count)}${u.best_rank ? `<div class="uid">最高 ${num(u.best_rank)} 位</div>` : ""}` : "-" },
+    { label: "記録 pt", num: true, value: (u) => u.rec ? u.rec.points : null, html: (u) => u.rec ? `${num(u.rec.points)}${splitBar(u.rec)}` : "-" },
+    { label: "有料", num: true, value: (u) => u.rec ? u.rec.paid_points : null, html: (u) => u.rec ? num(u.rec.paid_points) : "-" },
+    { label: "回数", num: true, value: (u) => u.rec ? u.rec.times : null, html: (u) => u.rec ? num(u.rec.times) : "-" },
+    { label: "最後に送った", num: true, value: (u) => u.rec ? u.rec.last_at : null, csv: (u) => u.rec ? tm(u.rec.last_at, true) : "", html: (u) => u.rec ? `<span title="${esc(tm(u.rec.last_at, true))}">${ago(u.rec.last_at)}</span>` : "-" },
     { label: "来場", num: true, value: (u) => u.visits || 0, html: (u) => u.visits ? num(u.visits) : "-" },
-    { label: "登録 (推測)", value: (u) => u.signup_at || null, csv: (u) => u.signup_at ? signupText(u) : "", html: (u) => u.signup_at ? esc(signupText(u)) : "-" },
+    { label: "登録 (推測)", value: (u) => u.signup_at || null, csv: (u) => u.signup_at ? signupText(u) : "", html: (u) => u.signup_at ? `<span title="${esc(signupRange(u))}">${esc(signupText(u))}</span>` : "-" },
     { label: "よく送る時間", sort: false, value: (u) => u.habits ? `${u.habits.top_weekday}曜 ${hourText(u.habits.top_hours)}` : "", html: habitCell },
   ];
-  html += dataTable("gifters", cols, rows, { sort: 1, csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
+  html += dataTable("gifters", cols, rows, { sort: period ? 8 : 1, csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
     rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`,
-    note: research.signup === "all" ? `集計で上位 ${num(d.candidates.length)} 人を出しています` : "登録時期で絞り込み中" });
+    note: `集計で上位 ${num(d.candidates.length)} 人と、記録したギフトの送り主 ${num(recCount)} 人。記録 pt・有料・回数は、記録しているルームの分だけです` });
   if (!all) {
     const fans = d.fans.filter((u) => signupMatch(u));
     html += `<h3>応援ルームのギフター</h3>` + dataTable("fans", [
-      { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
+      { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>`, cls: "name" },
       { label: "応援ルームへ", num: true, value: (u) => u.support_points, html: (u) => `<b>${num(u.support_points)}</b>` },
       { label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => num(u.other_points) },
       { label: "ほかの主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
       { label: "来場", num: true, value: (u) => u.visits || 0, html: (u) => u.visits ? num(u.visits) : "-" },
+      { label: "登録 (推測)", value: (u) => u.signup_at || null, html: (u) => u.signup_at ? esc(signupText(u)) : "-" },
       { label: "よく送る時間", sort: false, value: (u) => "", html: habitCell },
     ], fans, { sort: 1, csvName: "応援ルームのギフター", rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`, empty: "まだ分かっていません" });
   }
@@ -1951,6 +1891,21 @@ $("#gf-body").addEventListener("click", (ev) => {
 });
 $("#gf-body").addEventListener("change", (ev) => {
   if (ev.target.id === "r-signup") { research.signup = ev.target.value; showGifters("list"); }
+  if (ev.target.id === "r-rec") { research.recDays = ev.target.value; delete DT.gifters; showGifters("list"); }
+});
+// 一覧の中の絞り込み (打つたびに表だけ描き直す。入力欄は残すので、打っている途中でも消えない)
+$("#gf-body").addEventListener("input", (ev) => {
+  if (ev.target.id !== "r-q") return;
+  research.q = ev.target.value;
+  clearTimeout(research.qTimer);
+  research.qTimer = setTimeout(() => {
+    const box = $("#gf-body [data-dt=gifters]"), d = research.data, rec = recorded[research.recDays];
+    if (!box || !d) return;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = gifterList(d, rec);
+    const fresh = tmp.querySelector("[data-dt=gifters]");
+    if (fresh) box.replaceWith(fresh);
+  }, 200);
 });
 async function saveWatch(uid, watched, memo) {
   await api("/api/research/watch", memo === undefined ? { user_id: uid, watched } : { user_id: uid, watched, memo });
