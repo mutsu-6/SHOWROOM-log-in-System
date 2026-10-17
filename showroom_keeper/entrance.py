@@ -23,6 +23,7 @@ log = logging.getLogger("entrance")
 
 ENTERED_FILE = "entered.json"
 GREETING_DELAY = 10.0  # 配信ページが greeting を呼ぶまでの時間 (秒)
+ENTER_TRIES = 3  # 1 つの配信で入室を試す回数 (失敗が続く時に、配信が終わるまで入り直し続けないように)
 REQUEST_TIMEOUT = 20.0
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/130.0.0.0 Safari/537.36")
@@ -76,6 +77,8 @@ class RoomEntrance:
         self._path = Path(state_dir) / ENTERED_FILE if state_dir is not None else None
         # ルームごとに、入室を済ませた配信の live_id
         self.entered: dict[str, int] = self._load()
+        # ルームごとに、入室に失敗した配信の (live_id, 回数)
+        self._failures: dict[str, tuple[int, int]] = {}
 
     def _load(self) -> dict[str, int]:
         if self._path is None:
@@ -117,9 +120,19 @@ class RoomEntrance:
             # live_id が分からない配信は、同じ配信に何度も入室しないよう見送る
             if not status.is_live or status.live_id is None or self.entered.get(key) == status.live_id:
                 continue
+            live_id, failures = self._failures.get(key, (status.live_id, 0))
+            if live_id != status.live_id:
+                failures = 0
+            if failures >= ENTER_TRIES:
+                continue
             if await self._enter(status):
                 self.entered[key] = status.live_id
+                self._failures.pop(key, None)
                 self._save()
+            else:
+                self._failures[key] = (status.live_id, failures + 1)
+                if failures + 1 >= ENTER_TRIES:
+                    log.warning("%s の今の配信には %d 回入室できなかったので、次の配信まで入室しません", status.room_name, ENTER_TRIES)
 
     async def _enter(self, status: RoomStatus) -> bool:
         if status.room_id is None:

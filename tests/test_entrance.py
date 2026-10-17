@@ -90,6 +90,19 @@ async def test_failed_entry_is_retried_and_other_rooms_continue():
     assert len(showroom.sessions) == 2
 
 
+async def test_gives_up_on_a_live_after_repeated_failures():
+    statuses = {"a": live("a", 10)}
+    entrance, showroom, _ = make(statuses, is_login=False)
+    for _ in range(5):
+        await entrance.step()
+    # 同じ配信には 3 回まで (配信が終わるまで 1 分ごとに入り直し続けない)
+    assert len(showroom.sessions) == 3
+    # 次の配信ではまた試す
+    statuses["a"] = live("a", 11)
+    await entrance.step()
+    assert len(showroom.sessions) == 4
+
+
 async def test_greeting_refused_is_retried():
     entrance, showroom, _ = make({"a": live("a", 10)}, greeting='{"errors":[{"code":1}]}')
     await entrance.step()
