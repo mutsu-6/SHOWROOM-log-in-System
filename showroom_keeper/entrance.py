@@ -2,8 +2,9 @@
 
 配信ページは、ログインしていれば開いてから 10 秒後に /api/room/greeting を呼ぶ。SHOWROOM はこれを受けて
 入室のお知らせ (リアルタイム通信の t=18。「○○さんが初訪問」など) を流し、観客席にアバターが出る。
-配信ページを開いて受け取る Cookie (uuid) を付けたまま、ページと同じ順に API を呼べば、ブラウザがなくても同じになる
-(2026-10 に確かめた。ページを 10 秒より前に閉じると、人数には数えられるがアバターは出ない)。
+greeting には、配信ページを開くと受け取る Cookie (uuid) が要る (無いとお知らせが出ない)。uuid はほかのルームで
+受け取ったものでもよく、待たずに呼んでもお知らせは出る (2026-10 に確かめた)。そこで uuid を 1 回もらって使い回し、
+入室は greeting 1 回で済ませる (人数・ステージの一覧には入らないので、訪問としては数えられない)。
 """
 
 from __future__ import annotations
@@ -13,43 +14,51 @@ import http.cookiejar
 import json
 import logging
 import os
+import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 
 from .api import BASE_URL, RoomStatus
 
 log = logging.getLogger("entrance")
 
 ENTERED_FILE = "entered.json"
-GREETING_DELAY = 10.0  # 配信ページが greeting を呼ぶまでの時間 (秒)
+UUID_EVERY = 6 * 3600.0  # uuid の Cookie を配信ページで取り直す間隔 (秒)。期限の無い Cookie なので念のため
+ENTER_GAP = 1.0  # 全ルームの入室で、入室と入室の間を空ける時間 (秒)。起動直後に数百件をまとめて送らないように
 ENTER_TRIES = 3  # 1 つの配信で入室を試す回数 (失敗が続く時に、配信が終わるまで入り直し続けないように)
+REPORT_EVERY = 3600.0  # 全ルームの入室で、入室した件数を記録 (ログ) に出す間隔 (秒)
+FORGET_AFTER = 3600.0  # 全ルームの入室で、配信中の一覧にこの秒数出てこないルームは入室済みの記録から消す
 REQUEST_TIMEOUT = 20.0
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/130.0.0.0 Safari/537.36")
 
-# Get(path) -> 応答の本文。1 回の入室の間、Cookie (配信ページで受け取る uuid も) を引き継ぐ
-Get = Callable[[str], str]
 
+class Session:
+    """ブラウザのログイン状態の Cookie (と、あれば使い回す uuid) を持った、1 回の入室用の問い合わせ。"""
 
-def cookie_session(cookies: list[dict[str, Any]]) -> Get:
-    """ブラウザのログイン状態の Cookie を持った、1 回の入室用の問い合わせ。"""
-    jar = http.cookiejar.CookieJar()
-    for c in cookies:
-        domain = c.get("domain") or ""
-        if "showroom-live.com" not in domain:
-            continue
-        jar.set_cookie(http.cookiejar.Cookie(
-            0, c["name"], c["value"], None, False, domain, True, domain.startswith("."), c.get("path") or "/", True,
-            bool(c.get("secure")), None, False, None, None, {}))
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    opener.addheaders = [("User-Agent", USER_AGENT), ("Accept-Language", "ja")]
+    def __init__(self, cookies: list[dict[str, Any]], uuid: str | None = None):
+        self._jar = http.cookiejar.CookieJar()
+        for c in cookies:
+            domain = c.get("domain") or ""
+            if "showroom-live.com" in domain:
+                self._set(c["name"], c["value"], domain, c.get("path") or "/", bool(c.get("secure")))
+        if uuid is not None:
+            self._set("uuid", uuid, "www.showroom-live.com", "/", False)
+        self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self._jar))
+        self._opener.addheaders = [("User-Agent", USER_AGENT), ("Accept-Language", "ja")]
 
-    def get(path: str) -> str:
-        with opener.open(BASE_URL + path, timeout=REQUEST_TIMEOUT) as resp:
+    def _set(self, name: str, value: str, domain: str, path: str, secure: bool) -> None:
+        self._jar.set_cookie(http.cookiejar.Cookie(0, name, value, None, False, domain, True, domain.startswith("."),
+                                                   path, True, secure, None, False, None, None, {}))
+
+    @property
+    def uuid(self) -> str | None:
+        return next((c.value for c in self._jar if c.name == "uuid"), None)
+
+    def get(self, path: str) -> str:
+        with self._opener.open(BASE_URL + path, timeout=REQUEST_TIMEOUT) as resp:
             return resp.read().decode("utf-8", "replace")
-
-    return get
 
 
 class RoomEntrance:
@@ -57,14 +66,14 @@ class RoomEntrance:
 
     def __init__(
         self,
-        rooms: list[str],
+        rooms: list[str] | None,
         interval: float,
-        fetch_status: Callable[[str], Awaitable[RoomStatus]],
+        fetch_status: Callable[[str], Awaitable[RoomStatus]] | None,
         cookies: Callable[[], Awaitable[list[dict[str, Any]]]],
         state_dir: Path | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        session: Callable[[list[dict[str, Any]]], Get] = cookie_session,
-        greeting_delay: float = GREETING_DELAY,
+        session: Callable[..., Session] = Session,
+        clock: Callable[[], float] = time.time,
     ):
         self.rooms = rooms
         self.interval = interval
@@ -72,13 +81,18 @@ class RoomEntrance:
         self._cookies = cookies
         self._sleep = sleep
         self._session = session
-        self.greeting_delay = greeting_delay
+        self._clock = clock
+        self._uuid: str | None = None  # 使い回す uuid の Cookie と、受け取った時刻
+        self._uuid_at = 0.0
         # 再起動や設定の反映のあとに同じ配信へ入室し直さないよう、ファイルにも残す
         self._path = Path(state_dir) / ENTERED_FILE if state_dir is not None else None
         # ルームごとに、入室を済ませた配信の live_id
         self.entered: dict[str, int] = self._load()
         # ルームごとに、入室に失敗した配信の (live_id, 回数)
         self._failures: dict[str, tuple[int, int]] = {}
+        # 1 件ごとの記録 (ログ) の重さ。全ルームの入室は件数が多いので細かい記録にまわす
+        self._info, self._warn = logging.INFO, logging.WARNING
+        self.counts = {"entered": 0, "failed": 0}
 
     def _load(self) -> dict[str, int]:
         if self._path is None:
@@ -89,7 +103,7 @@ class RoomEntrance:
             return {}
         if not isinstance(data, dict):
             return {}
-        return {k: v for k, v in data.items() if k in self.rooms and isinstance(v, int)}
+        return {k: v for k, v in data.items() if (self.rooms is None or k in self.rooms) and isinstance(v, int)}
 
     def _save(self) -> None:
         if self._path is None:
@@ -103,12 +117,13 @@ class RoomEntrance:
             log.debug("入室済みの記録を保存できません: %s", e)
 
     async def run(self) -> None:
-        log.info("配信が始まったら一度だけ入室するルーム: %d 件", len(self.rooms))
+        log.info("配信が始まったら一度だけ入室するルーム: %d 件", len(self.rooms or []))
         while True:
             await self.step()
             await self._sleep(self.interval)
 
     async def step(self) -> None:
+        assert self.rooms is not None and self._fetch_status is not None
         for key in self.rooms:
             try:
                 status = await self._fetch_status(key)
@@ -117,55 +132,123 @@ class RoomEntrance:
             except Exception as e:  # noqa: BLE001 - 1 ルームの失敗で他のルームを止めない
                 log.debug("%s の配信状況を取得できません: %s", key, e)
                 continue
-            # live_id が分からない配信は、同じ配信に何度も入室しないよう見送る
-            if not status.is_live or status.live_id is None or self.entered.get(key) == status.live_id:
-                continue
-            live_id, failures = self._failures.get(key, (status.live_id, 0))
-            if live_id != status.live_id:
-                failures = 0
-            if failures >= ENTER_TRIES:
-                continue
-            if await self._enter(status):
-                self.entered[key] = status.live_id
-                self._failures.pop(key, None)
-                self._save()
-            else:
-                self._failures[key] = (status.live_id, failures + 1)
-                if failures + 1 >= ENTER_TRIES:
-                    log.warning("%s の今の配信には %d 回入室できなかったので、次の配信まで入室しません", status.room_name, ENTER_TRIES)
+            if self._due(status):
+                await self._attempt(status)
+
+    def _due(self, status: RoomStatus) -> bool:
+        """まだ入室していない配信で、試す回数が残っているか。"""
+        # live_id が分からない配信は、同じ配信に何度も入室しないよう見送る
+        key = status.room_url_key
+        if not status.is_live or status.live_id is None or self.entered.get(key) == status.live_id:
+            return False
+        live_id, failures = self._failures.get(key, (status.live_id, 0))
+        return live_id != status.live_id or failures < ENTER_TRIES
+
+    async def _attempt(self, status: RoomStatus) -> None:
+        key = status.room_url_key
+        if await self._enter(status):
+            self.entered[key] = status.live_id
+            self._failures.pop(key, None)
+            self.counts["entered"] += 1
+            self._save()
+            return
+        self.counts["failed"] += 1
+        live_id, failures = self._failures.get(key, (status.live_id, 0))
+        failures = failures + 1 if live_id == status.live_id else 1
+        self._failures[key] = (status.live_id, failures)
+        if failures >= ENTER_TRIES:
+            log.log(self._warn, "%s の今の配信には %d 回入室できなかったので、次の配信まで入室しません",
+                    status.room_name, ENTER_TRIES)
 
     async def _enter(self, status: RoomStatus) -> bool:
         if status.room_id is None:
             return False
-        log.info("%s の配信が始まったので入室します", status.room_name)
+        log.log(self._info, "%s の配信が始まったので入室します", status.room_name)
         try:
-            get = self._session(await self._cookies())
-            if not await asyncio.to_thread(self._open, get, status):
-                log.warning("%s に入室できません: ログインしていません (次の確認で入室し直します)", status.room_name)
-                return False
-            # 配信ページと同じく、開いてから greeting_delay 秒たってから呼ぶ (これで入室のお知らせとアバターが出る)
-            await self._sleep(self.greeting_delay)
-            answer = await asyncio.to_thread(get, f"/api/room/greeting?room_id={status.room_id}")
+            cookies = await self._cookies()
+            answer = await self._greet(cookies, status, renew=False)
+            if not _ok(answer) and self._uuid is not None:  # 使い回した uuid が古くなった時は、取り直して 1 回だけ試し直す
+                self._uuid = None
+                answer = await self._greet(cookies, status, renew=True)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - 次の確認でもう一度試す
-            log.warning("%s に入室できませんでした: %s", status.room_name, str(e).splitlines()[0] if str(e) else type(e).__name__)
+            if getattr(e, "code", None) == 401:
+                log.log(self._warn, "%s に入室できません: ログインしていません (次の確認で入室し直します)", status.room_name)
+            else:
+                log.log(self._warn, "%s に入室できませんでした: %s", status.room_name,
+                        str(e).splitlines()[0] if str(e) else type(e).__name__)
             return False
         if not _ok(answer):
-            log.warning("%s に入室できませんでした (greeting の応答: %s)", status.room_name, answer[:100])
+            log.log(self._warn, "%s に入室できませんでした (greeting の応答: %s)", status.room_name, answer[:100])
             return False
-        log.info("%s に入室しました", status.room_name)
+        log.log(self._info, "%s に入室しました", status.room_name)
         return True
 
-    @staticmethod
-    def _open(get: Get, status: RoomStatus) -> bool:
-        """配信ページを開いたときと同じ順に問い合わせる。ログインしていれば True。"""
-        rid = status.room_id
-        get(f"/r/{status.room_url_key}")  # ここで受け取る Cookie (uuid) が無いと、greeting を呼んでもアバターが出ない
-        get(f"/api/live/live_info?room_id={rid}")
-        user = json.loads(get(f"/api/live/current_user?room_id={rid}") or "{}")
-        get(f"/api/live/polling?room_id={rid}")
-        return bool(user.get("is_login"))
+    async def _greet(self, cookies: list[dict[str, Any]], status: RoomStatus, renew: bool) -> str:
+        now = self._clock()
+        reuse = None if renew or now - self._uuid_at > UUID_EVERY else self._uuid
+        s = self._session(cookies, reuse)
+        if s.uuid is None:  # ブラウザのログイン状態にも無ければ、配信ページを 1 回開いてもらう
+            await asyncio.to_thread(s.get, f"/r/{status.room_url_key}")
+            if s.uuid is not None:
+                self._uuid, self._uuid_at = s.uuid, now
+        return await asyncio.to_thread(s.get, f"/api/room/greeting?room_id={status.room_id}")
+
+
+class AllRoomsEntrance(RoomEntrance):
+    """SHOWROOM の全ルームで、配信が始まったら一度だけ入室する。
+
+    配信中の一覧 (1 回の問い合わせで SHOWROOM 全体) を interval ごとに取り、新しい配信に ENTER_GAP 秒ずつ空けて入室する。
+    """
+
+    def __init__(self, interval: float, fetch_lives: Callable[[], Awaitable[list[RoomStatus]]],
+                 cookies: Callable[[], Awaitable[list[dict[str, Any]]]], skip: Iterable[str] = (),
+                 state_dir: Path | None = None, clock: Callable[[], float] = time.time, gap: float = ENTER_GAP,
+                 **kw: Any):
+        super().__init__(None, interval, None, cookies, state_dir=state_dir, clock=clock, **kw)
+        self._fetch_lives = fetch_lives
+        self.skip = set(skip)
+        self.gap = gap
+        self._info = self._warn = logging.DEBUG
+        now = clock()
+        self._reported_at = now
+        # 配信中の一覧に最後に出た時刻。しばらく出てこないルームは、入室済みの記録から消す (記録を小さく保つ)
+        self._seen: dict[str, float] = {k: now for k in self.entered}
+
+    async def run(self) -> None:
+        log.info("SHOWROOM の全ルームで、配信が始まったら一度だけ入室します")
+        while True:
+            await self.step()
+            await self._sleep(self.interval)
+
+    async def step(self) -> None:
+        try:
+            lives = await self._fetch_lives()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - 次の確認でもう一度取る
+            log.debug("配信中の一覧を取得できません: %s", e)
+            return
+        now = self._clock()
+        for status in lives:
+            self._seen[status.room_url_key] = now
+        gone = [k for k in self.entered if now - self._seen.get(k, now) > FORGET_AFTER]
+        for k in gone:
+            self.entered.pop(k, None)
+            self._seen.pop(k, None)
+            self._failures.pop(k, None)
+        if gone:
+            self._save()
+        if now - self._reported_at >= REPORT_EVERY:
+            self._reported_at = now
+            log.info("全ルームの入室: この 1 時間に %d 件入室しました (失敗 %d 件)", self.counts["entered"], self.counts["failed"])
+            self.counts = {"entered": 0, "failed": 0}
+        for status in lives:
+            if status.room_url_key in self.skip or not self._due(status):
+                continue
+            await self._attempt(status)
+            await self._sleep(self.gap)
 
 
 def _ok(answer: str) -> bool:

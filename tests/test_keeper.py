@@ -72,6 +72,21 @@ async def test_enter_rooms_alone_start_the_browser(tmp_path, monkeypatch):
     await asyncio.wait_for(task, timeout=1)
 
 
+async def test_enter_all_alone_starts_the_browser(tmp_path, monkeypatch):
+    started = asyncio.Event()
+    keeper = kp.Keeper(Config(enter_all=True, web_port=0, state_file=tmp_path / "s.json"))
+
+    async def fake_loop():
+        started.set()
+        await keeper._wake.wait()
+
+    monkeypatch.setattr(keeper, "_run_loop", fake_loop)
+    task = asyncio.ensure_future(keeper.run())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    keeper.stop()
+    await asyncio.wait_for(task, timeout=1)
+
+
 async def test_record_only_runs_without_browser(monkeypatch, tmp_path):
     started = asyncio.Event()
 

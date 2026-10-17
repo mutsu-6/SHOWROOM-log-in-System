@@ -17,7 +17,7 @@ from playwright.async_api import Browser, BrowserContext, async_playwright
 from .api import BASE_URL, ShowroomAPI
 from .config import Config, apply_settings, settings_path
 from .comments import CommentDispatcher, queue_dir
-from .entrance import RoomEntrance
+from .entrance import AllRoomsEntrance, RoomEntrance
 from .status import LOGIN_KEY, write_live_stat
 from .watcher import RoomWatcher
 
@@ -286,7 +286,7 @@ async def ensure_login(ctx: BrowserContext, cfg: Config, api: ShowroomAPI, room_
 
 class Keeper:
     def __init__(self, cfg: Config):
-        if not (cfg.rooms or cfg.enter_rooms or cfg.record_rooms or cfg.events or cfg.web_port):
+        if not (cfg.rooms or cfg.enter_rooms or cfg.enter_all or cfg.record_rooms or cfg.events or cfg.web_port):
             raise ValueError("監視するルームが指定されていません (rooms / record_rooms / events)")
         self.cfg = cfg
         # 視聴ルームが無いときにログイン確認に使う配信中のルーム。確認できなくなったら探し直す
@@ -483,7 +483,7 @@ class Keeper:
             self.recorder = GiftRecorder(self.cfg)
             recorder = asyncio.ensure_future(self.recorder.run())
         try:
-            if self.cfg.rooms or self.cfg.enter_rooms:
+            if self.cfg.rooms or self.cfg.enter_rooms or self.cfg.enter_all:
                 await self._run_loop()
             else:
                 # 視聴・入室するルームが無くギフト記録だけの場合は、メモリを使うブラウザを起動しない
@@ -545,7 +545,11 @@ class Keeper:
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
             # 止める指示を待たず動き続けるので、終了時に取り消す
             background = [asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments")]
-            if enter_rooms:
+            if self.cfg.enter_all:  # 入室するルーム (enter_rooms) も配信中の一覧から見つかる
+                entrance: RoomEntrance = AllRoomsEntrance(self.cfg.status_poll_interval, api.onlives, ctx.cookies,
+                                                          skip=self.cfg.rooms, state_dir=Path(self.cfg.state_file).parent)
+                background.append(asyncio.create_task(entrance.run(), name="entrance"))
+            elif enter_rooms:
                 entrance = RoomEntrance(enter_rooms, self.cfg.status_poll_interval, api.room_status, ctx.cookies,
                                         state_dir=Path(self.cfg.state_file).parent)
                 background.append(asyncio.create_task(entrance.run(), name="entrance"))
