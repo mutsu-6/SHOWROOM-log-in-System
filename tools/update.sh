@@ -32,7 +32,9 @@ sudo docker compose up -d --build
 
 echo "== 4. 起動したか確かめます"
 for _ in $(seq 1 30); do
-  if curl -fsS -o /dev/null http://127.0.0.1:8080/; then
+  # パスワードを設定していると 401 が返る (それも管理画面が動いている印)
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ || true)
+  if [ "$code" = "200" ] || [ "$code" = "401" ]; then
     echo "   管理画面が動いています"
     sudo docker compose logs --tail 15 showroom-keeper
     echo "== 終わりました ($after)"
