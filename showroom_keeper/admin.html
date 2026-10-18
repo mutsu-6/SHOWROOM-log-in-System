@@ -411,12 +411,14 @@ td a.name-link, td a { word-break: break-word; }
       <a href="#events/upcoming" data-sub="upcoming">これから</a>
       <a href="#events/ended" data-sub="ended">終わった</a>
       <a href="#events/choice" data-sub="choice">応援ルームに合うイベント</a>
+      <a href="#events/series" data-sub="series">大会</a>
     </nav>
     <div id="ev-body"></div>
   </section>
 
   <!-- イベントのページ -->
   <section data-page="event"><div id="ep"></div></section>
+  <section data-page="series"><div id="sp"></div></section>
 
   <!-- ライブ (視聴・ギフトの記録・コメント) -->
   <section data-page="live">
@@ -628,7 +630,7 @@ async function api(path, body) {
 /* ------------------------------------------------------------ ページの切り替え (アドレスの # で開く) */
 // #ページ/引数 (例: #gifter/123、#room/abc、#event/456、#gifters/trend)。前の画面のアドレスも開けるようにする
 const OLD_PAGES = { dashboard: "home", research: "gifters", logs: "collect", comment: "live/comment", gifts: "live/gifts", listeners: "gifters" };
-const NAV_OF = { gifter: "gifters", room: "rooms", event: "events" };
+const NAV_OF = { gifter: "gifters", room: "rooms", event: "events", series: "events" };
 const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
 const openListener = (uid) => go(`#gifter/${encodeURIComponent(uid)}`);
 let page = { name: "", arg: "" };
@@ -2661,11 +2663,12 @@ function eventStrength(st) {
 }
 const eventLists = {};
 async function showEvents(sub) {
-  sub = ["ongoing", "upcoming", "ended", "choice"].includes(sub) ? sub : "ongoing";
+  sub = ["ongoing", "upcoming", "ended", "choice", "series"].includes(sub) ? sub : "ongoing";
   setSub("#ev-tabs", sub);
   const box = $("#ev-body");
   box.innerHTML = loadingHtml();
   if (sub === "choice") return showEventChoice(box);
+  if (sub === "series") return showSeriesList(box);
   let d;
   try { d = await api(`/api/events?state=${sub}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "events") return;
@@ -2759,7 +2762,7 @@ async function showEvent(id) {
       ${tile("貢献ランキング", `${num(d.rankings)} <small>/ ${num(d.room_total)}</small>`, d.rankings_pending ? `取る予定 ${num(d.rankings_pending)} ルーム` : d.state === "ended" ? "取れる分は取りました" : "終わってから取ります", d.rankings_pending ? "warn" : "")}
       ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
     </div>
-    <div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
+    ${taikaiBox(d)}<div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
   html += `<div class="cols"><div><h3>参加ルームの順位</h3>${dataTable("ep-rooms", [
       { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
       { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
@@ -2782,6 +2785,119 @@ async function showEvent(id) {
     const series = p.rooms.map((r, i) => ({ name: r.name, color: ROOM_COLORS[i] || ["#2f5bd3", "#b4580f", "#18794e", "#e5484d", "#667085"][i - ROOM_COLORS.length] || OTHER_COLOR, values: r.points, ranks: r.ranks }));
     chart.innerHTML = `<div class="charts one"><div class="chart-card wide"><div class="chart-head"><div><b>ポイントの推移</b><div class="chart-sub">今のポイントの多い ${num(series.length)} ルーム (1 時間ごと。終わったイベントは、最後の点が最終結果)</div></div></div>
       ${lineChart(p.times, series, { width: full })}${chartLegend(series.map((s) => [s.name, s.color]))}</div></div>`;
+  }
+}
+
+/* ------------------------------------------------------------ 大会 (段階ごとに別のイベントになっている大きな大会) */
+const SERIES_NOTE = "段階ごとのイベント (予選・準決勝・決勝など) を、名前 (段階の言葉を除くと似ている)・時期 (前の段階の終わりから 60 日のうち)・参加ルームの重なり (半分以上) から自動でまとめています。まちがっていたら、イベントのページで手でつないだり外したりできます";
+const stageText = (x) => `${num(x.stage_no)} 段階目${x.stage ? ` <span class="uid">${esc(x.stage)}</span>` : ""}`;
+async function showSeriesList(box) {
+  let d;
+  try { d = await api("/api/series"); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "events") return;
+  box.innerHTML = `<div class="hint" style="margin-top:0">${SERIES_NOTE}</div>` + dataTable("series-list", [
+    { label: "大会", value: (r) => r.name, html: (r) => `<a href="#series/${esc(r.series_id)}">${esc(r.name)}</a>`, cls: "name" },
+    { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
+    { label: "段階", num: true, value: (r) => r.stages, html: (r) => num(r.stages) },
+    { label: "イベント", num: true, value: (r) => r.events, html: (r) => num(r.events) },
+    { label: "終了", num: true, value: (r) => r.end, html: (r) => ymd(r.end) },
+  ], d.series, { sort: 4, limit: 50, csvName: "大会", rowAttr: (r) => `class="clickable" data-go="#series/${esc(r.series_id)}"`,
+    empty: "まだ大会は見つかっていません (イベントの参加ルームを読んだものから、10 分ごとに調べます)" });
+}
+function taikaiBox(d) {
+  const t = d.taikai;
+  if (!t) return "";
+  const how = t.manual ? '<span class="tag">手で直した</span>' : "";
+  const ctl = `<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><input id="tk-to" placeholder="同じ大会のイベント番号" inputmode="numeric" style="width:200px">
+    <button class="btn small" data-tk-link="${esc(d.event_id)}">同じ大会につなぐ</button>
+    ${t.series ? `<button class="btn small" data-tk-detach="${esc(d.event_id)}">大会から外す</button>` : ""}</div>`;
+  if (!t.series) {
+    return `<details style="margin:8px 0"><summary>大会 <small class="muted">${t.checked ? "どの大会にも入っていません" : "まだ調べていません"}</small> ${how}</summary>
+      <div class="hint" style="margin-top:0">${SERIES_NOTE}</div>${ctl}</details>`;
+  }
+  const s = t.series;
+  return `<div class="card" style="margin:8px 0;padding:10px 12px"><b>大会: <a href="#series/${esc(s.series_id)}">${esc(s.name || `大会 ${s.series_id}`)}</a></b>
+    <span class="uid">${num(s.stage_no)} / ${num(s.stages)} 段階目</span> ${how}
+    <div class="hint" style="margin-top:4px">${(t.events || []).map((e) => `${num(e.stage_no)}. ${e.event_id === d.event_id ? `<b>${esc(e.name)}</b>` : eventLink(e.event_id, e.name)}`).join(" → ")}</div>
+    <details><summary class="uid">まちがっていたら直す</summary>${ctl}</details></div>`;
+}
+document.addEventListener("click", async (ev) => {
+  const a = ev.target.closest("[data-tk-link], [data-tk-detach]");
+  if (!a) return;
+  const eid = a.dataset.tkLink || a.dataset.tkDetach;
+  const body = a.dataset.tkDetach ? { event_id: eid, detach: true } : { event_id: eid, to_event_id: ($("#tk-to") || {}).value || "" };
+  try {
+    await api("/api/series/link", body);
+    toast(a.dataset.tkDetach ? "大会から外しました" : "同じ大会につなぎました");
+    route();
+  } catch (e) { toast(`直せませんでした: ${e.message || e}`); }
+});
+async function showSeries(id) {
+  const box = $("#sp");
+  box.innerHTML = loadingHtml();
+  let d;
+  try { d = await api(`/api/series?id=${encodeURIComponent(id)}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "series" || page.arg !== id) return;
+  const crumb = `<div class="crumb"><a href="#events/series">大会</a> ›</div>`;
+  if (!d.found) { box.innerHTML = `${crumb}<h2>大会 ${esc(id)}</h2><div class="empty">この大会は見つかりません。</div>`; return; }
+  const first = d.events[0], last = d.events[d.events.length - 1];
+  const ended = d.events.every((e) => e.state === "ended");
+  let h = `${crumb}<div class="page-head"><div class="grow"><h2>${esc(d.name)}</h2>
+      <div class="card-key">${esc(period({ start: first.start, end: Math.max(...d.events.map((e) => e.end || 0)) || null }))} ・ ${num(d.stages)} 段階・${num(d.events.length)} イベント${ended ? "" : " ・ 開催中"}</div></div></div>
+    <div class="tiles">
+      ${tile("段階", `${num(d.stages)} <small>段階</small>`, `最後: ${esc(last.stage || last.name)}`)}
+      ${tile("出たルーム", `${num(d.rooms)} <small>ルーム</small>`, "どこかの段階に出たルーム")}
+      ${tile("大会全体のポイント", shortNum(d.total_points), "全段階・全ルームの合計")}
+      ${tile("分かったギフター", `${num(d.gifters)} <small>人</small>`, "貢献ランキング (各ルームの上位 100 人) に出た人")}
+      ${tile("無料の星から有料へ", `${num(d.free_to_paid)} <small>/ ${num(d.started_free)} 人</small>`,
+        `最初の段階は 1 日 ${num(d.star_per_day)} pt 以下 (無料の星だけで送れる目安) で、あとの段階でそれより多く送った人 (目安)`)}
+    </div>
+    <div class="hint">${SERIES_NOTE}</div>`;
+  h += `<h3>段階ごとの勝ち上がりの線 <small class="muted">勝ち上がり = 次の段階以降にも出たルーム</small></h3>` + dataTable("sp-lines", [
+    { label: "段階", num: true, value: (r) => r.stage_no, html: (r) => stageText(r) },
+    { label: "イベント", value: (r) => r.name, html: (r) => `${eventLink(r.event_id, r.name)}${r.entrance ? ` <span class="tag">${esc(r.entrance)}</span>` : ""}`, cls: "name" },
+    { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
+    { label: "ルーム", num: true, value: (r) => r.rooms, html: (r) => num(r.rooms) },
+    { label: "勝ち上がり", num: true, value: (r) => r.advanced, html: (r) => r.advanced == null ? '<span class="uid">最後</span>' : num(r.advanced) },
+    { label: "線 (順位)", num: true, value: (r) => r.line_rank, html: (r) => r.line_rank ? `${num(r.line_rank)} 位` : "-" },
+    { label: "線 (pt)", num: true, value: (r) => r.line_point, html: (r) => r.line_point != null ? `<b>${num(r.line_point)}</b>` : "-" },
+    { label: "落ちた中で最高", num: true, value: (r) => r.best_out, html: (r) => r.best_out != null ? num(r.best_out) : "-" },
+    { label: "真ん中", num: true, value: (r) => r.median, html: (r) => r.median != null ? num(Math.round(r.median)) : "-" },
+    { label: "合計", num: true, value: (r) => r.total, html: (r) => shortNum(r.total) },
+  ], d.lines, { sort: 0, desc: false, limit: 50, csvName: `大会_${d.series_id}_勝ち上がり`, rowAttr: (r) => `class="clickable" data-go="#event/${esc(r.event_id)}"`,
+    note: "線 (pt) = 勝ち上がったルームの中でいちばん少ないポイント。落ちた中で最高 が線より多い時は、ポイント以外 (審査など) でも選ばれています" });
+  h += `<div id="sp-chart"></div>`;
+  h += `<div class="cols"><div><h3>ポイントの増え方 <small class="muted">続けて出たルームの 1 日あたりのポイントの倍率 (真ん中の値)</small></h3>` + dataTable("sp-growth", [
+    { label: "段階", sort: false, value: (r) => r.from, html: (r) => `${num(r.from)} → ${num(r.to)}` },
+    { label: "倍率", num: true, value: (r) => r.ratio, html: (r) => r.ratio != null ? `<b>${r.ratio.toFixed(2)} 倍</b>` : "-" },
+    { label: "くらべたルーム", num: true, value: (r) => r.rooms, html: (r) => num(r.rooms) },
+  ], d.growth, { sort: 0, desc: false, limit: 20, csvName: `大会_${d.series_id}_増え方`, empty: "段階が 1 つだけです" })
+    + `</div><div><h3>大口のギフターが残るか <small class="muted">大会全体の上位 ${num((d.stay[0] || {}).of || 0)} 人のうち、その段階で送った人</small></h3>` + dataTable("sp-stay", [
+    { label: "段階", num: true, value: (r) => r.stage_no, html: (r) => `${num(r.stage_no)} 段階目` },
+    { label: "上位の人", num: true, value: (r) => r.top, html: (r) => `<b>${num(r.top)}</b> <span class="uid">/ ${num(r.of)}</span>` },
+    { label: "ギフター全体", num: true, value: (r) => r.gifters, html: (r) => num(r.gifters) },
+  ], d.stay, { sort: 0, desc: false, limit: 20, csvName: `大会_${d.series_id}_残り方` }) + `</div></div>`;
+  h += `<div class="cols"><div><h3>ルーム <small class="muted">大会全体のポイントの多い順</small></h3>` + dataTable("sp-rooms", [
+    { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+    { label: "pt", num: true, value: (r) => r.points, html: (r) => `<b>${num(r.points)}</b>` },
+    { label: "進んだ段階", num: true, value: (r) => r.reached, html: (r) => `${num(r.reached)} / ${num(d.stages)}` },
+  ], d.top_rooms, { sort: 1, limit: 30, csvName: `大会_${d.series_id}_ルーム`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` })
+    + `</div><div><h3>ギフター <small class="muted">大会全体の合計</small></h3>` + dataTable("sp-gifters", [
+    { label: "ギフター", value: (g) => g.name || "", html: (g) => `${gifterLink(g.user_id, g.name)}${g.left ? ' <span class="tag">退会</span>' : ""}`, cls: "name" },
+    { label: "pt", num: true, value: (g) => g.points, html: (g) => `<b>${num(g.points)}</b>` },
+    { label: "送った段階", num: true, value: (g) => g.stages, html: (g) => `${num(g.stages)} / ${num(d.stages)}` },
+  ], d.top_gifters, { sort: 1, limit: 30, csvName: `大会_${d.series_id}_ギフター`, rowAttr: (g) => `class="clickable" data-go="#gifter/${esc(g.user_id)}"`,
+    empty: "貢献ランキングをまだ取っていません" }) + `</div></div>`;
+  box.innerHTML = h;
+  const chart = $("#sp-chart");
+  const bars = d.lines.filter((l) => l.median != null);
+  if (bars.length > 1) {
+    const full = Math.max(260, (chart.clientWidth || 720) - 30);
+    chart.innerHTML = `<div class="charts one"><div class="chart-card wide"><div class="chart-head"><div><b>段階ごとのポイント</b><div class="chart-sub">参加ルームの真ん中の値 (青) と、勝ち上がりの線 (オレンジ)</div></div></div>
+      ${stackedBars(bars.flatMap((l) => [
+        { label: `${l.stage_no}`, tip: `${l.name}\n真ん中 ${num(Math.round(l.median))} pt`, parts: [{ v: l.median, color: "var(--info)" }] },
+        { label: "", tip: `${l.name}\n線 ${l.line_point != null ? `${num(l.line_point)} pt` : "なし"}`, parts: [{ v: l.line_point || 0, color: "var(--warn)" }] },
+      ]), { width: full, maxBar: 28 })}</div></div>`;
   }
 }
 
@@ -2946,7 +3062,7 @@ $("#q-results").addEventListener("click", (ev) => { if (ev.target.closest("a")) 
 
 /* ------------------------------------------------------------ 起動 */
 const PAGES = { home: showHome, gifters: showGifters, gifter: showGifter, rooms: showRooms, room: showRoom, events: showEvents, event: showEvent,
-  live: showLive, collect: showCollect, settings: () => {} };
+  series: showSeries, live: showLive, collect: showCollect, settings: () => {} };
 
 /* ------------------------------------------------------------ 設定 */
 let saved = { rooms: [], record_rooms: [], events: [], enter_rooms: [], no_visit_rooms: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;

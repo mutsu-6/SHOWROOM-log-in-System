@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import event_analysis, room_analysis
+from . import event_analysis, room_analysis, series as series_mod
 from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store
 
@@ -582,7 +582,58 @@ def event_detail(state_dir: Path, event_id: Any, support: list[str] | None = Non
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
                 "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details,
-                "needed": event_analysis.needed_points(s, eid, now), "strength": _strength(s, eid, now, support)}
+                "needed": event_analysis.needed_points(s, eid, now), "strength": _strength(s, eid, now, support),
+                "taikai": _taikai(s, eid)}
+
+
+def _taikai(s: Store, eid: int) -> dict[str, Any]:
+    """イベントの入っている大会 (段階ごとのイベントのまとまり)。入っていなくても、手で直したかどうかを返す。"""
+    of = series_mod.series_of(s, eid)
+    manual = s.one("SELECT series_id FROM event_series_manual WHERE event_id=?", (eid,))
+    out: dict[str, Any] = {"series": of, "manual": manual is not None, "checked": s.one(
+        "SELECT 1 FROM event_series WHERE event_id=?", (eid,)) is not None}
+    if of is not None:
+        out["events"] = [dict(r) for r in s.all("""SELECT e.event_id, e.name, e.start, e.end, es.stage_no, es.stage, es.how
+                                                   FROM event_series es JOIN events e USING(event_id)
+                                                   WHERE es.series_id=? ORDER BY es.stage_no, e.start""", (of["series_id"],))]
+    return out
+
+
+def series_list(state_dir: Path) -> dict[str, Any]:
+    """大会の一覧 (終わりの新しい順)。"""
+    with Store(state_dir) as s:
+        return {"series": series_mod.series_list(s), "now": time.time()}
+
+
+def series_detail(state_dir: Path, series_id: Any) -> dict[str, Any]:
+    """大会のページ (段階ごとの勝ち上がりの線・ポイントの増え方・大口のギフターが残るか・合計)。"""
+    ref = str(series_id or "").strip()
+    if not ref.isdigit():
+        raise ValueError("大会の番号を指定してください")
+    with Store(state_dir) as s:
+        d = series_mod.series_detail(s, int(ref))
+        if d is None:
+            return {"series_id": int(ref), "found": False}
+        shown = _user_names(s, None, [g["user_id"] for g in d["top_gifters"] if (g["name"] or "") in LEFT_NAMES])
+        for g in d["top_gifters"]:
+            g["left"] = (g["name"] or "") in LEFT_NAMES
+            g["name"] = shown.get(g["user_id"], g["name"])
+        now = time.time()
+        for e in d["events"]:
+            e["state"] = _event_state(e, now)
+        return {**d, "found": True, "now": now}
+
+
+def series_link(state_dir: Path, event_id: Any, to_event: Any = None) -> dict[str, Any]:
+    """手で直す: event_id を to_event と同じ大会につなぐ (to_event が空なら、大会から外す)。"""
+    ref = str(event_id or "").strip()
+    to = str(to_event or "").strip()
+    if not ref.isdigit() or (to and not to.isdigit()):
+        raise ValueError("イベント番号を指定してください")
+    with Store(state_dir) as s:
+        out = series_mod.set_manual(s, int(ref), int(to) if to else None)
+        out["taikai"] = _taikai(s, int(ref))
+        return out
 
 
 def _strength(s: Store, eid: int, now: float, support: list[str] | None) -> dict[str, Any]:

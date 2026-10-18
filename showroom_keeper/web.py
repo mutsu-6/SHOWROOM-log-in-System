@@ -399,7 +399,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import research
 
                 self._json(research.gifter_detail(self._state_dir(), q.get("user"), self._support(q)))
-            elif url.path in ("/api/search", "/api/room", "/api/events", "/api/event", "/api/room_profiles", "/api/room_metrics"):
+            elif url.path in ("/api/search", "/api/room", "/api/events", "/api/event", "/api/room_profiles", "/api/room_metrics",
+                              "/api/series"):
                 from . import explore
 
                 state_dir = self._state_dir()
@@ -412,6 +413,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self._json(explore.room_daily_metrics(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
                 elif url.path == "/api/room":
                     self._json(explore.room_detail(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
+                elif url.path == "/api/series" and q.get("id"):
+                    self._json(explore.series_detail(state_dir, q.get("id")))
+                elif url.path == "/api/series":
+                    self._json(explore.series_list(state_dir))
                 elif url.path == "/api/events" and q.get("state") == "choice":
                     self._json(explore.event_choice(state_dir, self._support(q)))
                 elif url.path == "/api/events":
@@ -500,6 +505,13 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 research.set_watch(self._state_dir(), data.get("user_id"), bool(data.get("watched", True)), data.get("memo"))
                 self._json({"ok": True})
+            elif path == "/api/series/link":
+                from . import explore
+
+                if not data.get("detach") and not str(data.get("to_event_id") or "").strip():
+                    raise ValueError("つなぐ先のイベント番号を指定してください")
+                self._json({"ok": True, **explore.series_link(self._state_dir(), data.get("event_id"),
+                                                              None if data.get("detach") else data.get("to_event_id"))})
             elif path == "/api/research/collect":
                 started = self._start_research(only_new=False, force=bool(data.get("force")))
                 self._json({"ok": True, "started": started})

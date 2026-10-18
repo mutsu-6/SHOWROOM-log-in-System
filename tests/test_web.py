@@ -248,6 +248,10 @@ def test_explore_endpoints(admin):
     assert json.loads(call(base + "/api/room?room=abc")[1]) == {"key": "abc", "found": False}
     assert call(base + "/api/events?state=bad")[0] == 400
     assert call(base + "/api/room?room=not%20a%20room!")[0] == 400
+    assert json.loads(call(base + "/api/series")[1])["series"] == []
+    assert json.loads(call(base + "/api/series?id=5")[1])["found"] is False
+    assert call(base + "/api/series/link", {"event_id": "5"}, POST)[0] == 400  # つなぐ先が無い
+    assert call(base + "/api/series/link", {"event_id": "5", "detach": True}, POST)[0] == 400  # イベントが無い
 
 
 def test_alerts_for_login_disk_and_backup(tmp_path, monkeypatch):

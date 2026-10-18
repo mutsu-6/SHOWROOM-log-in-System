@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from showroom_keeper import explore, research, research_store, room_analysis as ra, sweep
+from showroom_keeper import explore, research, research_store, room_analysis as ra, series, sweep
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -148,3 +148,20 @@ def test_falling_check_does_not_read_whole_tables(traced):
 
 def test_gifter_page_does_not_read_whole_tables(traced):
     check(traced, lambda d: research.gifter_detail(d, 101, []))
+
+
+def test_series_does_not_read_whole_tables(traced):
+    with Store(traced[0]) as s:
+        for e, name in ((3, "大会 予選"), (2, "大会 準決勝"), (1, "大会 決勝")):  # 3 → 2 → 1 の順に始まる
+            s.upsert_events([{"event_id": e, "name": name}])
+
+    def run(d):
+        with Store(d) as s:
+            while series.step(s, NOW):
+                pass
+        assert explore.series_detail(d, "3")["stages"] == 3
+        explore.series_list(d)
+        explore.event_detail(d, "2")
+        explore.series_link(d, "1")
+        explore.series_link(d, "1", "2")
+    check(traced, run)

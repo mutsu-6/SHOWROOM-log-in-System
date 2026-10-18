@@ -134,6 +134,13 @@ CREATE TABLE IF NOT EXISTS room_profile (
     room_id INTEGER PRIMARY KEY, at REAL, events INTEGER, size_class INTEGER, top1 REAL, top3 REAL, contributors REAL,
     capped INTEGER, rel_top10 REAL, rel_per_contrib REAL, rel_point REAL, type TEXT,
     momentum REAL, recent_place REAL, prev_place REAL, style TEXT, style_events INTEGER, style_counts TEXT);
+-- 大会 (段階ごとに別のイベントになっている大きな大会) のまとまり。series_id は大会の最初の段階のイベント番号
+-- (大会でないと調べたイベントは series_id が NULL)。how は auto (自動) か manual (手で直した)。series.py が作る
+CREATE TABLE IF NOT EXISTS event_series (
+    event_id INTEGER PRIMARY KEY, series_id INTEGER, stage_no INTEGER, stage TEXT, how TEXT, at REAL);
+CREATE INDEX IF NOT EXISTS event_series_series ON event_series(series_id) WHERE series_id IS NOT NULL;
+-- 管理画面で手でつないだ・外したイベント (series_id が NULL なら外した)。自動では変えない
+CREATE TABLE IF NOT EXISTS event_series_manual (event_id INTEGER PRIMARY KEY, series_id INTEGER, at REAL);
 """
 
 MONTH_SQL = "strftime('%Y-%m', e.end + 9 * 3600, 'unixepoch')"  # イベントが終わった月 (日本時間)

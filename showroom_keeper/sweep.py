@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from . import research, room_analysis
+from . import research, room_analysis, series
 from .recorder import next_page_number
 from .status import JST
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
@@ -65,6 +65,7 @@ OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っている�
 CONFIRM_DAYS = 14  # 終わってからこの日数のうちのイベントは、正式な結果が出たあとに参加ルームを読み直す
 PROFILE_EVERY = 7 * 86400  # ルームのプロフィール (SHOWランク・リーグなど) を読み直す間隔 (秒)
 GIFT_DAILY_EVERY = 600  # 記録したギフトの日ごとの合計に、新しい分を足す間隔 (秒)
+SERIES_EVERY = 600  # 大会のまとまりを調べ直す間隔 (秒。調べていないイベントが残っている間は続けて調べる)
 PAGE_RETRY = 86400  # イベントのページが読めなかった時に、読み直すまでの時間 (秒)
 NOTICES_EVERY = 86400  # お知らせを読む間隔 (秒)
 NOTICE_PAGES = 50  # お知らせの一覧を読むページの上限 (最初の回に、古い分までさかのぼる)
@@ -192,6 +193,9 @@ class Sweeper:
         self._gift_daily(now)
         if room_analysis.step(st, now):  # ルームの分析 (SHOWROOM には問い合わせないので、仕事の順番には数えない)
             self.doing = "ルームの分析"
+        if now - (st.meta("series_at") or 0) >= SERIES_EVERY:  # 大会のまとまり (SHOWROOM には問い合わせない)
+            if not series.step(st, now):
+                st.set_meta("series_at", now)  # 調べ終わったら、しばらく見ない
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
