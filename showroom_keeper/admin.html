@@ -2348,6 +2348,29 @@ async function showEvents(sub) {
 }
 
 /* ------------------------------------------------------------ イベントのページ */
+function neededPoints(n, state) {
+  if (!n || !n.similar) return `<h3>必要ポイントの見積もり</h3><div class="hint" style="margin-top:0">同じ続きもののイベント (名前から回の数字を除くと同じもの) で、結果を読んだ前の回がまだありません</div>`;
+  const rankText = (k) => `${num(k)} 位${n.reward_rank === k ? ' <span class="tag live">特典</span>' : ""}`;
+  let h = `<h3>必要ポイントの見積もり <small class="muted">同じ続きものの前の回 ${num(n.similar)} 件で、その順位のルームが最後に取ったポイント</small></h3>`;
+  const cur = n.current ? Object.fromEntries(n.current.ranks.map((r) => [r.rank, r])) : {};
+  h += dataTable("ep-needed", [
+    { label: "順位", num: true, value: (r) => r.rank, html: (r) => rankText(r.rank) },
+    { label: "少ない回", num: true, value: (r) => r.min, html: (r) => num(r.min) },
+    { label: "真ん中", num: true, value: (r) => r.median, html: (r) => `<b>${num(Math.round(r.median))}</b>` },
+    { label: "多い回", num: true, value: (r) => r.max, html: (r) => num(r.max) },
+    { label: "回の数", num: true, value: (r) => r.events, html: (r) => num(r.events) },
+    ...(n.current ? [
+      { label: "今", num: true, value: (r) => (cur[r.rank] || {}).now, html: (r) => cur[r.rank] && cur[r.rank].now != null ? num(cur[r.rank].now) : "-" },
+      { label: "最後の見込み", num: true, value: (r) => (cur[r.rank] || {}).projected, html: (r) => {
+        const c = cur[r.rank];
+        return c && c.projected ? `<b>${num(Math.round(c.projected))}</b> <span class="uid">${c.growth.toFixed(1)} 倍 (${num(c.events)} 回から)</span>` : "-";
+      } },
+    ] : []),
+  ], n.ranks, { sort: 0, desc: false, limit: 20, csvName: "必要ポイント",
+    note: n.current ? `期間の ${Math.round(n.current.elapsed * 100)}% が過ぎました。最後の見込み = 今のポイント × 前の回で同じ時点から最後までに増えた倍率 (真ん中の値。推移を残した回だけ)` : "" });
+  h += `<div class="hint">くらべた回: ${n.past.map((p) => `${eventLink(p.event_id, p.name)} (${num(p.rooms)} ルーム)`).join(" ・ ")}</div>`;
+  return h;
+}
 function eventDetails(x) {
   if (!x) return "";
   const facts = [];
@@ -2394,7 +2417,7 @@ async function showEvent(id) {
       ${tile("貢献ランキング", `${num(d.rankings)} <small>/ ${num(d.room_total)}</small>`, d.rankings_pending ? `取る予定 ${num(d.rankings_pending)} ルーム` : d.state === "ended" ? "取れる分は取りました" : "終わってから取ります", d.rankings_pending ? "warn" : "")}
       ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
     </div>
-    <div id="ep-chart"></div>${eventDetails(d.details)}`;
+    <div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventDetails(d.details)}`;
   html += `<div class="cols"><div><h3>参加ルームの順位</h3>${dataTable("ep-rooms", [
       { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
       { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },

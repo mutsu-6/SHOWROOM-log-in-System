@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import room_analysis
+from . import event_analysis, room_analysis
 from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store
 
@@ -286,7 +286,7 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
         data = json.loads(info["data"]) if info is not None and info["data"] else {}
         pg = s.one("SELECT at, status, text FROM event_pages WHERE event_id=?", (eid,))
         series = [dict(r) for r in s.all("""SELECT e.event_id, e.name, e.end FROM event_info i JOIN events e USING(event_id)
-                                            WHERE i.parent_id=? AND i.event_id != ? ORDER BY e.end DESC LIMIT 20""",
+                                            WHERE i.parent_id=? AND i.parent_id > 0 AND i.event_id != ? ORDER BY e.end DESC LIMIT 20""",
                                          (info["parent_id"], eid))] if info is not None and info["parent_id"] else []
         details = {"description": data.get("event_description"), "reward_rank": data.get("reward_rank"),
                    "block": data.get("event_block_label"), "leagues": data.get("league_ids"), "parent_id": data.get("parent_event_id") or None,
@@ -296,7 +296,8 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
         return {**_event_row(e, now), "found": True, "type": e["type"], "show_ranking": bool(e["show_ranking"]),
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
-                "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details}
+                "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details,
+                "needed": event_analysis.needed_points(s, eid, now)}
 
 
 def _progress(s: Store, eid: int, rooms: list[dict[str, Any]]) -> dict[str, Any]:
