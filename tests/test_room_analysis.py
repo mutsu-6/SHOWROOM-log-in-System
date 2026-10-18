@@ -167,8 +167,8 @@ def test_room_daily(tmp_path):
         assert rows[1]["view_n"] == 0
         g = ra.followers_growth(s, 1, NOW)
         assert g["change"] == 29
-        s.add_room_daily([{"room_id": 2, "followers": 1}], NOW + 500 * DAY)  # 古い日の分は消える
-        assert s.scalar("SELECT COUNT(*) FROM room_daily WHERE room_id=1") == 0
+        s.add_room_daily([{"room_id": 2, "followers": 1}], NOW + 500 * DAY)  # 古い日の分も消さない (フォロワーを日・週・月で見るため)
+        assert s.scalar("SELECT COUNT(*) FROM room_daily WHERE room_id=1") == 2
 
 
 def test_comment_counter(tmp_path):

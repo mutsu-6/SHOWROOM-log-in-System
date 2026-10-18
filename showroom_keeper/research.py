@@ -1050,6 +1050,8 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         room_list = sorted(({"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "support": rid in sup,
                              "points": room_score(v), **v} for rid, v in slots.items()), key=lambda r: -r["points"])
         w = s.one("SELECT memo, added_at FROM watch WHERE user_id=?", (uid,))
+        visits = _visit_habits(state_dir, rooms, uid)
+        overlap = _time_overlap(s, rooms, habits(gifts) or visits, [r["key"] for r in room_list[:OVERLAP_ROOMS]], support)
     cov = coverage(state_dir)
     with Store(state_dir) as s:
         return {"user_id": uid, "found": True,
@@ -1061,8 +1063,54 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid),
-                "overlap": _time_overlap(s, rooms, habits(gifts), [r["key"] for r in room_list[:OVERLAP_ROOMS]], support),
+                "visits": visits, "overlap": overlap,
                 "states": _states(s, rooms, uid)}
+
+
+VISIT_TTL = 600  # 来場の知らせをユーザーごとにまとめたものを使い回す時間 (秒)
+_visit_index: dict[str, tuple[float, dict[int, list[tuple[int, str, int]]]]] = {}
+
+
+def _visits_by_user(state_dir: Path) -> dict[int, list[tuple[int, str, int]]]:
+    """記録しているルームの来場の知らせ (live_events) を、ユーザーごとに {user_id: [(時刻, ルーム, 何回目), ...]}。"""
+    from . import live_events
+
+    key = str(state_dir)
+    hit = _visit_index.get(key)
+    if hit and time.time() - hit[0] < VISIT_TTL:
+        return hit[1]
+    out: dict[int, list[tuple[int, str, int]]] = defaultdict(list)
+    folder = live_events.event_dir(Path(state_dir))
+    for path in folder.glob("*.jsonl") if folder.is_dir() else []:
+        for e in live_events.load(Path(state_dir), path.stem):
+            if e.get("kind") == "visit" and e.get("user_id") is not None:
+                try:
+                    out[int(e["user_id"])].append((int(e["at"]), path.stem, int(e.get("n") or 0)))
+                except (TypeError, ValueError):
+                    continue
+    _visit_index[key] = (time.time(), out)
+    return out
+
+
+def _visit_habits(state_dir: Path, rooms: "_Rooms", uid: int) -> dict[str, Any] | None:
+    """来場の時間帯 (記録しているルームの「○○さんが N 度目の訪問」の知らせから)。"""
+    vs = _visits_by_user(state_dir).get(uid) or []
+    if not vs:
+        return None
+    hour, weekday = [0] * 24, [0] * 7
+    per: dict[str, dict[str, Any]] = {}
+    for at, room, n in vs:
+        dt = datetime.fromtimestamp(at, JST)
+        hour[dt.hour] += 1
+        weekday[dt.weekday()] += 1
+        r = per.setdefault(room, {"key": room, "times": 0, "max_n": 0, "last": 0})
+        r["times"] += 1
+        r["max_n"] = max(r["max_n"], n)
+        r["last"] = max(r["last"], at)
+    for r in per.values():
+        r["name"] = rooms.label(rooms.id(r["key"]))[1] if rooms.id(r["key"]) else r["key"]
+    return {"times": len(vs), "hour": hour, "weekday": weekday, "top_hours": [h for h in sorted(range(24), key=lambda h: -hour[h])[:3] if hour[h]],
+            "rooms": sorted(per.values(), key=lambda r: -r["times"]), "first": min(v[0] for v in vs), "last": max(v[0] for v in vs)}
 
 
 OVERLAP_ROOMS = 5  # 時間帯の重なりを見る、このギフターがよく送るルームの数 (応援ルームも足す)
@@ -1077,7 +1125,7 @@ def _time_overlap(s: Store, rooms: "_Rooms", hab: dict[str, Any] | None, keys: l
     from . import room_analysis
 
     if not hab or not sum(hab["hour"]):
-        return []
+        return []  # ギフトを記録していない人は、来場の時間帯でくらべる (呼ぶ側で、来場の分を渡す)
     g = [x / sum(hab["hour"]) for x in hab["hour"]]
     out = []
     for key in dict.fromkeys([*support, *keys]):

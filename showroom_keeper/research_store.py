@@ -132,7 +132,7 @@ MONTH_SQL = "strftime('%Y-%m', e.end + 9 * 3600, 'unixepoch')"  # イベント�
 USER_MONTH_STEP = 2000  # user_month を前に集めた分から作るとき、1 回に足すイベントの数
 HISTORY_EVERY = 25 * 86400  # 累計ランキングの値を残す間隔 (ルームごと。月ごとの推移に使う)
 ROOM_STATS_STEP = 100  # 貢献ランキングの数字 (c_*) を前に集めた分から作るとき、1 回に作るイベントの数
-ROOM_DAILY_KEEP = 400  # room_daily を残す日数
+ROOM_DAILY_KEEP = 0  # room_daily を残す日数 (0 = 消さない。フォロワーを日・週・月で見るため、2026-10-18 に利用者が決めた)
 DAY_SQL = "strftime('%Y-%m-%d', ? + 9 * 3600, 'unixepoch')"  # 日本時間の日付
 
 
@@ -514,7 +514,7 @@ class Store:
                                 view_sum = view_sum + excluded.view_sum, view_n = view_n + excluded.view_n""", rows)
             day = c.execute(f"SELECT {DAY_SQL}", (now,)).fetchone()[0]
             row = c.execute("SELECT v FROM meta WHERE k='room_daily_cleaned'").fetchone()
-            if row is None or json.loads(row[0]) != day:  # 古い日の分は 1 日 1 回だけ消す
+            if ROOM_DAILY_KEEP and (row is None or json.loads(row[0]) != day):  # 古い日の分は 1 日 1 回だけ消す
                 c.execute(f"DELETE FROM room_daily WHERE day < {DAY_SQL}", (now - ROOM_DAILY_KEEP * 86400,))
                 c.execute("INSERT INTO meta(k, v) VALUES ('room_daily_cleaned', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                           (json.dumps(day),))

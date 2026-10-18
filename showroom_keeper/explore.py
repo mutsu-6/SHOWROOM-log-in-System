@@ -277,6 +277,8 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                 "lure": room_analysis.lure_throws(state_dir, row["key"], now, store=s, room_id=rid) if row["key"] else None,
                 "stage": room_analysis.stage_regulars(state_dir, row["key"], now, store=s) if row["key"] else None,
                 "live_habits": room_analysis.live_habits(s, rid, now),
+                "followers_daily": [[r[0], r[1]] for r in s.all(
+                    "SELECT day, followers FROM room_daily WHERE room_id=? AND followers IS NOT NULL ORDER BY day", (rid,))],
                 "congestion": _room_congestion(s, rid, now), "effort": room_analysis.event_effort(s, rid, now)}
 
 

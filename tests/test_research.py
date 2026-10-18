@@ -1003,3 +1003,20 @@ def test_room_profile_is_read_weekly_and_each_month(tmp_path):
         assert "image" not in json.loads(r["data"])
         assert [x[0] for x in s.all("SELECT ym FROM room_rank_month WHERE room_id=1 ORDER BY ym")] == ["202610", "202611"]
         assert s.one("SELECT followers FROM rooms WHERE room_id=1")[0] == 1143
+
+
+def test_gifter_visits_and_overlap(tmp_path):
+    from showroom_keeper import live_events
+
+    at = datetime(2026, 10, 18, 21, 10, tzinfo=JST).timestamp()
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "aaa", "name": "A"}], "live", at)
+        s.set_cumulative(1, [{"user_id": 7, "name": "常連", "point": 10, "visits": 1, "rank": 1}], at)
+        s.add_room_lives([{"room_id": 1, "started_at": int(at - 600)}], at + 3000)
+    for k in range(3):
+        live_events.append(tmp_path, "aaa", {"at": int(at + k * 86400 - 3 * 86400), "live_id": k, "user_id": 7, "kind": "visit", "n": 10 + k})
+    research._visit_index.clear()
+    d = research.gifter_detail(tmp_path, 7, [])
+    v = d["visits"]
+    assert v["times"] == 3 and v["top_hours"] == [21] and v["rooms"][0]["key"] == "aaa" and v["rooms"][0]["max_n"] == 12
+    assert d["overlap"] and d["overlap"][0]["key"] == "aaa" and d["overlap"][0]["overlap"] > 0.5  # ギフトの記録が無いので来場でくらべる

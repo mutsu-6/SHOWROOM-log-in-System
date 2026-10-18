@@ -721,13 +721,17 @@ document.addEventListener("click", (ev) => {
 });
 
 /* ------------------------------------------------------------ 折れ線グラフ (イベントのポイントの推移) */
-function lineChart(times, series, { width = 720, height = 230, unit = "pt" } = {}) {
+function lineChart(times, series, { width = 720, height = 230, unit = "pt", floor = false } = {}) {
   const W = Math.round(width), left = 46, right = 8, top = 10, bottom = 22, plot = height - top - bottom, plotW = W - left - right;
-  const max = niceMax(Math.max(1, ...series.flatMap((s) => s.values.filter((v) => v !== null))));
+  const all = series.flatMap((s) => s.values.filter((v) => v !== null));
+  // floor: 0 からではなく、いちばん小さい値の少し下から描く (フォロワーのように、少しずつしか変わらない数のため)
+  const lo = floor && all.length ? Math.max(0, Math.floor(Math.min(...all) * 0.98)) : 0;
+  const max = floor ? Math.max(lo + 1, Math.ceil(Math.max(...all) * 1.02)) : niceMax(Math.max(1, ...all));
   const t0 = times[0], t1 = times[times.length - 1], span = Math.max(t1 - t0, 1);
-  const xOf = (t) => left + (times.length > 1 ? ((t - t0) / span) * plotW : plotW / 2), yOf = (v) => top + plot - (v / max) * plot;
-  const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line class="${f ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${yOf(max * f).toFixed(1)}" y2="${yOf(max * f).toFixed(1)}"></line>`
-    + ((f * 2) % 1 === 0 ? `<text x="${left - 5}" y="${(yOf(max * f) + 3.5).toFixed(1)}" text-anchor="end">${shortNum(max * f)}${f === 1 ? ` ${esc(unit)}` : ""}</text>` : "")).join("");
+  const xOf = (t) => left + (times.length > 1 ? ((t - t0) / span) * plotW : plotW / 2), yOf = (v) => top + plot - ((v - lo) / (max - lo)) * plot;
+  const at = (f) => lo + (max - lo) * f;
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line class="${f ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${yOf(at(f)).toFixed(1)}" y2="${yOf(at(f)).toFixed(1)}"></line>`
+    + ((f * 2) % 1 === 0 ? `<text x="${left - 5}" y="${(yOf(at(f)) + 3.5).toFixed(1)}" text-anchor="end">${shortNum(at(f))}${f === 1 ? ` ${esc(unit)}` : ""}</text>` : "")).join("");
   const nLabels = Math.max(2, Math.min(times.length, Math.floor(plotW / 90)));
   const labels = Array.from({ length: nLabels }, (_, i) => times[Math.round((i * (times.length - 1)) / Math.max(nLabels - 1, 1))])
     .filter((t, i, a) => a.indexOf(t) === i)
@@ -741,7 +745,7 @@ function lineChart(times, series, { width = 720, height = 230, unit = "pt" } = {
   }).join("");
   // 時刻ごとの縦の帯にカーソルを合わせると、その時の各ルームのポイントと順位を出す
   const slot = plotW / Math.max(times.length, 1);
-  const hits = times.map((t, i) => `<rect class="hit" data-tip="${esc(`${tm(t, true)}\n${series.map((s) => `${s.name}: ${s.values[i] === null ? "—" : `${num(s.values[i])} pt`}${s.ranks && s.ranks[i] ? ` (${s.ranks[i]} 位)` : ""}`).join("\n")}`)}"
+  const hits = times.map((t, i) => `<rect class="hit" data-tip="${esc(`${tm(t, true)}\n${series.map((s) => `${s.name}: ${s.values[i] === null ? "—" : `${num(s.values[i])} ${unit}`}${s.ranks && s.ranks[i] ? ` (${s.ranks[i]} 位)` : ""}`).join("\n")}`)}"
       x="${(xOf(t) - slot / 2).toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plot}"></rect>`).join("");
   return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img">${grid}${labels}${lines}<g class="col">${hits}</g></svg>`;
 }
@@ -2025,8 +2029,24 @@ async function showGifter(uid) {
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
   if (d.found && d.states) html += gifterStates(d.states);
+  if (d.found && d.visits) {
+    const v = d.visits, mx = Math.max(1, ...v.hour);
+    html += `<h3>来場の時間帯 <small class="muted">記録しているルームの「○○さんが N 度目の訪問」の知らせから</small></h3><div class="tiles">
+      ${tile("来場", `${num(v.times)} <small>回</small>`, `${num(v.rooms.length)} ルーム・最後 ${ago(v.last)}`)}
+      ${tile("よく来る時間帯", v.top_hours.length ? v.top_hours.map((h) => `${h}時`).join("・") : "—", `よく来る曜日 ${"月火水木金土日"[v.weekday.indexOf(Math.max(...v.weekday))]}曜`)}
+      ${tile("よく来るルーム", v.rooms[0] ? esc(v.rooms[0].name) : "—", v.rooms[0] ? `${num(v.rooms[0].times)} 回・いちばん多くて ${num(v.rooms[0].max_n)} 回目の訪問` : "")}
+    </div><div style="overflow-x:auto"><table class="heat" style="border-collapse:separate;border-spacing:2px;font-size:10px">
+      <tr>${v.hour.map((n, h) => `<td title="${h}時台 ${n} 回" style="vertical-align:bottom;height:44px;width:16px"><div style="height:${Math.round(40 * n / mx)}px;background:rgba(229,72,77,.8);border-radius:2px"></div></td>`).join("")}</tr>
+      <tr>${v.hour.map((n, h) => `<td style="text-align:center;color:var(--muted);width:16px">${h % 3 === 0 ? h : ""}</td>`).join("")}</tr></table></div>`
+      + dataTable("gp-visits", [
+        { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+        { label: "来場", num: true, value: (r) => r.times, html: (r) => `${num(r.times)} 回` },
+        { label: "いちばん多い訪問の回数", num: true, value: (r) => r.max_n, html: (r) => r.max_n ? `${num(r.max_n)} 回目` : "-" },
+        { label: "最後", num: true, value: (r) => r.last, html: (r) => tm(r.last, true) },
+      ], v.rooms, { sort: 1, limit: 10, csvName: `ギフター_${uid}_来場`, note: "記録しているルーム (グリッターを取ったルーム・視聴しているルームなど) だけ。SHOWROOM が知らせを出した来場だけが分かります" });
+  }
   if (d.found && d.overlap && d.overlap.length) {
-    html += `<h3>時間帯の重なり <small class="muted">よく送る時間帯 (記録したギフト) と、ルームが配信している時間帯 (直近 30 日) の重なり</small></h3>` + dataTable("gp-overlap", [
+    html += `<h3>時間帯の重なり <small class="muted">${d.habits ? "よく送る時間帯 (記録したギフト)" : "よく来る時間帯 (来場の知らせ)"} と、ルームが配信している時間帯 (直近 30 日) の重なり</small></h3>` + dataTable("gp-overlap", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}`, cls: "name" },
       { label: "重なり", num: true, value: (r) => r.overlap, html: (r) => `<b>${pctText(r.overlap)}</b>` },
       { label: "ルームのよく始める時間帯", value: (r) => r.slot.from, html: (r) => `${r.slot.from}時〜${r.slot.to}時` },
@@ -2316,6 +2336,52 @@ function liveHabitsHtml(h) {
         : `${num(x.followers)} <span style="color:${x.gain > 0 ? "var(--ok)" : x.gain < 0 ? "var(--accent)" : "var(--muted)"}">(${x.gain > 0 ? "+" : x.gain < 0 ? "" : "±"}${num(x.gain || 0)})</span>` },
     ], h.recent, { sort: 0, limit: 10, csvName: "最近の配信" });
 }
+// フォロワーの推移 (毎日の記録を、日・週・月ごとにまとめる。それぞれの区切りの最後の値)
+let followerUnit = "day";
+try { followerUnit = localStorage.getItem("followerUnit") || "day"; } catch (e) { /* 使えない時は日 */ }
+function followerGroups(days, unit) {
+  const key = (d) => {
+    if (unit === "month") return d.slice(0, 7);
+    if (unit === "week") {  // 月曜はじまりの週
+      const t = new Date(`${d}T00:00:00+09:00`), w = (t.getUTCDay() + 6) % 7;
+      return new Date(t.getTime() - w * 86400000 + 9 * 3600000).toISOString().slice(0, 10);
+    }
+    return d;
+  };
+  const out = new Map();
+  days.forEach(([d, f]) => out.set(key(d), { key: key(d), day: d, followers: f }));
+  const rows = [...out.values()];
+  rows.forEach((r, i) => { r.gain = i ? r.followers - rows[i - 1].followers : null; });
+  return rows;
+}
+function renderFollowerTrend(days) {
+  const box = $("#rp-followers");
+  if (!box) return;
+  if (!days.length) { box.innerHTML = ""; return; }
+  const rows = followerGroups(days, followerUnit);
+  const label = { day: "日", week: "週", month: "月" };
+  const width = Math.max(260, (box.clientWidth || 720) - 30);
+  const times = rows.map((r) => new Date(`${r.day}T12:00:00+09:00`).getTime() / 1000);
+  const name = (r) => followerUnit === "month" ? `${r.key.slice(0, 4)}/${Number(r.key.slice(5))}月` : followerUnit === "week" ? `${r.key.slice(5).replace("-", "/")} の週` : r.key.slice(5).replace("-", "/");
+  box.innerHTML = `<div class="charts one"><div class="chart-card wide"><div class="chart-head"><div><b>フォロワーの推移</b>
+      <div class="chart-sub">毎日の記録 (配信した日に、配信中のルームの一覧から) を${label[followerUnit]}ごとにまとめた、それぞれの最後の値。${num(days.length)} 日分</div></div>
+      <div class="row" style="gap:6px">${["day", "week", "month"].map((u) => `<button class="btn small ${u === followerUnit ? "primary" : ""}" data-follower-unit="${u}">${label[u]}</button>`).join("")}</div></div>
+    ${rows.length > 1 ? lineChart(times, [{ name: "フォロワー", color: "var(--accent)", values: rows.map((r) => r.followers) }], { width, unit: "人", floor: true }) : `<div class="hint">まだ 1 ${label[followerUnit]}分しかありません</div>`}
+    </div></div>` + dataTable("rp-follow-table", [
+      { label: label[followerUnit], num: true, value: (r) => r.day, html: (r) => esc(name(r)) },
+      { label: "フォロワー", num: true, value: (r) => r.followers, html: (r) => num(r.followers) },
+      { label: "増減", num: true, value: (r) => r.gain, html: (r) => r.gain == null ? "-" : `<span style="color:${r.gain > 0 ? "var(--ok)" : r.gain < 0 ? "var(--accent)" : "var(--muted)"}">${r.gain > 0 ? "+" : ""}${num(r.gain)}</span>` },
+    ], rows, { sort: 0, limit: 10, csvName: `フォロワー_${label[followerUnit]}ごと` });
+  box.dataset.days = JSON.stringify(days);
+}
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-follower-unit]");
+  if (!b) return;
+  followerUnit = b.dataset.followerUnit;
+  try { localStorage.setItem("followerUnit", followerUnit); } catch (e) { /* 残せなくてもよい */ }
+  const box = $("#rp-followers");
+  if (box && box.dataset.days) renderFollowerTrend(JSON.parse(box.dataset.days));
+});
 function followerMonths(ms) {
   if (!ms || !ms.length) return "";
   return `<div class="tiles">${ms.map((m, i) => tile(i === ms.length - 1 ? `${Number(m.month.slice(5))}月 (いま)` : `${Number(m.month.slice(5))}月末`, `${num(m.followers)} <small>人</small>`,
@@ -2376,7 +2442,7 @@ async function showRoom(key) {
       ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
       ${roomProfileTiles(d.profile)}
     </div>${SCOPE_NOTE}
-    <div id="rp-chart"></div>${liveHabitsHtml(d.live_habits)}${congestionHtml(d.congestion, d.live_habits)}${effortHtml(d.effort)}${roomAnalysisHtml(d)}`;
+    <div id="rp-chart"></div><div id="rp-followers"></div>${liveHabitsHtml(d.live_habits)}${congestionHtml(d.congestion, d.live_habits)}${effortHtml(d.effort)}${roomAnalysisHtml(d)}`;
   html += `<div class="cols">
     <div><h3>累計ランキング <small class="muted">上位 30 人</small></h3>${dataTable("rp-cum", [
       { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)}` : "-" },
@@ -2408,6 +2474,7 @@ async function showRoom(key) {
     { label: "100 位より下", num: true, value: (e) => e.below, html: (e) => e.below == null ? "-" : `${num(e.below)} <span class="uid">(${pctText(e.point ? e.below / e.point : 0, 1)})</span>` },
   ], d.events, { sort: 1, limit: 30, total: d.event_total, csvName: `${d.key}_イベント`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"` });
   box.innerHTML = html;
+  renderFollowerTrend(d.followers_daily || []);
   // イベントごとのポイント (終わったイベント、古い順に 60 件)。1 位は赤
   const done = d.events.filter((e) => e.end && e.state === "ended" && e.point).sort((a, b) => a.end - b.end).slice(-60);
   const chart = $("#rp-chart");
