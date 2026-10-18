@@ -72,16 +72,18 @@ def live(key, live_id, room_id=1):
     return RoomStatus(key, room_id, key, is_live=live_id is not None, live_id=live_id)
 
 
-async def test_enters_once_per_live_with_a_single_greeting():
+async def test_enters_once_per_live_with_current_user_and_greeting():
     statuses = {"a": live("a", 10, room_id=5), "b": live("b", None), "c": live("c", 30, room_id=7)}
     entrance, showroom, waits = make(statuses)
     await entrance.step()
     await entrance.step()
     # 配信中の a と c に 1 回ずつ入室する。配信していない b には入室しない
     assert entrance.entered == {"a": 10, "c": 30} and len(showroom.sessions) == 2
-    # 最初の入室で配信ページを 1 回開いて uuid をもらい、あとは使い回して greeting だけ (待たない)
-    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/room/greeting?room_id=5"]
-    assert showroom.sessions[1]["asked"] == ["/api/room/greeting?room_id=7"] and showroom.sessions[1]["uuid"] == "u1"
+    # 最初の入室で配信ページを 1 回開いて uuid をもらい、あとは使い回す。current_user (ステージにアバターが並ぶ) と
+    # greeting (入室のお知らせ) を待たずに呼ぶ
+    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
+    assert showroom.sessions[1]["asked"] == ["/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
+    assert showroom.sessions[1]["uuid"] == "u1"
     assert waits == [] and showroom.sessions[0]["cookies"] == COOKIES
     # 次の配信が始まったらもう一度入室する
     statuses["a"] = live("a", 11, room_id=5)
@@ -94,7 +96,7 @@ async def test_stale_uuid_is_renewed_once():
     await entrance.step()
     # 2 件目は使い回した uuid を断られたので、配信ページで取り直して入室する
     assert entrance.entered == {"a": 10, "c": 30}
-    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/api/room/greeting?room_id=1", "/r/c"]
+    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/api/live/current_user?room_id=1", "/r/c"]
 
 
 async def test_uuid_is_renewed_after_a_while():
