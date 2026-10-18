@@ -514,7 +514,7 @@ class Keeper:
         """今の設定で視聴とギフト記録を動かす。停止か設定の反映を求められたら戻る。"""
         recorder = None
         self.recorder = None
-        if self.cfg.record_rooms or self.cfg.events:
+        if self.cfg.record_rooms or self.cfg.events or self.cfg.record_glitter:
             from .recorder import GiftRecorder
 
             self.recorder = GiftRecorder(self.cfg)
@@ -524,7 +524,7 @@ class Keeper:
                 await self._run_loop()
             else:
                 # 視聴・入室するルームが無くギフト記録だけの場合は、メモリを使うブラウザを起動しない
-                if self.cfg.record_rooms or self.cfg.events:
+                if self.cfg.record_rooms or self.cfg.events or self.cfg.record_glitter:
                     log.info("視聴・入室するルームが無いため、ブラウザを開かずギフトの記録だけを行います")
                 else:
                     log.info("ルームが設定されていません。管理画面から追加してください")

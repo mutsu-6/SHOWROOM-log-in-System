@@ -48,6 +48,9 @@ _names_path: Path | None = None
 _names_mtime: float | None = None
 _name_misses: dict[str, float] = {}  # {room_url_key: 次に問い合わせてよい時刻}
 _file_cache: dict[Path, tuple[float, int, list[dict[str, Any]]]] = {}
+# 記録を覚えておく行数の上限 (グリッターのルームまで記録するとファイルが多いので、メモリ 2GB を使い切らないように。
+# 超えたら、長く使っていないファイルから忘れ、次に要る時に読み直す)
+FILE_CACHE_ROWS = 600_000
 _event_cache: tuple[float, list[dict[str, Any]]] | None = None
 _live_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
 _search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
@@ -171,6 +174,9 @@ def _load_file(path: Path) -> list[dict[str, Any]]:
     with _lock:
         cached = _file_cache.get(path)
     if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        with _lock:  # 最近使ったものを後ろに (上限を超えた時に前から忘れる)
+            _file_cache.pop(path, None)
+            _file_cache[path] = cached
         return cached[2]
     rows = []
     try:
@@ -184,7 +190,11 @@ def _load_file(path: Path) -> list[dict[str, Any]]:
     except OSError:
         return []
     with _lock:
+        _file_cache.pop(path, None)
         _file_cache[path] = (st.st_mtime, st.st_size, rows)
+        total = sum(len(v[2]) for v in _file_cache.values())
+        while total > FILE_CACHE_ROWS and len(_file_cache) > 1:
+            total -= len(_file_cache.pop(next(iter(_file_cache)))[2])
     return rows
 
 

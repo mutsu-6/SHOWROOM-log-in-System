@@ -1,6 +1,6 @@
 """ブラウザを開かずにギフトを記録する (指定ルーム・イベント参加ルーム)。
 
-- 設定の record_rooms と events (参加ルームすべて) が対象。件数の上限はない。
+- 設定の record_rooms と events (参加ルームすべて) と、グリッター (デイリーグリッターなど) を取ったルームが対象。件数の上限はない。
 - 保存済みのログインセッションがあれば、問い合わせとリアルタイム通信に使う。
 - 2 分ごとに配信状況を確認し、配信中のルームだけリアルタイム通信 (WebSocket) を購読してギフト (t=2) を記録する。
   受信するだけで、こちらからはコメント等を送らない (接続維持の PING のみ)。
@@ -36,6 +36,13 @@ EVENT_GRACE = 600  # イベント終了後もこの秒数は記録を続ける (
 # 件数の上限はない。同時に投げる通信だけを抑え、API と接続の集中を避ける
 FETCH_CONCURRENCY = 8
 CONNECT_CONCURRENCY = 8
+GLITTER_KEEP = 7 * 86400  # グリッターを取ったルームを、この秒数のあいだ配信のたびに記録する
+GLITTER_FILE = "glitter_rooms.json"  # {room_url_key: 最後にグリッターのバッジを見た時刻} (起動し直しても続けるため)
+
+
+def glitter_badge(live: dict[str, Any]) -> bool:
+    """配信一覧の 1 件に、グリッター (D = デイリー・W = ウィークリーなど) のバッジが付いているか。"""
+    return any(isinstance(b, dict) and b.get("type") == "glitter" for b in live.get("badge_list") or [])
 
 
 def _showroom_domain(domain: str) -> bool:
@@ -157,9 +164,51 @@ class GiftRecorder:
         self._sources: dict[str, str] = {}
         self._fetch_slots: asyncio.Semaphore | None = None
         self._connect_slots: asyncio.Semaphore | None = None
+        self._glitter: dict[str, float] = self._load_glitter()
+        self._glitter_saved = 0.0
+
+    def _load_glitter(self) -> dict[str, float]:
+        try:
+            data = json.loads((self.state_dir / GLITTER_FILE).read_text(encoding="utf-8"))
+            return {str(k): float(v) for k, v in data.items()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            return {}
+
+    def _save_glitter(self) -> None:
+        path = self.state_dir / GLITTER_FILE
+        tmp = path.with_suffix(".tmp")
+        with suppress(OSError):
+            tmp.write_text(json.dumps(self._glitter), encoding="utf-8")
+            tmp.replace(path)
+
+    async def _add_glitter(self, cookie: str | None, watched: set[str], live: dict[str, dict[str, Any]], now: float) -> None:
+        """配信中の全ルーム (1 回の問い合わせ) から、グリッターのバッジのあるルームを覚え、
+        GLITTER_KEEP のあいだに見たルームが配信していれば記録の対象にする。"""
+        data = await self._fetch("/api/live/onlives", cookie)
+        if not isinstance(data, dict):
+            raise RuntimeError("配信中のルームの一覧の形式が不正です")
+        lives = {x["room_url_key"]: x for g in data.get("onlives") or [] if isinstance(g, dict)
+                 for x in g.get("lives") or [] if isinstance(x, dict) and x.get("room_url_key") and x.get("room_id")}
+        new = [k for k, x in lives.items() if glitter_badge(x) and k not in self._glitter]
+        for key, x in lives.items():
+            if glitter_badge(x):
+                self._glitter[key] = now
+        old = [k for k, at in self._glitter.items() if now - at > GLITTER_KEEP]
+        for key in old:
+            del self._glitter[key]
+        if new or old or now - self._glitter_saved > 3600:
+            self._glitter_saved = now
+            self._save_glitter()
+        if new:
+            log.info("グリッターを取ったルームを %d 件、新しく記録の対象にします (全部で %d 件)", len(new), len(self._glitter))
+        for key in self._glitter:
+            x = lives.get(key)
+            if x is not None and key not in watched:
+                live.setdefault(key, {"room_id": x["room_id"], "live_id": x.get("live_id"), "source": "グリッター"})
 
     async def run(self) -> None:
-        log.info("ギフト記録を開始します (ルーム %d 件、イベント %d 件)", len(self.cfg.record_rooms), len(self.cfg.events))
+        log.info("ギフト記録を開始します (ルーム %d 件、イベント %d 件%s)", len(self.cfg.record_rooms), len(self.cfg.events),
+                 "、グリッターを取ったルーム" if self.cfg.record_glitter else "")
         try:
             while True:
                 try:
@@ -215,6 +264,12 @@ class GiftRecorder:
             if room_id and st.get("is_live"):
                 live[key] = {"room_id": room_id, "live_id": st.get("live_id"), "source": "ルーム指定"}
         now = time.time()
+        if self.cfg.record_glitter:
+            try:
+                await self._add_glitter(cookie, watched, live, now)
+            except Exception as e:  # noqa: BLE001
+                self._incomplete = True
+                log.warning("グリッターのルームの確認に失敗: %s", e)
         for ev in self.cfg.events:
             try:
                 await self._add_event(ev, cookie, watched, live, now)

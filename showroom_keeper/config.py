@@ -141,6 +141,9 @@ class Config:
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
     # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
     record_gifts: bool = True
+    # デイリーグリッター (配信一覧の「D」などのグリッターのバッジ) を取ったルームのギフトも、ブラウザを開かずに記録する。
+    # 一度取ったルームは GLITTER_KEEP 日のあいだ、配信のたびに最初から記録する
+    record_glitter: bool = True
     viewer_count: bool = True
     viewer_count_interval: float = 60.0
     # アバター等の 3D 描画 (WebGL) を止めて CPU 負荷を約 1/10 にする。

@@ -334,3 +334,18 @@ def test_rooms_fetched_before_scheduled_update_are_fetched_again(tmp_path, monke
     path.write_text(json.dumps(data), encoding="utf-8")
     listing.gift_catalog(tmp_path, ["room_a"])
     assert calls == [11, 11]
+
+
+def test_file_cache_forgets_old_files(tmp_path, monkeypatch):
+    from showroom_keeper import listing
+
+    monkeypatch.setattr(listing, "FILE_CACHE_ROWS", 3)
+    monkeypatch.setattr(listing, "_file_cache", {})
+    paths = []
+    for name in ("a", "b", "c"):
+        p = tmp_path / f"{name}.jsonl"
+        p.write_text("".join(json.dumps({"at": i, "gift_id": 1}) + "\n" for i in range(2)))
+        paths.append(p)
+    for p in paths:
+        assert len(listing._load_file(p)) == 2  # 忘れても、読み直して返す
+    assert list(listing._file_cache) == [paths[2]]  # 上限 3 行なので、最後に読んだ 1 ファイル (2 行) だけ覚える

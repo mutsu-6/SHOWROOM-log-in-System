@@ -219,3 +219,28 @@ async def test_record_room_saves_gifts_until_live_end(monkeypatch, tmp_path):
     got = load_recorded(tmp_path, "room")
     assert [(g["user_id"], g["num"], g["live_id"]) for g in got] == [(7, 5, 55)]
     assert sent == ["SUB\tk:1"]
+
+
+async def test_glitter_rooms_are_recorded_for_a_week(monkeypatch, tmp_path):
+    now = time.time()
+    badge = [{"type": "show_grade", "id": 1}, {"type": "glitter", "id": 2}]
+    lives = [{"room_url_key": "d", "room_id": 1, "live_id": 11, "badge_list": badge},
+             {"room_url_key": "plain", "room_id": 2, "live_id": 12, "badge_list": [{"type": "show_grade"}]},
+             {"room_url_key": "before", "room_id": 3, "live_id": 13, "badge_list": []},
+             {"room_url_key": "watched", "room_id": 4, "live_id": 14, "badge_list": badge}]
+
+    async def fake_aget(path, cookie=None):
+        assert path == "/api/live/onlives"
+        return {"onlives": [{"lives": lives}]}
+
+    monkeypatch.setattr(rec, "aget", fake_aget)
+    # 「before」は 3 日前にグリッターを取った (今日はまだバッジが無くても、配信の最初から記録する)。「gone」は 8 日前
+    (tmp_path / rec.GLITTER_FILE).write_text(json.dumps({"before": now - 3 * 86400, "gone": now - 8 * 86400}))
+    cfg = Config(rooms=["watched"], state_file=tmp_path / "s.json")
+    r = rec.GiftRecorder(cfg)
+    targets = await r._targets()
+    assert set(targets) == {"d", "before"} and targets["d"]["live_id"] == 11 and targets["d"]["source"] == "グリッター"
+    saved = json.loads((tmp_path / rec.GLITTER_FILE).read_text())
+    assert set(saved) == {"d", "before", "watched"}  # 8 日前の分は忘れる
+    cfg.record_glitter = False
+    assert await rec.GiftRecorder(cfg)._targets() == {}
