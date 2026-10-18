@@ -384,7 +384,9 @@ class GiftRecorder:
             try:
                 await ws.send(f"SUB\t{info['bcsvr_key']}")
                 pinger = asyncio.ensure_future(self._ping(ws))
-                stager = asyncio.ensure_future(self._stage_loop(key, room_id, live_id))
+                # 配信の順位は、グリッターを取ったルームだけ読む (問い合わせを増やしすぎないように。2026-10-18 に利用者が決めた)
+                stage = self._sources.get(key) == "グリッター"
+                stager = asyncio.ensure_future(self._stage_loop(key, room_id, live_id)) if stage else None
                 try:
                     async for message in ws:
                         data = parse_message(message)
@@ -402,9 +404,10 @@ class GiftRecorder:
                             break
                 finally:
                     pinger.cancel()
-                    stager.cancel()
-                    with suppress(Exception):
-                        await self._save_stage(key, room_id, live_id)  # 配信の終わり (最後の順位)
+                    if stager is not None:
+                        stager.cancel()
+                        with suppress(Exception):
+                            await self._save_stage(key, room_id, live_id)  # 配信の終わり (最後の順位)
                     with suppress(Exception):
                         comments.flush(key)
             finally:
