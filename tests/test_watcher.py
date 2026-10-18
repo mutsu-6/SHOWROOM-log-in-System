@@ -457,3 +457,52 @@ def test_first_page_always_opens_even_when_memory_is_short():
     closed = type("W", (), {"_page_alive": lambda self: False})()
     assert page_opener([me, closed], available=lambda: 0.1)(me) is True
     assert page_opener([me, closed], available=lambda: None)(me) is True
+
+
+async def test_avatar_on_stage_is_checked_and_reentered(tmp_path):
+    """配信中に 10 分ごとに、観客席に自分のアバターがいるかを確かめる。いなければ (current_user で入り直したので) 少しあとに確かめ直す。
+    ページがログインしていなければ、読み込み直す。"""
+    from showroom_keeper import watcher as wmod
+    from showroom_keeper.status import read_live_stats
+
+    cfg = Config(rooms=["k"], state_file=tmp_path / "s.json", health_check_interval=30, periodic_reload_minutes=0,
+                 viewer_count=False, block_media=True)
+    clock = Clock()
+    answers = [{"checked": True, "login": True, "user_id": 1, "stage": 12, "rank": None, "on_stage": False},
+               {"checked": True, "login": True, "user_id": 1, "stage": 13, "rank": 13, "on_stage": True},
+               {"checked": True, "login": False, "user_id": None, "stage": 13, "rank": None, "on_stage": None}]
+    asked = []
+    page = FakePage()
+
+    async def evaluate(js, arg=None):
+        if "stage_user_list" in js:
+            asked.append(clock.t)
+            return answers.pop(0)
+        if "current_user" in js:
+            return {"user_id": 1}
+        return None
+
+    page.evaluate = evaluate
+
+    async def fetch(key):
+        return RoomStatus(key, 7, "Room", True, live_id=99)
+
+    async def new_page():
+        return page
+
+    w = RoomWatcher("k", cfg, fetch, new_page, clock=clock)
+    await w.step()  # ページを開く
+    clock.t = 30
+    await w.step()  # 1 回目: いない → 入り直し
+    assert asked == [30] and read_live_stats(tmp_path)["k"]["avatar"]["on_stage"] is False
+    clock.t = 60
+    await w.step()  # まだ確かめない
+    clock.t = 30 + wmod.AVATAR_RECHECK
+    await w.step()  # 少しあとに確かめ直す: いる
+    assert asked == [30, 30 + wmod.AVATAR_RECHECK] and w.avatar["on_stage"] and w.avatar["rank"] == 13
+    clock.t = 30 + wmod.AVATAR_RECHECK + wmod.AVATAR_CHECK_EVERY
+    await w.step()  # ログインしていない → 次の回に読み込み直す
+    assert w.avatar["login"] is False and w.reload_reason
+    clock.t += 30
+    await w.step()
+    assert page.reloads == 1

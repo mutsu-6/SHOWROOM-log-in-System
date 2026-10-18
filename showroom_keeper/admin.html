@@ -795,6 +795,16 @@ function stateBadge(r) {
   }[w.state] || `<span class="pill">${esc(w.state)}</span>`;
 }
 
+// 観客席 (ステージ) に自分のアバターがいるか (視聴中のページで 10 分ごとに確かめる。いなければ入り直す)
+function avatarLine(a, now) {
+  if (!a || !a.at || now - a.at > 1500) return `<div class="hint" style="margin:6px 0 0">観客席のアバター: まだ確かめていません (配信中に 10 分ごとに確かめます)</div>`;
+  const when = `<span class="uid">${tm(a.at, true)} に確認</span>`;
+  if (!a.login) return `<div class="hint" style="margin:6px 0 0;color:var(--accent)">観客席のアバター: <b>このページはログインしていません</b> (アバターが出ません。読み込み直します) ${when}</div>`;
+  if (a.on_stage) return `<div class="hint" style="margin:6px 0 0">観客席のアバター: <b style="color:var(--ok)">いる</b>${a.rank ? ` (${num(a.rank)} 位)` : ""} ・ 観客席 ${num(a.stage)} 人 ${when}</div>`;
+  if (a.on_stage === false) return `<div class="hint" style="margin:6px 0 0;color:var(--warn)">観客席のアバター: <b>いなかったので入り直しました</b> ・ 観客席 ${num(a.stage)} 人${a.stage >= 100 ? " (観客席は上位 100 人までなので、入れないことがあります)" : ""} ${when}</div>`;
+  return `<div class="hint" style="margin:6px 0 0">観客席のアバター: 分かりません ${when}</div>`;
+}
+
 function roomCard(r) {
   const s = r.live_stat || {}, w = r.watcher || {}, now = overview.now;
   const fresh = (at) => at && now - at <= 180;
@@ -828,6 +838,7 @@ function roomCard(r) {
       ${stateBadge(r)}
     </div>
     ${metrics}
+    ${live ? avatarLine(s.avatar, now) : ""}
     <div class="card-foot">
       ${r.started_at && live ? `<span>${tm(r.started_at, true)} 開始</span>` : ""}
       <span class="spacer"></span>

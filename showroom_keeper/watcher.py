@@ -48,6 +48,26 @@ async ([roomId, text, since]) => {
 """
 
 
+AVATAR_CHECK_EVERY = 600  # 配信中に、観客席 (ステージ) に自分のアバターがいるかを確かめる間隔 (秒)
+AVATAR_RECHECK = 90  # いなかった時に入り直してから、もう一度確かめるまでの秒数
+
+# 観客席に自分がいるか。current_user は配信ページが開いた時に呼ぶものと同じで、呼ぶと観客席に並ぶ (入り直しになる)。
+# stage_user_list は観客席の一覧 (上位 100 人まで)
+AVATAR_JS = """
+async ([roomId]) => {
+  const get = async (p) => {
+    try { const r = await fetch(p, { credentials: 'include' }); return r.ok ? await r.json() : null; } catch (e) { return null; }
+  };
+  const me = (await get('/api/live/current_user?room_id=' + roomId)) || {};
+  const stage = (await get('/api/live/stage_user_list?room_id=' + roomId)) || {};
+  const list = Array.isArray(stage.stage_user_list) ? stage.stage_user_list : [];
+  const uid = me.user_id || null;
+  const hit = uid ? list.find((x) => x && String((x.user || {}).user_id) === String(uid)) : null;
+  return { checked: true, login: me.is_login === undefined ? null : !!me.is_login, user_id: uid, stage: list.length,
+           rank: hit ? (hit.rank || hit.order_no || null) : null, on_stage: uid ? !!hit : null };
+}
+"""
+
 # SHOWROOM のサロン形式で使われている在室確認 API。応答の viewer_count がリアルタイム視聴者数 (要ログイン)
 VIEWER_COUNT_JS = """
 async ([liveId, roomId]) => {
@@ -131,6 +151,8 @@ class RoomWatcher:
         # ページを開いてよいか (keeper がメモリの空きを見て決める。None なら確かめない)
         self.may_open: Callable[["RoomWatcher"], bool] | None = None
         self.waiting_memory = False  # メモリが足りないので、ページを開かずに待っている
+        self._avatar_at: float | None = None
+        self.avatar: dict[str, Any] | None = None  # 最後に確かめた、観客席の自分 (管理画面用)
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ 公開 API
@@ -436,6 +458,10 @@ class RoomWatcher:
             await self._update_viewer_count()
         except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
             self.log.debug("視聴者数の取得に失敗: %s", e)
+        try:
+            await self._check_avatar()
+        except Exception as e:  # noqa: BLE001 - 確かめられなくても視聴は続ける
+            self.log.debug("観客席を確かめられません: %s", e)
         if self.cfg.block_media:
             # 映像を受信しない設定では再生状況を判定できないため、ページの生存のみ確認
             await self.page.evaluate("() => document.readyState")
@@ -472,6 +498,35 @@ class RoomWatcher:
                 if isinstance(probe, dict) else "動画要素なし"
             )
             await self._reload(f"再生停止を検出: {state}, 累計視聴 {self.watched_seconds / 60:.1f} 分")
+
+    async def _check_avatar(self) -> None:
+        """配信中に AVATAR_CHECK_EVERY ごとに、観客席 (ステージ) に自分のアバターがいるかを確かめる。
+        確かめる時に current_user を呼ぶので、いなければそのまま入り直しになり、少しあとにもう一度確かめる。"""
+        if not (self.page and self.status and self.status.room_id):
+            return
+        now = self._clock()
+        if self._avatar_at is not None and now - self._avatar_at < AVATAR_CHECK_EVERY:
+            return
+        self._avatar_at = now
+        res = await self.page.evaluate(AVATAR_JS, [self.status.room_id])
+        if not isinstance(res, dict) or not res.get("checked"):
+            return
+        login = res.get("login")
+        if login is None:
+            login = bool(res.get("user_id"))
+        on, before = res.get("on_stage"), self.avatar or {}
+        self.avatar = {"at": time.time(), "login": login, "on_stage": on, "rank": res.get("rank"), "stage": res.get("stage"),
+                       "live_id": self.status.live_id}
+        write_live_stat(self._state_dir, self.key, avatar=self.avatar)
+        if not login:
+            if before.get("login") is not False:
+                self.log.warning("このルームのページはログインしていません (観客席にアバターが出ません)。ログインを確かめます")
+            self.reload_reason = "ログインしていないページ"  # 次の回に読み込み直す (ログインの Cookie を読み直す)
+        elif on is False:
+            self.log.info("観客席に自分のアバターがいませんでした (観客席 %s 人)。入り直しました", res.get("stage"))
+            self._avatar_at = now - AVATAR_CHECK_EVERY + AVATAR_RECHECK  # 入れたかを、少しあとに確かめる
+        elif on and before.get("on_stage") is False:
+            self.log.info("観客席に戻りました (%s 位)", res.get("rank") or "?")
 
     async def _close_page(self) -> None:
         page, self.page = self.page, None
