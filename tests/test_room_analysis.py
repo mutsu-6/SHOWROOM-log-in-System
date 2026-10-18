@@ -365,3 +365,30 @@ def test_styles_need_enough_rooms_and_nearby_snapshots(tmp_path):
         # 中盤の回が無い (推移が途切れた) 時は、離れた回で代わりに測らない
         s.conn.execute("DELETE FROM event_progress WHERE event_id=1 AND at BETWEEN ? AND ?", (start + 0.6 * 86400, start + 2.4 * 86400))
         assert all(r[4] is None and r[5] is None for r in ra.event_styles(s, 1))
+
+
+def test_thin_progress_keeps_what_the_analysis_needs(tmp_path):
+    with Store(tmp_path) as s:
+        start, end = NOW - 20 * DAY, NOW - 10 * DAY  # 10 日間のイベントを 1 時間ごとに残した
+        s.upsert_events([{"event_id": 9, "start": start, "end": end}])
+        hours = int((end - start) // 3600)
+        for h in range(hours + 1):
+            s.add_progress(9, [{"room_id": r, "point": r * h} for r in range(1, 4)], start + h * 3600)
+        s.conn.execute("UPDATE events SET style_at=? WHERE event_id=9", (NOW,))
+        s.set_meta("style_version", ra.STYLE_VERSION)
+        before = s.scalar("SELECT COUNT(DISTINCT at) FROM event_progress WHERE event_id=9")
+        assert ra.step(s, NOW) is True
+        ats = [r[0] for r in s.all("SELECT DISTINCT at FROM event_progress WHERE event_id=9 ORDER BY at")]
+        assert len(ats) < before / 3  # 241 回 → 60 回ほど
+        assert ats[0] == start and ats[-1] == end
+        assert all(start + h * 3600 in ats for h in range(hours - 24, hours + 1))  # 最後の 24 時間は全部残す
+        for f in (0.25, 0.5, 0.75):  # 走り方の作り直しに使う回 (狙った時刻の前後) は残す
+            assert start + f * (end - start) in ats
+        assert ra.event_styles(s, 9) is not None
+        assert s.one("SELECT thinned_at FROM events WHERE event_id=9")[0] == NOW
+        # 終わって間もないイベントは、まだ間引かない
+        s.upsert_events([{"event_id": 10, "start": NOW - 3 * DAY, "end": NOW - DAY}])
+        s.add_progress(10, [{"room_id": 1, "point": 1}], NOW - 2 * DAY)
+        s.conn.execute("UPDATE events SET style_at=? WHERE event_id=10", (NOW,))
+        ra.step(s, NOW)
+        assert s.one("SELECT thinned_at FROM events WHERE event_id=10")[0] is None
