@@ -158,6 +158,8 @@ class Store:
                 # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS contributions_guessed ON contributions(room_id, event_id)
                                      WHERE guessed IS NOT NULL""")
+                # まだ貢献ランキングを取っていないルーム・イベントだけの索引 (次に取るものを選ぶ時に、取り終えた分を読まない)
+                self.conn.execute("CREATE INDEX IF NOT EXISTS room_events_pending ON room_events(event_id) WHERE final=0")
                 _import_json(self)
                 _mark_guessed(self)
                 _ready.add(str(path))
