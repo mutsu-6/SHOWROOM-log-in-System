@@ -58,6 +58,8 @@ CREATE INDEX IF NOT EXISTS user_room_room ON user_room(room_id);
 CREATE TABLE IF NOT EXISTS user_month (
     user_id INTEGER, month TEXT, points INTEGER, PRIMARY KEY (user_id, month)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS user_month_month ON user_month(month);
+-- 月ごとに多い順に並べる (大口・中堅・少額の区切りを出す)
+CREATE INDEX IF NOT EXISTS user_month_points ON user_month(month, points);
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT);
 -- 前に使っていた名前 (名前を変えた時・退会した時に前の名前を残す。Internet Archive の古いページからも足す)
 CREATE TABLE IF NOT EXISTS user_names (

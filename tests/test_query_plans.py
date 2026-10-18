@@ -26,6 +26,7 @@ ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
     ("USING INDEX room_events_pending", "WHERE re.final=0", "取っていない分だけの索引を読む (取り終えた分は読まない)"),
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
+    ("SCAN contributions", "MAX(user_id) AS uid FROM contributions", "登録時期の目印。分析のたびに 1 回作って meta に残し、ギフターのページでは使い回す"),
 ]
 
 
@@ -135,3 +136,7 @@ def test_falling_check_does_not_read_whole_tables(traced):
             out = {"falling": [{"user_id": 101, "recent": 0, "before": 50}], "falling_count": 1}
             research._check_falling(s, out, (NOW - 60 * DAY, NOW - 15 * DAY), (NOW - 15 * DAY, NOW))
     check(traced, check_falling)
+
+
+def test_gifter_page_does_not_read_whole_tables(traced):
+    check(traced, lambda d: research.gifter_detail(d, 101, []))

@@ -1019,7 +1019,22 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                                                           ORDER BY at DESC LIMIT 20""", (uid,))],
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
-                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid)}
+                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid),
+                "states": _states(s, rooms, uid)}
+
+
+def _states(s: Store, rooms: "_Rooms", uid: int) -> dict[str, Any]:
+    """ルームごとの今の状態・乗り換え・月ごとの大口/中堅/少額 (gifter_analysis)。ルームは名前つきにする。"""
+    from .gifter_analysis import gifter_states
+
+    st = gifter_states(s, uid)
+    for r in st["rooms"]:
+        r["key"], r["name"] = rooms.label(r.pop("room_id"))
+    if st["switch"]:
+        sw = st["switch"]
+        sw["from_key"], sw["from_name"] = rooms.label(sw.pop("from"))
+        sw["to_key"], sw["to_name"] = rooms.label(sw.pop("to"))
+    return st
 
 
 MEMO_MAX = 500  # 気になるギフターのメモの長さの上限 (文字)

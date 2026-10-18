@@ -1572,6 +1572,37 @@ function researchRows(rows) {
     rooms: (u) => u.room_count, last: (u) => (u.habits && u.habits.last_at) || 0 }[research.sort];
   return keep.sort((a, b) => key(b) - key(a));
 }
+const STATE_NOTE = {
+  "新しく出た": "このルームの貢献ランキング (上位 100 人) に、この月に初めて出た。前から 100 位より下で送っていたこともある",
+  "復帰": "前の 3 か月は出ていなかったが、それより前に送っていて、また出た",
+  "増加": "前の 3 か月 (送った月) の平均の 1.5 倍以上", "減少": "前の 3 か月 (送った月) の平均の半分以下", "安定": "前の 3 か月の平均と同じくらい",
+  "休眠": "前の 3 か月は送っていたが、この月はルームがイベントに出たのに、上位 100 人に出ていない (100 位より下に下がった場合も含む)",
+  "ルームが休み": "前の 3 か月は送っていたが、この月はルームがイベントに出ていない (送る場が無かった)",
+};
+const TIER_NOTE = "その月にどこかの貢献ランキングに出た全員の中で、上から 1% までが大口・10% までが中堅・それより下が少額 (月ごとに区切るので、時期や規模でずれない)";
+function gifterStates(st) {
+  const ym = (m) => m.replace("-", "/");
+  let h = `<h3>今の状態 <small class="muted">${ym(st.month)} (集め終わったいちばん新しい月) を、その前の 3 か月とくらべる。イベントの貢献ランキングから</small></h3>`;
+  if (st.switch) {
+    const w = st.switch;
+    h += `<div class="note-box"><b>乗り換え</b>: いちばん多く送るルームが ${roomLink(w.from_key, w.from_name)} から ${roomLink(w.to_key, w.to_name)} に替わった。
+      前のルームへは、月 ${shortNum(w.from_before)} pt から ${shortNum(w.from_recent)} pt に減った (直近 3 か月とその前の 6 か月の、月あたり)</div>`;
+  }
+  h += st.rooms.length ? dataTable("gp-states", [
+    { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+    { label: "状態", value: (r) => r.state, html: (r) => `<b title="${esc(STATE_NOTE[r.state] || "")}">${esc(r.state)}</b>` },
+    { label: `${ym(st.month)} の pt`, num: true, value: (r) => r.points, html: (r) => r.points ? num(r.points) : "-" },
+    { label: "前の 3 か月の月平均", num: true, value: (r) => r.prior_avg, html: (r) => r.prior_avg ? num(Math.round(r.prior_avg)) : "-" },
+  ], st.rooms, { sort: 2, limit: 20, csvName: "ギフター_今の状態",
+    note: [...new Set(st.rooms.map((r) => r.state))].map((k) => `${k}: ${STATE_NOTE[k] || ""}`).join(" / ") }) : `<div class="hint">直近 4 か月に、貢献ランキングに出たルームがありません</div>`;
+  const shown = st.tiers.filter((t) => t.points);
+  if (shown.length) {
+    h += `<h3>大口・中堅・少額 <small class="muted">月ごと</small></h3><div class="hint" style="margin-top:0">${TIER_NOTE}</div>
+      <div class="row" style="flex-wrap:wrap;gap:6px">${st.tiers.map((t) => `<span class="tag ${t.tier === "大口" ? "live" : t.tier === "中堅" ? "warn" : ""}"
+        title="${t.points ? `${num(t.points)} pt。この月は ${num(t.people)} 人。大口は ${num(t.top)} pt 以上・中堅は ${num(t.mid)} pt 以上` : "貢献ランキングに出ていない"}">${ym(t.month).slice(2)} ${esc(t.tier || "-")}</span>`).join("")}</div>`;
+  }
+  return h;
+}
 const habitCell = (u) => u.habits ? `${esc(u.habits.top_weekday)}曜 ${esc(hourText(u.habits.top_hours))}<div class="uid">1 回 平均 ${num(u.habits.avg_point)} pt ・ ${num(u.habits.times)} 回</div>` : `<span class="uid">記録なし</span>`;
 const roomsCell = (u) => esc(u.top_rooms.map((r) => `${r.name} ${num(r.points)}`).join("、")) + (u.room_count > u.top_rooms.length + (u.support_points ? 1 : 0) ? ` ほか` : "");
 const eventCell = (u) => u.event_count ? `${num(u.event_count)} 件<div class="uid">最高 ${num(u.best_rank)} 位・${num(u.event_points)} pt</div>` : `<span class="uid">-</span>`;
@@ -1970,6 +2001,7 @@ async function showGifter(uid) {
   if (s && (s.total_points || s.event_count)) html += SCOPE_NOTE;
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
+  if (d.found && d.states) html += gifterStates(d.states);
   if (d.found) {
     html += `<h3>ルーム別${d.room_total > d.rooms.length ? ` <small class="muted">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</small>` : ""}</h3>` + dataTable("gp-rooms", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}`, cls: "name" },
