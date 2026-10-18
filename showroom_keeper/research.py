@@ -447,8 +447,12 @@ def store_status(state_dir: Path) -> dict[str, Any]:
 SKIPPED_ROOM = "found_via = 'scan' AND COALESCE(followers, 0) = 0 AND live_at IS NULL"
 
 # 終わって 1 時間たち、終わってからはまだ取っていない貢献ランキング (ポイントが 0 のルームは誰も送っていないので除く)
-PENDING_RANKING = """re.final=0 AND (re.ranking_at IS NULL OR re.ranking_at < e.end + 3600) AND e.show_ranking=1
-    AND e.end IS NOT NULL AND e.end < ? AND re.failures < ? AND (re.point IS NULL OR re.point > 0)"""
+# イベントの正式な結果が出る時刻 (終わった次の日の正午。日本時間) に、1 時間の余裕を足したもの。SHOWROOM は、不正なポイント
+# (複数のアカウントなど) を引いてから正式な結果を出すので、終わった直後とポイント・順位が変わることがある (公式のよくある質問)
+CONFIRMED_SQL = "((CAST((e.end + 32400) / 86400 AS INTEGER) + 1) * 86400 + 43200 - 32400 + 3600)"
+# 貢献ランキングを取るのを待っているもの。? は (今 - 3600, 失敗の上限)。正式な結果が出てから取る
+PENDING_RANKING = f"""re.final=0 AND (re.ranking_at IS NULL OR re.ranking_at < e.end + 3600) AND e.show_ranking=1
+    AND e.end IS NOT NULL AND {CONFIRMED_SQL} <= ? + 3600 AND re.failures < ? AND (re.point IS NULL OR re.point > 0)"""
 
 
 # ------------------------------------------------------------------ 分析

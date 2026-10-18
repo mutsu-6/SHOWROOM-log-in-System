@@ -934,3 +934,24 @@ def test_event_details_pages_and_notices(tmp_path, monkeypatch):
     calls.clear()
     assert sw._next_notices(NOW)
     assert calls == ["/api/notices?count=50&page=1"]  # 前に読んだものばかりなら、中身は読まない
+
+
+def test_rankings_wait_for_the_official_result(tmp_path):
+    """正式な結果 (終わった次の日の正午) が出てから、貢献ランキングを取り、参加ルームを読み直す。"""
+    end = datetime(2026, 10, 18, 21, 59, 59, tzinfo=JST).timestamp()
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 1, "start": end - 7 * 86400, "end": end}])
+        s.set_event_rooms(1, [{"room_id": 5, "point": 100, "rank": 1}], end + 7200)
+
+        def pending(now):
+            return s.scalar(f"SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id) WHERE {research.PENDING_RANKING}",
+                            (now - 3600, research.RANKING_RETRIES))
+
+        assert pending(end + 7200) == 0
+        assert pending(datetime(2026, 10, 19, 12, 30, tzinfo=JST).timestamp()) == 0  # 正午すぎ 1 時間は待つ
+        assert pending(datetime(2026, 10, 19, 13, 1, tzinfo=JST).timestamp()) == 1
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()), scan=False)
+    read = []
+    sw._read_event_rooms = lambda eid, now: read.append(eid) or []
+    assert not sw._next_event_rooms(end + 7200 + 60)
+    assert sw._next_event_rooms(datetime(2026, 10, 19, 13, 1, tzinfo=JST).timestamp()) and read == [1]

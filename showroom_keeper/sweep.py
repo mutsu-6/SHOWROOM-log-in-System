@@ -59,6 +59,7 @@ FANS_EVERY = 7 * 86400  # ルームのアクティブファンを読み直す間
 FANS_PAGE = 50  # アクティブファンの 1 回に読む人数 (SHOWROOM の 1 ページ)
 FANS_PAGES = 20  # 1 ルームで読むページの上限 (1000 人)
 OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っているルーム) を読み直す間隔 (秒)
+CONFIRM_DAYS = 14  # 終わってからこの日数のうちのイベントは、正式な結果が出たあとに参加ルームを読み直す
 PAGE_RETRY = 86400  # イベントのページが読めなかった時に、読み直すまでの時間 (秒)
 NOTICES_EVERY = 86400  # お知らせを読む間隔 (秒)
 NOTICE_PAGES = 50  # お知らせの一覧を読むページの上限 (最初の回に、古い分までさかのぼる)
@@ -264,13 +265,16 @@ class Sweeper:
         """一覧で見つけたイベントの参加ルームを、まだ読んでいない (または読み直す時期の) ものから 1 つ読む。
 
         開催中・開催予定のイベントは EVENT_ROOMS_EVERY ごとに、終わったイベントは終わったあと 1 回読み直す
-        (ルームのポイントと順位が決まるので)。
+        (ルームのポイントと順位が決まるので)。最近終わったイベントは、正式な結果が出たあと (次の日の正午すぎ) にもう 1 回読む
+        (不正なポイントが引かれて、ポイント・順位が変わることがあるため。終わった直後の値は event_final に残っている)。
         """
+        confirmed = research.CONFIRMED_SQL.replace("e.end", "end")
         e = self.store.one(
-            """SELECT * FROM events WHERE (retry_at IS NULL OR retry_at < ?)
-                 AND (rooms_at IS NULL OR (rooms_at < COALESCE(end, 0) + 3600 AND rooms_at < ?))
+            f"""SELECT * FROM events WHERE (retry_at IS NULL OR retry_at < ?)
+                 AND (rooms_at IS NULL OR (rooms_at < COALESCE(end, 0) + 3600 AND rooms_at < ?)
+                      OR (end > ? AND rooms_at < {confirmed} AND {confirmed} < ?))
                ORDER BY rooms_at IS NOT NULL, COALESCE(end, 0) DESC LIMIT 1""",
-            (now, now - EVENT_ROOMS_EVERY))
+            (now, now - EVENT_ROOMS_EVERY, now - CONFIRM_DAYS * 86400, now))
         if e is None:
             return False
         self.doing = f"イベントの参加ルーム ({e['name'] or e['event_id']})"
