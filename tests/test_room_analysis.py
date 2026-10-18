@@ -557,3 +557,18 @@ def test_stage_regulars(tmp_path):
     assert seven == {"user_id": 7, "lives": 2, "top": 2, "best": 1, "paid": 300}
     assert eight["top"] == 0 and eight["best"] == 12
     assert ra.stage_regulars(tmp_path, "zzz", NOW) is None
+
+
+def test_live_habits(tmp_path):
+    from showroom_keeper.status import JST
+
+    with Store(tmp_path) as s:
+        for d in range(4):  # 4 日、毎晩 21 時から 2 時間 (5 分ごとに一覧で見る)
+            start = datetime(2026, 10, 10 + d, 21, tzinfo=JST).timestamp()
+            for k in range(0, 121, 5):
+                s.add_room_lives([{"room_id": 1, "started_at": int(start), "live_id": d, "viewers": 100 + k, "followers": 50 + d + (k // 60)}],
+                                 start + k * 60)
+        h = ra.live_habits(s, 1, datetime(2026, 10, 18, tzinfo=JST).timestamp())
+    assert h["lives"] == 4 and round(h["minutes"]) == 122 and h["slot"]["from"] == 21 and h["slot"]["share"] == 1
+    assert h["hours"][21] == 4 and h["view_max"] == 220 and h["follower_gain"] == 2
+    assert ra.live_habits(Store(tmp_path), 9) is None

@@ -105,6 +105,11 @@ CREATE INDEX IF NOT EXISTS room_info_league ON room_info(league_id);
 -- 月ごとの SHOWランク・リーグ (その月に読んだ最後の値。ランクの上がり下がりを見るため)
 CREATE TABLE IF NOT EXISTS room_rank_month (
     room_id INTEGER, ym TEXT, show_rank TEXT, league_id INTEGER, grade TEXT, at REAL, PRIMARY KEY (room_id, ym)) WITHOUT ROWID;
+-- 配信ごとの記録 (配信中のルームの一覧から 5 分ごとに。始まった時刻・最後に見た時刻・盛り上がり度の最大・フォロワーの増減)
+CREATE TABLE IF NOT EXISTS room_lives (
+    room_id INTEGER, started_at INTEGER, live_id INTEGER, last_seen REAL, view_max INTEGER,
+    followers_start INTEGER, followers_end INTEGER, PRIMARY KEY (room_id, started_at)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS room_lives_start ON room_lives(started_at);
 -- SHOWROOM のお知らせ (ログインが要る)
 CREATE TABLE IF NOT EXISTS notices (notice_id INTEGER PRIMARY KEY, label TEXT, title TEXT, created_at REAL, contents TEXT, at REAL);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
@@ -482,6 +487,17 @@ class Store:
         done = len(ids) < step
         self.set_meta("room_stats_upto", True if done else ids[-1])
         return not done
+
+    def add_room_lives(self, lives: list[dict[str, Any]], now: float) -> None:
+        """配信中のルームの一覧 (5 分ごと) から、配信ごとの記録を足す (同じ配信は、最後に見た時刻・最大・フォロワーを更新)。"""
+        rows = [(int(x["room_id"]), int(x["started_at"]), x.get("live_id"), now, x.get("viewers"), x.get("followers"))
+                for x in lives if x.get("room_id") and x.get("started_at")]
+        with self.tx() as c:
+            c.executemany("""INSERT INTO room_lives(room_id, started_at, live_id, last_seen, view_max, followers_start, followers_end)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                             ON CONFLICT(room_id, started_at) DO UPDATE SET last_seen=MAX(last_seen, excluded.last_seen),
+                               view_max=MAX(COALESCE(view_max, 0), COALESCE(excluded.view_max, 0)),
+                               followers_end=COALESCE(excluded.followers_end, followers_end)""", rows)
 
     def add_room_daily(self, lives: list[dict[str, Any]], now: float) -> None:
         """配信中のルームの一覧 (5 分ごと) から、ルームの 1 日ごとの様子を足す。"""

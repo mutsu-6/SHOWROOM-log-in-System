@@ -214,10 +214,12 @@ class Sweeper:
         lives = [x for g in data.get("onlives") or [] for x in g.get("lives") or [] if isinstance(x, dict)]
         rooms = [{"room_id": x.get("room_id"), "key": x.get("room_url_key"), "name": x.get("main_name"),
                   "followers": x.get("follower_num"), "live_at": now, "viewers": x.get("view_num"),
-                  "started_at": x.get("started_at")} for x in lives]
+                  "started_at": x.get("started_at"), "live_id": x.get("live_id")} for x in lives]
         new = self.store.upsert_rooms(rooms, "live", now)
         # 同じルームが「人気」などのまとめ枠にも出るので、1 ルーム 1 回にする
-        self.store.add_room_daily(list({r["room_id"]: r for r in rooms if r["room_id"]}.values()), now)
+        once = list({r["room_id"]: r for r in rooms if r["room_id"]}.values())
+        self.store.add_room_daily(once, now)
+        self.store.add_room_lives(once, now)  # 配信ごとの時間・時間帯・盛り上がり度・フォロワーの増減
         if lives and not self.store.meta("onlives_keys"):  # 一覧にどの項目があるか (視聴者数などを使えるか確かめるため)
             self.store.set_meta("onlives_keys", sorted(lives[0]))
         if new:

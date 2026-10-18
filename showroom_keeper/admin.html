@@ -2283,6 +2283,23 @@ function roomAnalysisHtml(d) {
 }
 
 /* ------------------------------------------------------------ ルームのページ */
+function liveHabitsHtml(h) {
+  if (!h) return `<h3>配信の時間</h3><div class="hint" style="margin-top:0">配信の記録は、2026-10-18 から配信中のルームの一覧 (5 分ごと) で残し始めました。</div>`;
+  const hh = (x) => `${x}時`;
+  const max = Math.max(1, ...h.week.flat());
+  const cell = (n, d, hr) => `<td title="${"月火水木金土日"[d]}曜 ${hr}時台に始まった配信 ${n} 回" style="background:${n ? `rgba(229,72,77,${(0.15 + 0.85 * n / max).toFixed(2)})` : "var(--panel2)"}"></td>`;
+  const grid = `<div style="overflow-x:auto"><table class="heat" style="border-collapse:separate;border-spacing:2px;font-size:10px">
+    <tr><td></td>${[...Array(24).keys()].map((x) => `<td style="text-align:center;color:var(--muted)">${x % 3 === 0 ? x : ""}</td>`).join("")}</tr>
+    ${h.week.map((row, d) => `<tr><td style="color:var(--muted);padding-right:4px">${"月火水木金土日"[d]}</td>${row.map((n, hr) => cell(n, d, hr)).join("")}</tr>`).join("")}
+  </table></div><style>.heat{table-layout:fixed}.heat td{width:16px;min-width:16px;max-width:16px;height:14px;border-radius:3px;padding:0;overflow:visible;white-space:nowrap}.heat td:first-child{width:18px;min-width:18px}</style>`;
+  return `<h3>配信の時間 <small class="muted">直近 ${num(h.days)} 日。配信中のルームの一覧 (5 分ごと) から</small></h3><div class="tiles">
+      ${tile("配信の回数", `${h.per_week.toFixed(1)} <small>回/週</small>`, `${num(h.lives)} 回・${num(h.live_days)} 日 配信`)}
+      ${tile("1 回の長さ", `${num(Math.round(h.minutes))} <small>分</small>`, `真ん中の値。合計 ${h.total_hours.toFixed(1)} 時間`)}
+      ${tile("よく始める時間帯", `${hh(h.slot.from)}〜${hh(h.slot.to)}`, `配信の ${pctText(h.slot.share)} がこの 3 時間に始まる`)}
+      ${tile("盛り上がり度", h.view_max == null ? "—" : `${num(Math.round(h.view_max))}`, "1 回の配信の最大 (真ん中の値)")}
+      ${tile("1 回のフォロワーの増減", h.follower_gain == null ? "—" : `${h.follower_gain >= 0 ? "+" : ""}${h.follower_gain.toFixed(1)} <small>人</small>`, "始まった時と最後に見た時の差 (平均)")}
+    </div>${grid}<div class="hint">色の濃さは、その曜日・時間に始まった配信の回数。長さは 5 分くらいずれます。</div>`;
+}
 function roomProfileTiles(p) {
   if (!p) return tile("SHOWランク", "—", "ルームのプロフィールは、最近配信したルームから 1 週間ごとに読みます");
   const style = p.style === 1 ? "Classic" : p.style === 2 ? "Salon" : p.style == null ? "" : `スタイル ${p.style}`;
@@ -2317,7 +2334,7 @@ async function showRoom(key) {
       ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
       ${roomProfileTiles(d.profile)}
     </div>${SCOPE_NOTE}
-    <div id="rp-chart"></div>${roomAnalysisHtml(d)}`;
+    <div id="rp-chart"></div>${liveHabitsHtml(d.live_habits)}${roomAnalysisHtml(d)}`;
   html += `<div class="cols">
     <div><h3>累計ランキング <small class="muted">上位 30 人</small></h3>${dataTable("rp-cum", [
       { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)}` : "-" },

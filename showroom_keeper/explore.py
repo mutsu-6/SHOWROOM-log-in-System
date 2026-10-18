@@ -264,7 +264,8 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                 "event_stats": _room_event_stats(s, rid), "analysis": room_analysis.room_analysis(s, rid, now),
                 "balance": room_analysis.balance(state_dir, row["key"], now) if row["key"] else None,
                 "lure": room_analysis.lure_throws(state_dir, row["key"], now, store=s, room_id=rid) if row["key"] else None,
-                "stage": room_analysis.stage_regulars(state_dir, row["key"], now, store=s) if row["key"] else None}
+                "stage": room_analysis.stage_regulars(state_dir, row["key"], now, store=s) if row["key"] else None,
+                "live_habits": room_analysis.live_habits(s, rid, now)}
 
 
 def _room_event_stats(s: Store, rid: int) -> dict[str, Any]:

@@ -953,3 +953,39 @@ def stage_regulars(state_dir: Any, room_key: str, now: float | None = None, days
             r = store.one("SELECT name FROM users WHERE user_id=?", (u["user_id"],))
             u["name"] = r[0] if r is not None else None
     return {"lives": len(lives), "days": days, "people": len(users), "rows": rows, "top": STAGE_TOP}
+
+
+# ------------------------------------------------------------------ 配信の時間・時間帯 (全ルーム。配信中の一覧から)
+LIVE_DAYS = 30  # 配信の時間を見る日数
+LIVE_SEEN_GAP = 300  # 配信中の一覧を見る間隔 (秒)。最後に見た時刻から、おおよそこの半分は配信が続いていたとみる
+WEEKDAYS = "月火水木金土日"
+
+
+def live_habits(s: Store, room_id: int, now: float | None = None, days: int = LIVE_DAYS) -> dict[str, Any] | None:
+    """配信の長さ・回数・時間帯 (始まった時刻。日本時間)・盛り上がり度・フォロワーの増減。
+
+    配信中のルームの一覧 (5 分ごと) から作るので、長さは 5 分くらいずれる。5 分より短い配信は見落とすことがある。
+    """
+    now = time.time() if now is None else now
+    rows = s.all("""SELECT started_at, last_seen, view_max, followers_start, followers_end FROM room_lives
+                    WHERE room_id=? AND started_at > ? ORDER BY started_at""", (int(room_id), now - days * 86400))
+    if not rows:
+        return None
+    mins = [max(0.0, (r["last_seen"] - r["started_at"] + LIVE_SEEN_GAP / 2) / 60) for r in rows]
+    hours = [0] * 24
+    week = [[0] * 24 for _ in range(7)]
+    for r in rows:
+        t = datetime.fromtimestamp(r["started_at"], JST)
+        hours[t.hour] += 1
+        week[t.weekday()][t.hour] += 1
+    # いちばん多い時間帯 (3 時間のまとまり)
+    blocks = [sum(hours[(h + k) % 24] for k in range(3)) for h in range(24)]
+    top = max(range(24), key=lambda h: (blocks[h], hours[h]))  # 同じなら、その時刻に始まった配信の多いまとまり
+    days_seen = sorted({datetime.fromtimestamp(r["started_at"], JST).date() for r in rows})
+    gain = [r["followers_end"] - r["followers_start"] for r in rows if r["followers_end"] is not None and r["followers_start"] is not None]
+    views = [r["view_max"] for r in rows if r["view_max"]]
+    return {"days": days, "lives": len(rows), "per_week": len(rows) / days * 7, "live_days": len(days_seen),
+            "minutes": median(mins), "total_hours": sum(mins) / 60, "hours": hours, "week": week,
+            "slot": {"from": top, "to": (top + 3) % 24, "share": blocks[top] / len(rows)},
+            "weekday": [sum(w) for w in week], "view_max": median(views) if views else None,
+            "follower_gain": sum(gain) / len(gain) if gain else None, "last": rows[-1]["started_at"]}
