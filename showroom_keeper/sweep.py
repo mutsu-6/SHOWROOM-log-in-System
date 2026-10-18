@@ -20,12 +20,15 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
 from . import research, room_analysis
+from .recorder import next_page_number
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
 
 log = logging.getLogger("research")
@@ -40,6 +43,7 @@ ROOM_EVERY = 7 * 86400  # 最近配信したルームの累計ランキングな
 ACTIVE_DAYS = 30  # この日数のうちに配信したルームを、取り直しの対象にする
 SCAN_MARGIN = 20000  # ルーム番号の順番の調べを、見つかっている最大の番号からこれだけ過ぎたら終える
 IDLE = 60  # することが無いときに待つ時間 (秒)
+STALL = 900  # 1 つの仕事がこれより長くかかったら、どこで止まっているかをログに書く (秒)
 RETRY_AFTER = 86400  # 失敗したルーム・イベントを後回しにする時間 (秒)
 BATCH = 100  # 次の仕事の候補をまとめて調べる件数
 ANCHOR_ROOMS = 3  # 1 つのイベントで貢献ランキングを取るルームの数 (上位・中ほど・下位)
@@ -61,6 +65,9 @@ class Sweeper:
         self.last_error: str | None = None
         self.running = False
         self.started_at: float | None = None
+        self.step_started_at: float | None = None  # 今の仕事を始めた時刻 (仕事の合間は None)
+        self.last_step_at: float | None = None  # 最後に仕事を終えた時刻
+        self._thread_id: int | None = None
         self._stop = threading.Event()
 
     @property
@@ -68,19 +75,39 @@ class Sweeper:
         return self.c.store
 
     def state(self) -> dict[str, Any]:
+        busy = self._clock() - self.step_started_at if self.step_started_at else 0
         return {"enabled": True, "running": self.running, "doing": self.doing, "started_at": self.started_at,
                 "last_error": self.last_error, "requests": self.c.requests, "failures": self.c.failures,
-                "scan": self.scan}
+                "scan": self.scan, "last_step_at": self.last_step_at, "busy_seconds": round(busy)}
 
     # ---------------------------------------------------------------- 動かす
     def stop(self) -> None:
         self._stop.set()
 
+    def _watch(self) -> None:
+        """1 つの仕事が STALL 秒より長くかかっていたら、収集のスレッドが今どこにいるかをログに書く (1 つの仕事につき 1 回)。
+
+        収集が止まったように見える時に、原因 (問い合わせの待ち・データベースの待ち・同じ処理の繰り返し) を見つけるため。
+        """
+        reported = None
+        while not self._stop.wait(60):
+            started = self.step_started_at
+            if not started or self._clock() - started < STALL or reported == started:
+                continue
+            reported = started
+            frame = sys._current_frames().get(self._thread_id or -1)
+            where = "".join(traceback.format_stack(frame)[-6:]) if frame else "(スレッドが見つかりません)"
+            log.warning("全ルームの収集の仕事「%s」が %d 分続いています。いまの場所:\n%s",
+                        self.doing, (self._clock() - started) // 60, where)
+
     def run_forever(self) -> None:
         self.running, self.started_at = True, self._clock()
+        self._thread_id = threading.get_ident()
+        threading.Thread(target=self._watch, daemon=True, name="sweep-watch").start()
         log.info("SHOWROOM の全ルームの情報を集め始めます (ルーム番号の調べ: %s)", "する" if self.scan else "しない")
         try:
             while not self._stop.is_set():
+                self.step_started_at = self._clock()
                 try:
                     worked = self.step()
                 except Exception as e:  # noqa: BLE001 - 1 つの仕事の失敗で止めない
@@ -88,6 +115,8 @@ class Sweeper:
                     log.warning("全ルームの収集で失敗しました (%s)", self.last_error)
                     worked = True
                     self._stop.wait(5)
+                finally:
+                    self.step_started_at, self.last_step_at = None, self._clock()
                 if not worked:
                     self.doing = "待機中"
                     self._stop.wait(IDLE)
@@ -147,14 +176,15 @@ class Sweeper:
                 while page and page <= EVENT_PAGES:
                     data = self.c.get(f"/api/event/search?status={status}&page={page}") or {}
                     events += [research._event_info(e) for e in data.get("event_list") or [] if isinstance(e, dict)]
-                    page = data.get("next_page")
+                    page = next_page_number(page, data.get("next_page"))
         finally:
             self.store.upsert_events(events)  # 途中で失敗しても、読めた分は残す
         return True
 
     def _read_event_rooms(self, event_id: int, now: float) -> list[dict[str, Any]]:
         """イベントの参加ルームと、各ルームのイベントのポイント・順位を読む (古いイベントも番号で読める)。"""
-        rooms = []
+        rooms: list[dict[str, Any]] = []
+        seen: set[Any] = set()
         page: Any = 1
         while page and page <= EVENT_ROOM_PAGES:
             try:
@@ -163,11 +193,16 @@ class Sweeper:
                 if not is_missing(err):
                     raise
                 break
-            rooms += [{"room_id": r.get("room_id"), "key": r.get("room_url_key"), "name": r.get("room_name"),
-                       "followers": r.get("follower_num"), "live_at": r.get("last_lived_at") or None,
-                       "point": r.get("point"), "rank": r.get("rank")}
-                      for r in data.get("list") or [] if isinstance(r, dict) and r.get("room_id")]
-            page = data.get("next_page")
+            got = [{"room_id": r.get("room_id"), "key": r.get("room_url_key"), "name": r.get("room_name"),
+                     "followers": r.get("follower_num"), "live_at": r.get("last_lived_at") or None,
+                     "point": r.get("point"), "rank": r.get("rank")}
+                   for r in data.get("list") or [] if isinstance(r, dict) and r.get("room_id")]
+            new = [r for r in got if r["room_id"] not in seen]
+            rooms += new
+            seen.update(r["room_id"] for r in new)
+            # 次のページの番号が進まない・同じルームしか返ってこない時は、そこでやめる
+            # (最後のページより先を頼むと、1 ページ目や最後のページが返ってくるため。同じページを読み続けないように)
+            page = next_page_number(page, data.get("next_page")) if new else None
         self.store.set_event_rooms(event_id, rooms, now)
         return rooms
 

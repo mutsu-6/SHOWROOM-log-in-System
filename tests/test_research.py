@@ -690,3 +690,57 @@ def test_user_month_is_built_from_earlier_rankings(tmp_path):
         # 取り直したときは、前の分を引いてから足す
         s.set_contributions(1001, 1, [{"user_id": 1, "point": 150}], NOW, final=True)
         assert s.scalar("SELECT SUM(points) FROM user_month WHERE user_id=1") == 650
+
+
+def test_sweep_stops_when_next_page_does_not_advance(tmp_path):
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if "room_list" in path:  # 次のページの番号が進まない (いつも 1 を返す) イベント
+            return {"list": [{"room_id": 1, "point": 5, "rank": 1}], "next_page": 1}
+        if "event/search" in path:
+            return {"event_list": [], "next_page": 1}
+        return {}
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    assert len(sw._read_event_rooms(7, NOW)) == 1 and len(calls) == 1  # 同じページを読み続けない
+    sw._event_list(NOW)
+    assert sum("event/search" in c for c in calls) == 3  # 状態ごとに 1 ページだけ
+
+    calls.clear()
+    pages = {1: [1, 2], 2: [3], 3: [1, 2]}  # 最後のページより先を頼むと 1 ページ目が返ってくる
+
+    def get2(path):
+        calls.append(path)
+        p = int(path.rsplit("=", 1)[1])
+        return {"list": [{"room_id": r, "point": r} for r in pages.get(p, pages[1])], "next_page": p + 1}
+
+    sw2 = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get2, throttle=quiet_throttle()), scan=False)
+    assert [r["room_id"] for r in sw2._read_event_rooms(8, NOW)] == [1, 2, 3] and len(calls) == 3
+
+
+def test_sweep_logs_where_it_is_stuck(tmp_path, monkeypatch, caplog):
+    import threading
+
+    monkeypatch.setattr(sweep, "STALL", 0)
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()), scan=False)
+    gate = threading.Event()
+    monkeypatch.setattr(sw, "step", lambda: gate.wait(10) and False)  # 仕事の途中で止まる
+    waits = []
+    real_wait = sw._stop.wait
+    monkeypatch.setattr(sw._stop, "wait", lambda t=None: waits.append(t) or real_wait(0.05))
+    t = threading.Thread(target=sw.run_forever, daemon=True)
+    with caplog.at_level("WARNING", logger="research"):
+        t.start()
+        for _ in range(100):
+            if any("続いています" in r.message for r in caplog.records):
+                break
+            time.sleep(0.05)
+        assert sw.state()["busy_seconds"] >= 0 and sw.step_started_at
+        gate.set()
+        sw.stop()
+        t.join(5)
+    msg = next(r.message for r in caplog.records if "続いています" in r.message)
+    assert "gate.wait" in msg or "wait" in msg  # どこで止まっているかが分かる
+    assert sw.last_step_at and sw.step_started_at is None

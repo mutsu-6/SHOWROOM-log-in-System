@@ -263,7 +263,9 @@ class Collector:
             events += got
             if not got or (complete and all(e["event_id"] in known for e in got)):
                 break  # 新しい順なので、ここから先は前に読んだもの
-            page = data.get("next_page")
+            from .recorder import next_page_number
+
+            page = next_page_number(page, data.get("next_page"))  # 番号が進まない時は、同じページを読み続けないようにやめる
         current = (self.get(f"/api/room/event_and_support?room_id={room_id}") or {}).get("event")
         if isinstance(current, dict) and current.get("event_id"):
             events.append(_event_info(current))

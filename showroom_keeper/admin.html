@@ -1529,7 +1529,8 @@ function sweepStatus(d) {
   return `<h3 style="margin-top:14px">SHOWROOM の全ルーム</h3>
     <div class="summary">${stat(num(s.rooms), "見つけたルーム")}${stat(num(s.collected), "集めたルーム")}${stat(num(s.rankings), "貢献ランキング (件)")}
       ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
-    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest}${anchor} ・ ルーム番号の調べ ${scan}
+    ${w.running && w.busy_seconds >= 600 ? `<div class="note-box">いまの仕事「${esc(w.doing || "")}」が ${num(Math.floor(w.busy_seconds / 60))} 分続いています。15 分を超えると、どこで止まっているかをログに書きます。</div>` : ""}
+    <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}${w.last_step_at ? ` (最後に仕事を終えたのは ${ago(w.last_step_at)})` : ""}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest}${anchor} ・ ルーム番号の調べ ${scan}
       ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}${archiveStatus(d)}</div>`;
 }
 function archiveStatus(d) {
