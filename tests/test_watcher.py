@@ -433,3 +433,27 @@ async def test_comment_reports_a_slow_page_clearly(env):
     pages[0].fill = slow_fill
     ok, message = await w.post_comment("こんにちは")
     assert ok is False and "メモリや CPU" in message
+
+
+async def test_waits_without_opening_when_memory_is_short(env):
+    from showroom_keeper.keeper import page_opener
+
+    w, live, pages, clock = env
+    other = type("Other", (), {"_page_alive": lambda self: True})()
+    free = {"gb": 0.5}
+    w.may_open = page_opener([other, w], available=lambda: free["gb"])
+    assert await w.step() == 60
+    assert pages == [] and w.waiting_memory  # ほかのページが開いていて空きが 0.5GB なので開かない
+    free["gb"] = 1.0
+    clock.t = 60
+    await w.step()
+    assert len(pages) == 1 and not w.waiting_memory
+
+
+def test_first_page_always_opens_even_when_memory_is_short():
+    from showroom_keeper.keeper import page_opener
+
+    me = type("W", (), {"_page_alive": lambda self: False})()
+    closed = type("W", (), {"_page_alive": lambda self: False})()
+    assert page_opener([me, closed], available=lambda: 0.1)(me) is True
+    assert page_opener([me, closed], available=lambda: None)(me) is True

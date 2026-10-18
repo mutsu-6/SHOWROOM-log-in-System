@@ -128,6 +128,9 @@ class RoomWatcher:
         self.reload_reason: str | None = None
         # 配信していない時もページを開いておくか。keeper がメモリを見て決める (None なら設定どおり)
         self.keep_open: bool | None = None
+        # ページを開いてよいか (keeper がメモリの空きを見て決める。None なら確かめない)
+        self.may_open: Callable[["RoomWatcher"], bool] | None = None
+        self.waiting_memory = False  # メモリが足りないので、ページを開かずに待っている
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ 公開 API
@@ -175,6 +178,14 @@ class RoomWatcher:
                 reason = self.reload_reason
                 self.reload_reason = None
                 if not self._page_alive():
+                    if self.may_open is not None and not self.may_open(self):
+                        if not self.waiting_memory:
+                            self.log.warning("メモリの空きが少ないので、ページを開かずに待ちます (ほかのルームのページが閉じたら開きます)")
+                        self.waiting_memory = True
+                        return self.cfg.status_poll_interval
+                    if self.waiting_memory:
+                        self.log.info("メモリの空きができたので、ページを開きます")
+                    self.waiting_memory = False
                     await self._open_page()
                 elif became_live:
                     self._sync_activity_live()
@@ -189,6 +200,8 @@ class RoomWatcher:
             elif self.page is not None:
                 self.log.info("配信が終了しました。次の配信開始を待ちます")
                 await self._close_page()
+            else:
+                self.waiting_memory = False
 
             self._failures = 0
             if self._page_alive() and self.status and self.status.is_live:
