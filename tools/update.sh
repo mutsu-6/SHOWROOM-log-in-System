@@ -1,5 +1,5 @@
 #!/bin/bash
-# サーバーで SHOWROOM keeper を最新の版にする (サーバーの中で実行する)
+# サーバーで SHOWROOM Analytics を最新の版にする (サーバーの中で実行する)
 #   cd ~/SHOWROOM-log-in-System && bash tools/update.sh
 # Mac からは tools/サーバーを更新する.command をダブルクリックすると、これをサーバーで実行する。
 #

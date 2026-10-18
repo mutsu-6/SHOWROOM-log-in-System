@@ -1,5 +1,5 @@
 #!/bin/bash
-# SHOWROOM keeper のサーバーを最新の版にする (Mac でダブルクリックして使う)
+# SHOWROOM Analytics のサーバーを最新の版にする (Mac でダブルクリックして使う)
 # サーバーにつないで tools/update.sh を実行する (git pull → 作り直して起動し直す → 確かめる)。
 # 視聴は 1 分ほど途切れる。終わったら、このウィンドウは閉じてよい。
 
