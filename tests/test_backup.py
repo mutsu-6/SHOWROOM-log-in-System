@@ -169,3 +169,24 @@ def test_record_disk_keeps_sizes_and_growth(tmp_path, monkeypatch):
     assert len(b._disk_history(tmp_path / b.DISK_FILE)) == 1
     b.record_disk(tmp_path, now + 2 * 86400)
     assert b.growth(tmp_path, now + 2 * 86400)[0] == ("gifts", 1000.0)
+
+
+def test_backup_measures_table_sizes_and_disk_history_keeps_them(tmp_path):
+    import sqlite3
+
+    from showroom_keeper import backup as b
+    from showroom_keeper.research_store import db_path
+
+    con = sqlite3.connect(db_path(tmp_path))
+    con.execute("CREATE TABLE room_lives (room_id INTEGER, started_at REAL)")
+    con.execute("CREATE INDEX room_lives_start ON room_lives(started_at)")
+    con.executemany("INSERT INTO room_lives VALUES (?, ?)", [(i, i * 1.5) for i in range(5000)])
+    con.commit()
+    con.close()
+    r = b.backup_research_db(tmp_path, now=1792292400.0)
+    tables = r["tables"]
+    if not tables:  # dbstat の無い SQLite
+        return
+    assert "room_lives" in tables and "room_lives_start" not in tables  # 索引は表の分に入れる
+    b.record_disk(tmp_path, 1792292400.0)
+    assert b._disk_history(tmp_path / b.DISK_FILE)[0][2]["research.db の room_lives"] == tables["room_lives"]
