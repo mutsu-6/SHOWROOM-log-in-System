@@ -140,7 +140,34 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
         "password": bool(cfg.web_password),
         "research_pause": _pause_view(),
         "version": _version(),
+        "alerts": build_alerts(state_dir, stats.get(LOGIN_KEY) or {}, time.time()),
     }
+
+
+def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str]:
+    """すぐ直す必要のあること (画面のいちばん上に赤い帯で出す)。ログイン切れ・ディスクの空き・バックアップの失敗。"""
+    import shutil
+
+    from . import backup, sweep
+
+    out = []
+    if login.get("logged_in") is False:
+        out.append("SHOWROOM のログインが切れています。Mac で login し直して、ログイン状態をサーバーに送ってください")
+    elif login.get("checked_at") and now - login["checked_at"] > 3 * float(login.get("check_interval") or 7200):
+        out.append("ログインの確認が途絶えています (視聴プログラムが止まっているかもしれません)")
+    try:
+        free = shutil.disk_usage(state_dir).free
+    except OSError:
+        free = None
+    if free is not None and free < sweep.DISK_MIN * 2:
+        out.append(f"ディスクの空きが {free / 2**30:.1f}GB しかありません"
+                   f" ({sweep.DISK_MIN / 2**30:.0f}GB を切ると全ルームの収集が止まります)")
+    last = backup.last_backup(state_dir)
+    if last and not last.get("ok"):
+        out.append(f"research.db のバックアップに失敗しました: {last.get('reason') or '理由不明'}")
+    elif last and now - float(last.get("at") or 0) > 2 * 86400:
+        out.append("research.db のバックアップが 2 日以上作られていません")
+    return out
 
 
 def _version() -> dict[str, Any]:
