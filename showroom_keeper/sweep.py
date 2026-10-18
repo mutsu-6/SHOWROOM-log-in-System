@@ -59,6 +59,10 @@ FANS_EVERY = 7 * 86400  # ルームのアクティブファンを読み直す間
 FANS_PAGE = 50  # アクティブファンの 1 回に読む人数 (SHOWROOM の 1 ページ)
 FANS_PAGES = 20  # 1 ルームで読むページの上限 (1000 人)
 OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っているルーム) を読み直す間隔 (秒)
+PAGE_RETRY = 86400  # イベントのページが読めなかった時に、読み直すまでの時間 (秒)
+NOTICES_EVERY = 86400  # お知らせを読む間隔 (秒)
+NOTICE_PAGES = 50  # お知らせの一覧を読むページの上限 (最初の回に、古い分までさかのぼる)
+NOTICE_COUNT = 50  # お知らせの一覧の 1 ページの件数
 PROGRESS_RETRY = 600  # 開催中のイベントのポイントが読めなかった時に、読み直すまでの時間 (秒。推移が抜けないように短く)
 DISK_MIN = 2 << 30  # ディスクの空きがこれより少なくなったら、収集を止める (ログイン状態などが書けなくならないように)
 DISK_CHECK_EVERY = 600  # ディスクの空きを確かめる間隔 (秒)
@@ -78,6 +82,7 @@ class Sweeper:
         self._rankings: list[Any] = []
         self._fan_rooms: list[Any] = []
         self._owners: list[Any] = []
+        self._pages: list[Any] = []
         self._history_failures = 0
         self._aggregated = False
         self.doing = ""
@@ -182,7 +187,7 @@ class Sweeper:
             return True
         # 貢献ランキングはギフター分析にいちばん効くので、ほかの仕事 1 つごとに 1 回回す (問い合わせのおよそ半分を使う)
         others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
-                  self._next_owner]
+                  self._next_owner, self._next_event_page, self._next_notices]
         if self.scan:
             others.append(self._next_scan)
         jobs = [j for job in others for j in (job, self._next_ranking)]
@@ -215,15 +220,19 @@ class Sweeper:
         self.doing = "イベントの一覧"
         self.store.set_meta("events_at", now)
         events: list[dict[str, Any]] = []
+        raws: list[dict[str, Any]] = []  # 一覧の 1 件そのまま (説明文・続きものの親・特典の順位など)
         try:
             for status in (1, 3, 4):  # 開催中・開催予定・終了
                 page: Any = 1
                 while page and page <= EVENT_PAGES:
                     data = self.c.get(f"/api/event/search?status={status}&page={page}") or {}
-                    events += [research._event_info(e) for e in data.get("event_list") or [] if isinstance(e, dict)]
+                    got = [e for e in data.get("event_list") or [] if isinstance(e, dict)]
+                    events += [research._event_info(e) for e in got]
+                    raws += got
                     page = next_page_number(page, data.get("next_page"))
         finally:
             self.store.upsert_events(events)  # 途中で失敗しても、読めた分は残す
+            self.store.upsert_event_info(raws, now)
         return True
 
     def _read_event_rooms(self, event_id: int, now: float) -> list[dict[str, Any]]:
@@ -509,6 +518,68 @@ class Sweeper:
             if len(got) < FANS_PAGE or len(users) >= int(data.get("total_user_count") or 0):
                 break
         self.store.set_active_fans(r["room_id"], ym, data.get("fan_power"), data.get("total_user_count"), users, now)
+        return True
+
+    def _next_event_page(self, now: float) -> bool:
+        """イベントのページ (ルール・特典・応募条件・ポイントの数え方) を読んで、文章を残す。
+
+        1 イベント 1 回。開催中・開催予定のうちに読んだものは、終わったあとにもう 1 回読む (途中でルールが書き足されるため)。
+        新しいイベントから読む。
+        """
+        r = self._take(self._pages, """SELECT e.event_id, e.key, e.name FROM events e LEFT JOIN event_pages p USING(event_id)
+               WHERE e.key IS NOT NULL AND (p.event_id IS NULL OR (p.status = 0 AND p.at < ?)
+                                            OR (p.status = 200 AND e.end IS NOT NULL AND p.at < e.end AND e.end < ?))
+               ORDER BY COALESCE(e.end, 9e18) DESC""", (now - PAGE_RETRY, now))
+        if r is None:
+            return False
+        self.doing = f"イベントのページ ({r['name'] or r['key']})"
+        try:
+            text = research.page_text(self.c.get_page(f"/event/{r['key']}"))
+            self.store.set_event_page(r["event_id"], 200, text, now)
+        except Exception as err:  # noqa: BLE001
+            self.store.set_event_page(r["event_id"], 404 if is_missing(err) else 0, None, now)
+            if not is_missing(err):
+                log.debug("イベント %s のページを読めませんでした: %s", r["key"], err)
+        return True
+
+    def _next_notices(self, now: float) -> bool:
+        """SHOWROOM のお知らせ (一覧と中身) を 1 日 1 回読む。一覧はログインが要るので、ログイン状態の Cookie を使う。
+
+        新しいお知らせが無くなったところで止める (最初の回は NOTICE_PAGES ページまでさかのぼる)。
+        """
+        if now - (self.store.meta("notices_at") or 0) < NOTICES_EVERY:
+            return False
+        from .recorder import get_json, session_cookie
+
+        self.store.set_meta("notices_at", now)
+        self.doing = "お知らせ"
+        cookie = session_cookie(self.state_dir / "storage_state.json")
+        if not cookie:
+            self.store.set_meta("notices_error", "ログイン状態がありません")
+            return True
+        page = 1
+        try:
+            while page and page <= NOTICE_PAGES:
+                data = self.c.throttle.call(lambda p: get_json(p, cookie), f"/api/notices?count={NOTICE_COUNT}&page={page}") or {}
+                if data.get("errors") or data.get("error"):
+                    self.store.set_meta("notices_error", str(data.get("error_user_msg") or data.get("error") or data.get("errors"))[:200])
+                    return True
+                items = [x for x in data.get("list") or [] if isinstance(x, dict)]
+                new = [x for x in items if x.get("notice_id")
+                       and self.store.one("SELECT 1 FROM notices WHERE notice_id=? AND contents IS NOT NULL", (int(x["notice_id"]),)) is None]
+                for x in new:  # 中身を読む
+                    try:
+                        detail = self.c.throttle.call(lambda p: get_json(p, cookie), f"/api/notices/{x['notice_id']}") or {}
+                        x = {**x, **{k: v for k, v in detail.items() if k in ("label", "title", "contents", "created_at")}}
+                    except Exception as err:  # noqa: BLE001 - 中身が読めなくても、題名は残す
+                        log.debug("お知らせ %s の中身を読めませんでした: %s", x.get("notice_id"), err)
+                    self.store.upsert_notices([x], now)
+                if items and not new:
+                    break  # ここから先は前に読んだもの
+                page = next_page_number(page, data.get("next_page") or (page + 1 if page < int(data.get("last_page") or 0) else None))
+            self.store.set_meta("notices_error", None)
+        except Exception as err:  # noqa: BLE001
+            self.store.set_meta("notices_error", str(err).splitlines()[0][:200] if str(err) else type(err).__name__)
         return True
 
     def _next_owner(self, now: float) -> bool:

@@ -88,6 +88,16 @@ CREATE TABLE IF NOT EXISTS room_fans (
 -- ユーザーが持っているルーム (プロフィールでルームを公開している配信者。room_id が NULL ならルームなし・非公開)
 CREATE TABLE IF NOT EXISTS user_rooms (user_id INTEGER PRIMARY KEY, room_id INTEGER, checked_at REAL);
 CREATE INDEX IF NOT EXISTS user_rooms_room ON user_rooms(room_id);
+-- イベントの一覧に入っている、ほかの項目 (説明文・続きもののイベントの親・特典の順位・リーグ・ブロックなど)。
+-- data は一覧の 1 件をそのまま (画像の URL を除く) 残したもの
+CREATE TABLE IF NOT EXISTS event_info (
+    event_id INTEGER PRIMARY KEY, at REAL, parent_id INTEGER, reward_rank INTEGER, block TEXT, leagues TEXT,
+    required_level INTEGER, box INTEGER, official INTEGER, data TEXT);
+CREATE INDEX IF NOT EXISTS event_info_parent ON event_info(parent_id) WHERE parent_id > 0;
+-- イベントのページ (ルール・特典・応募条件) の文章。status は 200 (読めた)・404 (無い)・0 (失敗、あとで読み直す)
+CREATE TABLE IF NOT EXISTS event_pages (event_id INTEGER PRIMARY KEY, at REAL, status INTEGER, text TEXT);
+-- SHOWROOM のお知らせ (ログインが要る)
+CREATE TABLE IF NOT EXISTS notices (notice_id INTEGER PRIMARY KEY, label TEXT, title TEXT, created_at REAL, contents TEXT, at REAL);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
 CREATE TABLE IF NOT EXISTS room_daily (
     room_id INTEGER, day TEXT, followers INTEGER, lives INTEGER DEFAULT 0, view_max INTEGER, view_sum INTEGER DEFAULT 0,
@@ -257,6 +267,45 @@ class Store:
                 [{"key": None, "name": None, "start": None, "end": None, "type": None, **e,
                   "show_ranking": None if e.get("show_ranking") is None else int(bool(e["show_ranking"]))}
                  for e in events if e.get("event_id")])
+
+    def upsert_event_info(self, raws: Iterable[dict[str, Any]], now: float) -> None:
+        """イベントの一覧の 1 件を、そのまま (画像の URL を除く) 残す。前に残した項目は、無い項目で消さない。"""
+        rows = []
+        for e in raws:
+            if not isinstance(e, dict) or not e.get("event_id"):
+                continue
+            data = {k: v for k, v in e.items() if not str(k).startswith("image")}
+            old = self.one("SELECT data FROM event_info WHERE event_id=?", (int(e["event_id"]),))
+            if old is not None and old[0]:
+                data = {**json.loads(old[0]), **{k: v for k, v in data.items() if v is not None}}
+            rows.append((int(e["event_id"]), now, data.get("parent_event_id") or None, data.get("reward_rank"),
+                         data.get("event_block_label"), json.dumps(data["league_ids"]) if data.get("league_ids") else None,
+                         data.get("required_level"), None if data.get("is_box_event") is None else int(bool(data["is_box_event"])),
+                         None if data.get("is_official") is None else int(bool(data["is_official"])),
+                         json.dumps(data, ensure_ascii=False)))
+        with self.tx() as c:
+            c.executemany("""INSERT OR REPLACE INTO event_info(event_id, at, parent_id, reward_rank, block, leagues, required_level,
+                             box, official, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+
+    def set_event_page(self, event_id: int, status: int, text: str | None, now: float) -> None:
+        self.conn.execute("""INSERT INTO event_pages(event_id, at, status, text) VALUES (?, ?, ?, ?)
+                             ON CONFLICT(event_id) DO UPDATE SET at=excluded.at, status=excluded.status,
+                             text=COALESCE(excluded.text, text)""", (int(event_id), now, int(status), text))
+
+    def upsert_notices(self, rows: Iterable[dict[str, Any]], now: float) -> int:
+        """お知らせを残す。戻り値は新しく入った数。中身 (contents) が無い行は、前の中身を消さない。"""
+        new = 0
+        with self.tx() as c:
+            for r in rows:
+                if not isinstance(r, dict) or not r.get("notice_id"):
+                    continue
+                new += c.execute("SELECT 1 FROM notices WHERE notice_id=?", (int(r["notice_id"]),)).fetchone() is None
+                c.execute("""INSERT INTO notices(notice_id, label, title, created_at, contents, at) VALUES (?, ?, ?, ?, ?, ?)
+                             ON CONFLICT(notice_id) DO UPDATE SET label=COALESCE(excluded.label, label),
+                             title=COALESCE(excluded.title, title), created_at=COALESCE(excluded.created_at, created_at),
+                             contents=COALESCE(excluded.contents, contents), at=excluded.at""",
+                          (int(r["notice_id"]), r.get("label"), r.get("title"), r.get("created_at"), r.get("contents"), now))
+        return new
 
     def link(self, pairs: Iterable[tuple[int, int]]) -> None:
         """ルームとイベント (参加したもの) を結び付ける。"""

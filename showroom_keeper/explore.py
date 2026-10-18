@@ -6,6 +6,7 @@ SHOWROOM には問い合わせない。分析 (research.analyze) のように全
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -281,10 +282,21 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
             c["left"] = c["name"] in LEFT_NAMES
             c["name"] = shown.get(c["user_id"], c["name"])
         contributor_total = s.scalar("SELECT COUNT(DISTINCT user_id) FROM contributions WHERE event_id=?", (eid,))
+        info = s.one("SELECT * FROM event_info WHERE event_id=?", (eid,))
+        data = json.loads(info["data"]) if info is not None and info["data"] else {}
+        pg = s.one("SELECT at, status, text FROM event_pages WHERE event_id=?", (eid,))
+        series = [dict(r) for r in s.all("""SELECT e.event_id, e.name, e.end FROM event_info i JOIN events e USING(event_id)
+                                            WHERE i.parent_id=? AND i.event_id != ? ORDER BY e.end DESC LIMIT 20""",
+                                         (info["parent_id"], eid))] if info is not None and info["parent_id"] else []
+        details = {"description": data.get("event_description"), "reward_rank": data.get("reward_rank"),
+                   "block": data.get("event_block_label"), "leagues": data.get("league_ids"), "parent_id": data.get("parent_event_id") or None,
+                   "required_level": data.get("required_level"), "required_level_max": data.get("required_level_max"),
+                   "box": data.get("is_box_event"), "official": data.get("is_official"), "type_name": data.get("type_name"),
+                   "series": series, "page": dict(pg) if pg is not None else None}
         return {**_event_row(e, now), "found": True, "type": e["type"], "show_ranking": bool(e["show_ranking"]),
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
-                "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles)}
+                "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details}
 
 
 def _progress(s: Store, eid: int, rooms: list[dict[str, Any]]) -> dict[str, Any]:

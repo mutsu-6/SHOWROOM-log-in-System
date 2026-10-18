@@ -155,6 +155,31 @@ def _event_info(e: dict[str, Any]) -> dict[str, Any]:
             "show_ranking": None if e.get("show_ranking") is None else bool(e["show_ranking"])}
 
 
+def page_text(html: str) -> str:
+    """HTML のページを、読める文章だけにする (スクリプト・スタイルを除き、行ごとに分ける)。"""
+    import html as _html
+    import re
+
+    s = re.sub(r"(?is)<(script|style|noscript|svg)\b.*?</\1>", "", html)
+    s = re.sub(r"(?i)<br\s*/?>|</(p|div|li|h[1-6]|tr|dt|dd|section|table)>", "\n", s)
+    s = _html.unescape(re.sub(r"<[^>]+>", "\n", s))
+    lines = [" ".join(x.split()) for x in s.splitlines()]
+    return "\n".join(x for x in lines if x)
+
+
+def _get_html(path: str, cookie: str | None = None) -> str:
+    import urllib.request
+
+    from .api import BASE_URL
+
+    headers = {"User-Agent": "showroom-keeper", "Accept-Language": "ja"}
+    if cookie:
+        headers["Cookie"] = cookie
+    req = urllib.request.Request(f"{BASE_URL}{path}", headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
 def _rows(data: Any, cumulative: bool = False) -> list[dict[str, Any]]:
     out = []
     for r in (data or {}).get("ranking") or []:
@@ -198,6 +223,13 @@ class Collector:
     def get(self, path: str) -> Any:
         self.requests += 1
         return self.throttle.call(self._get, path)
+
+    def get_page(self, path: str) -> str:
+        """HTML のページ (イベントのルールなど) を読む。問い合わせの間隔は get と同じ。"""
+        self.requests += 1
+        return self.throttle.call(self._get_page, path)
+
+    _get_page = staticmethod(_get_html)
 
     def collect(self, keys: list[str], force: bool = False,
                 progress: Callable[[str], None] | None = None) -> dict[str, Any]:
@@ -309,6 +341,7 @@ class Collector:
         if isinstance(ev, dict) and ev.get("ended_at"):
             # 番号で読んだ古いイベントは、ここで初めて日付が分かる (「順位を公開しない」はここでは見ない)
             self.store.upsert_events([{**_event_info({**ev, "event_id": event_id}), "show_ranking": None}])
+            self.store.upsert_event_info([{**ev, "event_id": event_id}], self._clock())
         rows = _rows(data)
         if not rows and self.store.one("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? AND guessed IS NOT NULL",
                                        (event_id, room_id)):

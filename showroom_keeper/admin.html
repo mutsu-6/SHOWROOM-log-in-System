@@ -2348,6 +2348,34 @@ async function showEvents(sub) {
 }
 
 /* ------------------------------------------------------------ イベントのページ */
+function eventDetails(x) {
+  if (!x) return "";
+  const facts = [];
+  if (x.type_name) facts.push(esc(x.type_name));
+  if (x.block) facts.push(`ブロック: ${esc(x.block)}`);
+  if (x.leagues && x.leagues.length) facts.push(`リーグ: ${x.leagues.map(esc).join("・")}`);
+  if (x.reward_rank) facts.push(`特典は ${num(x.reward_rank)} 位まで`);
+  if (x.required_level || x.required_level_max) facts.push(`出られるレベル ${num(x.required_level || 0)}${x.required_level_max ? `〜${num(x.required_level_max)}` : " 以上"}`);
+  if (x.box) facts.push("ボックスイベント");
+  let h = "";
+  if (x.description || facts.length) {
+    h += `<h3>イベントの説明</h3>${facts.length ? `<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:6px">${facts.map((f) => `<span class="tag">${f}</span>`).join("")}</div>` : ""}
+      ${x.description ? `<div class="hint" style="white-space:pre-wrap;margin-top:0">${esc(x.description)}</div>` : ""}`;
+  }
+  if (x.series && x.series.length) {
+    h += `<div class="hint">同じ続きもののイベント: ${x.series.map((e) => eventLink(e.event_id, e.name)).join(" ・ ")}</div>`;
+  }
+  const pg = x.page;
+  if (pg && pg.status === 200 && pg.text) {
+    const i = pg.text.indexOf("イベント詳細");
+    h += `<details style="margin-top:8px"><summary>イベントのページの文章 (ルール・特典・応募条件)
+      <small class="muted">${tm(pg.at, true)} に読みました</small></summary>
+      <div class="hint" style="white-space:pre-wrap;max-height:520px;overflow:auto">${esc(i > 0 ? pg.text.slice(i) : pg.text)}</div></details>`;
+  } else {
+    h += `<div class="hint">イベントのページ (ルール・特典) は、${pg && pg.status === 404 ? "SHOWROOM にありませんでした" : "まだ読んでいません (新しいイベントから順に読みます)"}</div>`;
+  }
+  return h;
+}
 async function showEvent(id) {
   const box = $("#ep");
   box.innerHTML = loadingHtml();
@@ -2366,7 +2394,7 @@ async function showEvent(id) {
       ${tile("貢献ランキング", `${num(d.rankings)} <small>/ ${num(d.room_total)}</small>`, d.rankings_pending ? `取る予定 ${num(d.rankings_pending)} ルーム` : d.state === "ended" ? "取れる分は取りました" : "終わってから取ります", d.rankings_pending ? "warn" : "")}
       ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
     </div>
-    <div id="ep-chart"></div>`;
+    <div id="ep-chart"></div>${eventDetails(d.details)}`;
   html += `<div class="cols"><div><h3>参加ルームの順位</h3>${dataTable("ep-rooms", [
       { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
       { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },

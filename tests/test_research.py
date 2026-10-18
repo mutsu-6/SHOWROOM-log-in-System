@@ -870,3 +870,67 @@ def test_sweep_reads_every_two_seconds_in_the_last_minute(tmp_path):
         s.conn.execute("UPDATE events SET progress_at=? WHERE event_id=8", (NOW,))
     sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
     assert sw._next_final(NOW) and not sw._next_final(NOW + 1) and sw._next_final(NOW + 2)  # 最後の 1 分は 2 秒ごと
+
+
+def test_event_details_pages_and_notices(tmp_path, monkeypatch):
+    import json as _json
+    import urllib.error
+
+    from showroom_keeper import recorder
+
+    DAY = 86400
+    lst = {"event_list": [{"event_id": 7, "event_name": "大会", "event_url_key": "cup", "started_at": NOW - DAY, "ended_at": NOW + DAY,
+                           "event_description": "説明", "parent_event_id": 3, "reward_rank": 5, "league_ids": [10, 20],
+                           "event_block_label": "All Livers", "is_box_event": False, "image_m": "x.png"}]}
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: lst if "status=1" in p else {},
+                                                              throttle=quiet_throttle()), scan=False)
+    sw._event_list(NOW)
+    pages = {"/event/cup": "<html><script>x=1</script><h1>大会</h1><p>ポイントの数え方<br>有料ギフト 1.5 倍</p></html>"}
+
+    def page(p):
+        if p not in pages:
+            raise urllib.error.HTTPError(p, 404, "Not Found", {}, None)
+        return pages[p]
+
+    sw.c._get_page = page
+    assert sw._next_event_page(NOW)
+    assert not sw._next_event_page(NOW)  # 1 回読んだら、終わるまで読まない
+    sw._pages.clear()
+    assert sw._next_event_page(NOW + 3 * DAY)  # 終わったあとに、もう 1 回読む
+    sw._pages.clear()
+    assert not sw._next_event_page(NOW + 4 * DAY)
+    with Store(tmp_path) as s:
+        info = s.one("SELECT * FROM event_info WHERE event_id=7")
+        page_row = s.one("SELECT * FROM event_pages WHERE event_id=7")
+    assert info["parent_id"] == 3 and info["reward_rank"] == 5 and info["block"] == "All Livers"
+    assert _json.loads(info["leagues"]) == [10, 20] and "image_m" not in _json.loads(info["data"])
+    assert _json.loads(info["data"])["event_description"] == "説明"
+    assert page_row["status"] == 200 and page_row["text"] == "大会\nポイントの数え方\n有料ギフト 1.5 倍"
+
+    # お知らせ: ログイン状態が無ければ読まない
+    assert sw._next_notices(NOW)
+    with Store(tmp_path) as s:
+        assert s.meta("notices_error") == "ログイン状態がありません"
+    (tmp_path / "storage_state.json").write_text(_json.dumps({"cookies": [{"name": "sr", "value": "1", "domain": ".showroom-live.com"}]}))
+    calls = []
+
+    def get_json(path, cookie=None):
+        calls.append(path)
+        assert cookie == "sr=1"
+        if path.startswith("/api/notices?"):
+            return {"list": [{"notice_id": 2, "title": "メンテナンス", "label": "maintenance", "created_at": NOW},
+                             {"notice_id": 1, "title": "新しいギフト", "created_at": NOW - DAY}], "current_page": 1, "last_page": 1}
+        return {"notice_id": int(path.rsplit("/", 1)[1]), "contents": "<p>中身</p>"}
+
+    monkeypatch.setattr(recorder, "get_json", get_json)
+    with Store(tmp_path) as s:
+        s.set_meta("notices_at", 0)
+    assert sw._next_notices(NOW)
+    with Store(tmp_path) as s:
+        rows = s.all("SELECT notice_id, title, contents FROM notices ORDER BY notice_id")
+        assert [tuple(r) for r in rows] == [(1, "新しいギフト", "<p>中身</p>"), (2, "メンテナンス", "<p>中身</p>")]
+        assert s.meta("notices_error") is None
+        s.set_meta("notices_at", 0)
+    calls.clear()
+    assert sw._next_notices(NOW)
+    assert calls == ["/api/notices?count=50&page=1"]  # 前に読んだものばかりなら、中身は読まない
