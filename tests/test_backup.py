@@ -148,3 +148,24 @@ def test_upload_gcs_sends_in_chunks(tmp_path, monkeypatch):
     r = b.upload_gcs(tmp_path, "my-bucket", now)
     assert not r["ok"] and "権限" in r["reason"]
     assert b.upload_gcs(tmp_path, "", now) is None
+
+
+def test_record_disk_keeps_sizes_and_growth(tmp_path, monkeypatch):
+    from showroom_keeper import backup as b
+
+    (tmp_path / "gifts" / "room").mkdir(parents=True)
+    (tmp_path / "live_events").mkdir()
+    (tmp_path / "gifts" / "room" / "a.jsonl").write_bytes(b"x" * 1000)
+    (tmp_path / "live_events" / "r.jsonl").write_bytes(b"y" * 100)
+    (tmp_path / "research.db").write_bytes(b"z" * 50)
+    (tmp_path / "research.db-wal").write_bytes(b"z" * 5)
+    now = 1792292400.0
+    b.record_disk(tmp_path, now)
+    hist = b._disk_history(tmp_path / b.DISK_FILE)
+    assert hist[0][2] == {"gifts": 1000, "live_events": 100, "research.db": 55}
+    assert b.growth(tmp_path, now) == []  # 1 日分たまるまでは出さない
+    (tmp_path / "gifts" / "room" / "b.jsonl").write_bytes(b"x" * 2000)
+    b.record_disk(tmp_path, now + 3600)  # 1 日に 1 回だけ残す
+    assert len(b._disk_history(tmp_path / b.DISK_FILE)) == 1
+    b.record_disk(tmp_path, now + 2 * 86400)
+    assert b.growth(tmp_path, now + 2 * 86400)[0] == ("gifts", 1000.0)
