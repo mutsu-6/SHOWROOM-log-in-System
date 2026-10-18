@@ -44,6 +44,16 @@ _KEY = re.compile(r"^[A-Za-z0-9_\-]+$")
 _LEFT = ",".join("?" * len(LEFT_NAMES))
 
 
+def _not_page_fault(e: BaseException) -> bool:
+    """ページの中身ではなく、つなぎ方の問題の失敗か (つながらない・断られた・時間切れ・混んでいる)。"""
+    import socket
+    import urllib.error
+
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code == 429 or e.code >= 500
+    return isinstance(e, (urllib.error.URLError, ConnectionError, socket.timeout, TimeoutError, OSError))
+
+
 def _fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "showroom-keeper (research; contact via repository)"})
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -206,7 +216,10 @@ class ArchiveCollector:
             text = self.get(f"{ARCHIVE}/web/{stamp}id_/{page['url']}")
         except Exception as e:  # noqa: BLE001
             if not is_missing(e):
-                self.store.conn.execute("UPDATE archive_pages SET tries=tries+1 WHERE page=?", (page["page"],))
+                # つながらない・断られた・混んでいる (429・5xx) 時は、ページのせいではないので、試した数に数えない
+                # (数えると、Internet Archive に断られているあいだに、読めるはずのページを「読み終えた」にしてしまう)
+                if not _not_page_fault(e):
+                    self.store.conn.execute("UPDATE archive_pages SET tries=tries+1 WHERE page=?", (page["page"],))
                 raise
             text = ""
         at = _stamp_time(stamp)
@@ -301,7 +314,21 @@ class ArchiveCollector:
         return len(pairs)
 
     def step(self) -> bool:
+        self._requeue_once()
         return self.index_step() or self.page_step()
+
+    def _requeue_once(self) -> None:
+        """前の版は、Internet Archive に断られた (つながらない) 回もページの試した数に数え、読めるはずのページを
+        「読み終えた (0 行)」にしていた。そういうページを 1 回だけ読み直しの列に戻す (本当に中身の無いページも戻るが、数回聞くだけ)。"""
+        st = self.store
+        if st.meta("archive_requeued"):
+            return
+        with st.tx() as c:
+            n = c.execute("""UPDATE archive_pages SET tries=0, fetched_at=NULL
+                             WHERE rows=0 OR (fetched_at IS NULL AND tries > 0)""").rowcount
+            c.execute("INSERT INTO meta(k, v) VALUES ('archive_requeued', 'true') ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+        if n:
+            log.info("Internet Archive の読めなかったページ %d 件を、読み直しの列に戻しました", n)
 
 
 def status(store: Store) -> dict[str, Any]:

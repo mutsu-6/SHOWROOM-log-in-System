@@ -221,3 +221,41 @@ def test_guessed_ranking_is_refetched_when_room_exists(tmp_path):
         # 本物が取れたイベントは置き換える。SHOWROOM に残っていなかったイベントは、推測した分を残す
         assert rows == {(1, 6): None, (2, 5): 1}
         assert s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=8 AND final=1") == 2
+
+
+def test_refused_connections_do_not_use_up_page_tries(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 26419, "key": "moko"}])
+    refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+    c, fake = collector(tmp_path, {"showNumPages": "1", "cdx/search": INDEX, "event/moko": refused})
+    for _ in range(10):  # 断られ続けても
+        try:
+            c.step()
+        except Exception:  # noqa: BLE001
+            pass
+    with Store(tmp_path) as s:
+        p = s.one("SELECT tries, fetched_at FROM archive_pages WHERE page='event:moko'")
+    assert p["tries"] == 0 and p["fetched_at"] is None  # 「読み終えた」にしない
+    fake.pages["event/moko"] = EVENT_PAGE  # つながるようになったら読める
+    run(c)
+    with Store(tmp_path) as s:
+        assert s.one("SELECT rows FROM archive_pages WHERE page='event:moko'")["rows"] == 2
+    c.close()
+
+
+def test_pages_lost_to_refusals_are_read_again_once(tmp_path):
+    with Store(tmp_path) as s:
+        s.conn.execute("""INSERT INTO archive_pages(page, kind, event_key, url, stamps, tries, fetched_at, rows)
+                          VALUES ('event:lost', 'event', 'lost', 'u', '["20200101000000"]', 3, 1, 0),
+                                 ('event:ok', 'event', 'ok', 'u', '["20200101000000"]', 1, 1, 5)""")
+        s.set_meta("archive_index_done_at", 1)
+    c, _ = collector(tmp_path, {})
+    c._requeue_once()
+    with Store(tmp_path) as s:
+        rows = {r["page"]: (r["tries"], r["fetched_at"]) for r in s.all("SELECT * FROM archive_pages")}
+        assert rows == {"event:lost": (0, None), "event:ok": (1, 1)}
+        s.conn.execute("UPDATE archive_pages SET tries=3, fetched_at=1, rows=0 WHERE page='event:lost'")
+    c._requeue_once()  # 2 回目からは戻さない
+    with Store(tmp_path) as s:
+        assert s.one("SELECT tries FROM archive_pages WHERE page='event:lost'")[0] == 3
+    c.close()
