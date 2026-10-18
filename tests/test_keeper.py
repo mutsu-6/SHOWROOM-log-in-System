@@ -273,9 +273,11 @@ def test_save_state_keeps_previous_file_when_writing_fails(tmp_path):
 
             Path(path).write_text(self.text, encoding="utf-8")
 
-    asyncio.run(kp.save_state(Ctx('{"cookies": ['), cfg))  # 途中で切れた (ディスクが一杯など)
+    loop = asyncio.new_event_loop()  # asyncio.run は Python 3.9 でほかのテストの event loop を消すので使わない
+    loop.run_until_complete(kp.save_state(Ctx('{"cookies": ['), cfg))  # 途中で切れた (ディスクが一杯など)
     assert (tmp_path / "s.json").read_text(encoding="utf-8") == '{"cookies": ["old"]}'
     assert not (tmp_path / "s.json.tmp").exists()
-    asyncio.run(kp.save_state(Ctx('{"cookies": ["new"]}'), cfg))
+    loop.run_until_complete(kp.save_state(Ctx('{"cookies": ["new"]}'), cfg))
+    loop.close()
     assert "new" in (tmp_path / "s.json").read_text(encoding="utf-8")
     assert "old" in (tmp_path / "s.json.bak").read_text(encoding="utf-8")
