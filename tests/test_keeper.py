@@ -19,7 +19,7 @@ class FakeAPI:
         self.checked.append(room_id)
         return self.states.get(room_id)
 
-    async def live_room_id(self):
+    async def live_room_id(self, skip=frozenset()):
         self.live_calls += 1
         return self.live_room
 

@@ -133,3 +133,11 @@ def test_enter_rooms_from_env_survive_older_saved_settings(tmp_path):
     assert cfg.rooms == ["a"] and cfg.enter_rooms == ["x", "y"]
     (tmp_path / "settings.json").write_text(json.dumps({"rooms": ["a"], "enter_rooms": []}))
     assert Config.load(None, env=env).enter_rooms == []
+
+
+def test_no_visit_rooms_from_env_and_settings(tmp_path):
+    from showroom_keeper.config import normalize_settings
+
+    cfg = Config.load(None, env={"SHOWROOM_NO_VISIT_ROOMS": "a, https://www.showroom-live.com/r/b"})
+    assert cfg.no_visit_rooms == ["a", "b"]
+    assert normalize_settings({"no_visit_rooms": ["https://www.showroom-live.com/r/c"]})["no_visit_rooms"] == ["c"]

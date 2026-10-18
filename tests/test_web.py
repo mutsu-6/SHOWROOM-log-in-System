@@ -74,7 +74,7 @@ def test_page_and_overview(admin):
     a, b = data["rooms"]
     assert a["watcher"]["state"] == "watching" and a["watcher"]["can_comment"] is True
     assert b["watcher"]["state"] == "waiting" and a["excitement"] == 10
-    assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": [], "enter_rooms": [], "support_rooms": [], "research_rooms": []}
+    assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": [], "enter_rooms": [], "no_visit_rooms": [], "support_rooms": [], "research_rooms": []}
 
 
 def test_rejects_other_hosts_and_cross_site_posts(admin):

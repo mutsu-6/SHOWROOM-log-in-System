@@ -514,6 +514,12 @@ td a.name-link, td a { word-break: break-word; }
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
+      <div class="card" data-list="no_visit_rooms">
+        <h3 style="margin-top:0">ログインして訪問しないルーム</h3>
+        <div class="hint" style="margin-top:0">配信が始まっても入室しません (全ルームの入室でも)。ギフトの記録やログインの確認にも、ログインを使いません。視聴するルームにも入れた時は、視聴を優先します。</div>
+        <ul class="list"></ul>
+        <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
+      </div>
       <div class="card" data-list="record_rooms">
         <h3 style="margin-top:0">ギフトだけ記録するルーム</h3>
         <div class="hint" style="margin-top:0">ブラウザを使わず、配信中のギフトを受信して記録します。件数の上限はありません。ギフターの曜日・時間帯などのくせは、ここで記録したギフトから分かります。</div>
@@ -2657,9 +2663,9 @@ const PAGES = { home: showHome, gifters: showGifters, gifter: showGifter, rooms:
   live: showLive, collect: showCollect, settings: () => {} };
 
 /* ------------------------------------------------------------ 設定 */
-let saved = { rooms: [], record_rooms: [], events: [], enter_rooms: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;
+let saved = { rooms: [], record_rooms: [], events: [], enter_rooms: [], no_visit_rooms: [], support_rooms: [], research_rooms: [] }, draft = null, settingsDirty = false, settingNamesLoaded = false;
 const ROOM_RE = /showroom-live\.com\/(?:r\/)?([A-Za-z0-9_\-]+)\/?(?:\?.*)?$/;
-const KEY_RE = { rooms: ROOM_RE, enter_rooms: ROOM_RE, record_rooms: ROOM_RE, support_rooms: ROOM_RE, research_rooms: ROOM_RE, events: /showroom-live\.com\/event\/([A-Za-z0-9_\-]+)/ };
+const KEY_RE = { rooms: ROOM_RE, enter_rooms: ROOM_RE, no_visit_rooms: ROOM_RE, record_rooms: ROOM_RE, support_rooms: ROOM_RE, research_rooms: ROOM_RE, events: /showroom-live\.com\/event\/([A-Za-z0-9_\-]+)/ };
 function normalize(kind, value) {
   value = value.trim();
   const m = value.match(KEY_RE[kind]);
@@ -2692,7 +2698,7 @@ function renderSettings() {
   }
   settingsDirty = JSON.stringify(saved) !== JSON.stringify(draft);
   // 応援しているルーム・調べるルームだけの変更なら、視聴はやり直さない
-  const watchChanged = ["rooms", "record_rooms", "events", "enter_rooms"].some((k) => JSON.stringify(saved[k] || []) !== JSON.stringify(draft[k] || []));
+  const watchChanged = ["rooms", "record_rooms", "events", "enter_rooms", "no_visit_rooms"].some((k) => JSON.stringify(saved[k] || []) !== JSON.stringify(draft[k] || []));
   $("#s-note").innerHTML = !settingsDirty ? "変更はまだありません。"
     : watchChanged ? `<span class="dirty">未保存の変更があります。</span>「保存して反映」で視聴とギフト記録をやり直します (視聴が数十秒途切れます)。`
     : `<span class="dirty">未保存の変更があります。</span>「保存して反映」で、新しく追加したルームの情報を集め始めます (視聴はそのまま続きます)。`;

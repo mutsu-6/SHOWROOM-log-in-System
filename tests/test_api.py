@@ -66,3 +66,8 @@ async def test_live_room_id_picks_one_live_room():
     onlives = {"onlives": [{"lives": []}, {"lives": [{"room_id": "7"}, {"room_id": 8}]}]}
     assert await ShowroomAPI(FakeRequest({f"{B}/api/live/onlives": FakeResp(onlives)})).live_room_id() == 7
     assert await ShowroomAPI(FakeRequest({f"{B}/api/live/onlives": FakeResp({}, status=503)})).live_room_id() is None
+
+
+async def test_live_room_id_skips_rooms_not_to_visit():
+    onlives = {"onlives": [{"lives": [{"room_id": 7}, {"room_id": 8}]}]}
+    assert await ShowroomAPI(FakeRequest({f"{B}/api/live/onlives": FakeResp(onlives)})).live_room_id(skip={7}) == 8

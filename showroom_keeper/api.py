@@ -106,13 +106,13 @@ class ShowroomAPI:
         data = await self._get_json("/api/live/onlives")
         return parse_onlives(data)
 
-    async def live_room_id(self) -> int | None:
-        """ログイン状態の確認に使うため、配信中のルームを 1 つ探す。見つからなければ None。"""
+    async def live_room_id(self, skip: set[int] | frozenset[int] = frozenset()) -> int | None:
+        """ログイン状態の確認に使うため、配信中のルームを 1 つ探す (skip のルームは使わない)。見つからなければ None。"""
         try:
             data = await self._get_json("/api/live/onlives")
             for genre in data.get("onlives", []):
                 for live in genre.get("lives", []):
-                    if live.get("room_id"):
+                    if live.get("room_id") and int(live["room_id"]) not in skip:
                         return int(live["room_id"])
         except Exception as e:  # noqa: BLE001 - 見つからない扱いにして再ログインはしない
             log.debug("配信中のルームを取得できません: %s", e)

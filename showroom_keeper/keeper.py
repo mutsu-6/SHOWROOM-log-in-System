@@ -605,14 +605,15 @@ class Keeper:
                 w.keep_open = keep_open
                 w.may_open = may_open
             self.watchers = watchers
-            enter_rooms = [key for key in self.cfg.enter_rooms if key not in self.cfg.rooms]
+            no_visit = set(self.cfg.no_visit_rooms) - set(self.cfg.rooms)
+            enter_rooms = [key for key in self.cfg.enter_rooms if key not in self.cfg.rooms and key not in no_visit]
             self.browser_state = "動作中"
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
             # 止める指示を待たず動き続けるので、終了時に取り消す
             background = [asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments")]
             if self.cfg.enter_all:  # 入室するルーム (enter_rooms) も配信中の一覧から見つかる
                 entrance: RoomEntrance = AllRoomsEntrance(self.cfg.status_poll_interval, api.onlives, ctx.cookies,
-                                                          skip=self.cfg.rooms, state_dir=Path(self.cfg.state_file).parent)
+                                                          skip=[*self.cfg.rooms, *no_visit], state_dir=Path(self.cfg.state_file).parent)
                 background.append(asyncio.create_task(entrance.run(), name="entrance"))
             elif enter_rooms:
                 entrance = RoomEntrance(enter_rooms, self.cfg.status_poll_interval, api.room_status, ctx.cookies,
@@ -664,12 +665,21 @@ class Keeper:
             raise RuntimeError("すべてのルームの状態を取得できません")
         return ids
 
+    async def _no_visit_ids(self, api: ShowroomAPI) -> set[int]:
+        ids = set()
+        for key in self.cfg.no_visit_rooms:
+            with suppress(Exception):
+                status = await api.room_status(key)
+                if status.room_id is not None:
+                    ids.add(status.room_id)
+        return ids
+
     async def _login_rooms(self, api: ShowroomAPI, room_ids: list[int]) -> list[int]:
         """ログイン確認に使うルーム。視聴ルームが無ければ、配信中のルームを 1 つだけ使う。"""
         if room_ids:
             return room_ids
         if self._probe_room is None:
-            self._probe_room = await api.live_room_id()
+            self._probe_room = await api.live_room_id(skip=await self._no_visit_ids(api))
         return [self._probe_room] if self._probe_room is not None else []
 
     async def _periodic_save(self, ctx: BrowserContext, api: ShowroomAPI, watchers: list[RoomWatcher]) -> None:
