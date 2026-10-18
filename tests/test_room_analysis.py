@@ -522,3 +522,20 @@ def test_relay_welcome_and_mirror_ball():
     assert r["respond"]["大きなギフト"] == {"n": 1, "rate": 1.0}
     # 常連でない人のギフト 3 回 (9・3・8) のうち、常連が応えたのは 9 の 1 回
     assert r["welcome"]["n"] == 3 and abs(r["welcome"]["rate"] - 1 / 3) < 1e-9 and r["welcome"]["base"] < 1 / 3
+
+
+def test_lure_throws_counts_visits_around_lures(tmp_path):
+    from showroom_keeper import live_events
+
+    (tmp_path / "gifts").mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 100, "free": False}}}))
+    t0 = int(NOW) - 3600
+    lines = [{"at": t0 + k, "live_id": 1, "user_id": 1, "gift_id": 1, "num": 1} for k in (0, 1000)]
+    (tmp_path / "gifts" / "aaa.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+    for at, m in ((t0 - 60, "あさんが初訪問✨"), (t0 + 30, "いさんが12度目の訪問✨"), (t0 + 60, "うさんが初訪問✨"),
+                  (t0 + 90, "名のファンレベルが9にあがりました！(4ヶ月連続4回目)")):
+        live_events.record(tmp_path, "aaa", 1, {"t": 18, "u": 5, "m": m, "created_at": at})
+    v = ra.lure_throws(tmp_path, "aaa", NOW)["visits"]
+    assert v["lives"] == 1 and v["visits"] == 3 and v["first"] == 2 and v["levels"] == 1 and v["regular"] == 1 and v["streak"] == 1
+    assert v["before"] == 1 and v["after"] == 2 and v["ratio"] == 2.0

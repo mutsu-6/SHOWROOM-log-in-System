@@ -2231,6 +2231,10 @@ function roomAnalysisHtml(d) {
         r.rate != null && lu.respond_base != null && r.rate >= lu.respond_base * 1.5 ? "ok" : ""); }).join("")}
       ${tile("歓迎", lu.welcome.rate == null ? "—" : pctText(lu.welcome.rate), `コアな常連でない人 (応援に来た人) の有料ギフト ${num(lu.welcome.n)} 回のうち、${lu.respond_window} 秒のうちにコアな常連が有料ギフトで応えた割合。いつもの割合 (どの時刻でも ${lu.respond_window} 秒のうちにコアな常連が送る割合) は ${pctText(lu.welcome.base)}`,
         lu.welcome.rate != null && lu.welcome.base != null && lu.welcome.rate >= lu.welcome.base * 1.5 ? "ok" : "")}
+      ${lu.visits ? tile("1 配信の来場", `${lu.visits.visits.toFixed(1)} <small>人</small>`, `うち初めて ${lu.visits.first.toFixed(1)} 人・10 回目より多く来ている人 ${lu.visits.regular.toFixed(1)} 人 (${num(lu.visits.lives)} 配信)`)
+        + tile("ファンレベルが上がった", `${lu.visits.levels.toFixed(1)} <small>人/配信</small>`, `うち 3 か月以上続けて上げている人 ${lu.visits.streak.toFixed(1)} 人`)
+        + tile("誘い投げのあとの来場", rt(lu.visits.ratio), `誘い投げの後の ${lu.window / 60} 分の来場 ${num(lu.visits.after)} 人 ÷ 前の ${lu.window / 60} 分の ${num(lu.visits.before)} 人`, lu.visits.ratio >= 1.5 ? "ok" : "")
+        : tile("来場・ファンレベル", "—", "来場とファンレベルの知らせは、2026-10-18 から残し始めました")}
       ${tile("ミラーボール", `${num(lu.mirror.n)} <small>回</small>`, lu.mirror.n
         ? `500 pt のリレーの定番。${pctText(lu.mirror.in_relay)} がリレーの中で送られた。ミラーボールが 2 回以上入ったリレー ${num(lu.mirror.relays)} 回`
         : "まだ送られていません")}

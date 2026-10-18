@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
-from . import comment_counts
+from . import comment_counts, live_events
 from .api import RoomStatus
 from .activity import ActivityTracker, parse_message
 from .gifts import record_gift
@@ -355,6 +355,11 @@ class RoomWatcher:
                 record_gift(self._state_dir, self.key, self.status.live_id if self.status else None, data)
             except Exception as e:  # noqa: BLE001
                 self.log.debug("ギフトの記録に失敗: %s", e)
+        if data and data.get("t") in (5, 18, 1001) and self.cfg.record_gifts:  # 来場・ファンレベルなどの知らせ
+            try:
+                live_events.record(self._state_dir, self.key, self.status.live_id if self.status else None, data)
+            except Exception as e:  # noqa: BLE001
+                self.log.debug("知らせの記録に失敗: %s", e)
 
     def _resolve_comment(self, data: dict[str, Any]) -> None:
         text = str(data.get("cm") or "")

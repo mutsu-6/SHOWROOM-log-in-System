@@ -810,8 +810,33 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
     gaps = [b[0] - a[0] for a, b in zip(lures, lures[1:]) if a[4] == b[4]]
     return {"days": days, "core": len(core), "lures": len(lures), "per_hour": len(lures) / hours if hours else None,
             "gap": median(gaps), "window": LURE_WINDOW, **relay_and_respond(gifts, core),
+            "visits": _visits(state_dir, room_key, now - days * 86400, lures),
             "people_ratio": ratio[0], "points_ratio": ratio[1], "comments_ratio": ratio[2],
             "people_before": before[0], "people_after": after[0], "has_comments": any(minutes.values())}
+
+
+def _visits(state_dir: Any, room_key: str, since: float, lures: list[tuple[Any, ...]]) -> dict[str, Any] | None:
+    """来場・ファンレベルの知らせ (live_events): 1 配信あたりの来場 (初めての人)・ファンレベルが上がった人と、
+    誘い投げの前後 LURE_WINDOW 秒の来場の数。知らせを残し始める前の配信は数えない。"""
+    from . import live_events
+
+    evs = [e for e in live_events.load(state_dir, room_key, since) if e.get("kind") in ("visit", "fan_level")]
+    if not evs:
+        return None
+    lives = {e.get("live_id") for e in evs}
+    visits = [e for e in evs if e["kind"] == "visit"]
+    levels = [e for e in evs if e["kind"] == "fan_level"]
+    first = sum(1 for e in visits if e.get("n") == 1)
+    before = after = 0
+    for t, *_rest in lures:
+        live = _rest[3]
+        before += sum(1 for e in visits if e.get("live_id") == live and t - LURE_WINDOW <= e["at"] < t)
+        after += sum(1 for e in visits if e.get("live_id") == live and t < e["at"] <= t + LURE_WINDOW)
+    n = len(lives)
+    return {"lives": n, "visits": len(visits) / n, "first": first / n, "levels": len(levels) / n,
+            "regular": sum(1 for e in visits if (e.get("n") or 0) >= 10) / n,  # 10 回目より多く来ている人
+            "streak": sum(1 for e in levels if (e.get("streak") or 0) >= 3) / n,  # 3 か月以上続けてレベルを上げている人
+            "before": before, "after": after, "ratio": after / before if before else None}
 
 
 def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str, Any]:

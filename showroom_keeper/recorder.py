@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import comment_counts
+from . import comment_counts, live_events
 from .activity import parse_message
 from .api import BASE_URL
 from .config import Config
@@ -386,6 +386,9 @@ class GiftRecorder:
                             count += 1
                         elif data.get("t") == 1:  # コメント (数だけ数える)
                             comments.feed(key, live_id, data)
+                        elif data.get("t") in (5, 18, 1001):  # 来場・ファンレベルなどの知らせ
+                            with suppress(Exception):
+                                live_events.record(self.state_dir, key, live_id, data)
                         elif data.get("t") == 101:  # 配信終了
                             break
                 finally:
