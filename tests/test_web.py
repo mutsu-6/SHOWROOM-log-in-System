@@ -248,3 +248,24 @@ def test_explore_endpoints(admin):
     assert json.loads(call(base + "/api/room?room=abc")[1]) == {"key": "abc", "found": False}
     assert call(base + "/api/events?state=bad")[0] == 400
     assert call(base + "/api/room?room=not%20a%20room!")[0] == 400
+
+
+def test_alerts_for_login_disk_and_backup(tmp_path, monkeypatch):
+    import shutil
+    from collections import namedtuple
+
+    from showroom_keeper import backup
+    from showroom_keeper.web import build_alerts
+
+    now = time.time()
+    assert build_alerts(tmp_path, {"logged_in": True, "checked_at": now, "check_interval": 7200}, now) == []
+    assert "切れています" in build_alerts(tmp_path, {"logged_in": False, "checked_at": now}, now)[0]
+    assert "途絶えて" in build_alerts(tmp_path, {"logged_in": True, "checked_at": now - 8 * 3600, "check_interval": 7200}, now)[0]
+    backup._save_last(tmp_path, {"ok": False, "at": now, "reason": "ディスクの空きが足りません"})
+    assert build_alerts(tmp_path, {}, now) == ["research.db のバックアップに失敗しました: ディスクの空きが足りません"]
+    backup._save_last(tmp_path, {"ok": True, "at": now - 3 * 86400})
+    assert "2 日以上" in build_alerts(tmp_path, {}, now)[0]
+    backup._save_last(tmp_path, {"ok": True, "at": now})
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: usage(10 << 30, 9 << 30, 1 << 30))
+    assert "1.0GB" in build_alerts(tmp_path, {}, now)[0]
