@@ -87,7 +87,8 @@ def check(traced, fn):
 
 def test_room_and_event_pages_do_not_read_whole_tables(traced):
     check(traced, lambda d: explore.room_detail(d, "k2"))
-    check(traced, lambda d: explore.event_detail(d, "1"))
+    check(traced, lambda d: explore.event_detail(d, "1", ["k2"]))
+    check(traced, lambda d: explore.event_choice(d, ["k2"]))
     check(traced, lambda d: explore.room_profiles(d))
 
 

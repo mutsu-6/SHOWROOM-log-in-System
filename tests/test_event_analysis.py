@@ -32,3 +32,25 @@ def test_needed_points_from_past_events_and_projection(tmp_path):
     cur = {r["rank"]: r for r in n["current"]["ranks"]}
     assert cur[1]["now"] == 900 and cur[1]["growth"] == 4 and cur[1]["projected"] == 3600
     assert cur[2]["now"] == 500 and cur[3]["now"] is None
+
+
+def test_strength_and_event_choice(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2, 3, 4)], "event", NOW)
+        # 前のイベント (7 日間): ルーム 1 は 7000 pt (1 日 1000)、2 は 3500、3 は 700。4 (応援ルーム) は 2 日間で 4000 (1 日 2000)
+        s.upsert_events([{"event_id": 1, "name": "前", "start": NOW - 20 * DAY, "end": NOW - 13 * DAY},
+                         {"event_id": 2, "name": "短い", "start": NOW - 12 * DAY, "end": NOW - 10 * DAY}])
+        s.set_event_rooms(1, [{"room_id": 1, "point": 7000, "rank": 1}, {"room_id": 2, "point": 3500, "rank": 2},
+                              {"room_id": 3, "point": 700, "rank": 3}], NOW - 13 * DAY + 1)
+        s.set_event_rooms(2, [{"room_id": 4, "point": 4000, "rank": 1}], NOW - 10 * DAY + 1)
+        s.upsert_events([{"event_id": 9, "name": "これから", "start": NOW + DAY, "end": NOW + 8 * DAY}])
+        s.set_event_rooms(9, [{"room_id": r, "point": 0, "rank": None} for r in (1, 2, 3)], NOW)
+        s.upsert_event_info([{"event_id": 9, "reward_rank": 1}], NOW)
+        st = ea.event_strength(s, 9, NOW, [4, 3])
+        assert [r["room_id"] for r in st["rooms"]] == [1, 2, 3] and st["rooms"][0]["per_day"] == 1000
+        four = st["focus"][0]
+        assert four["place"] == 1 and four["of"] == 4 and not four["joined"]  # 出たら 1 位くらい
+        assert st["focus"][1]["place"] == 3 and st["focus"][1]["joined"]
+        ch = ea.event_choice(s, [4], NOW)
+    assert [e["event_id"] for e in ch["events"]] == [9] and ch["events"][0]["focus"][0]["place"] == 1
+    assert ch["events"][0]["reward_rank"] == 1

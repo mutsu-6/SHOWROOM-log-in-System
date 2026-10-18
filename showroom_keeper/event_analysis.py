@@ -120,3 +120,82 @@ def needed_points(s: Store, eid: int, now: float | None = None) -> dict[str, Any
                          "projected": current[k] * g if g and current.get(k) else None})
         out["current"] = {"elapsed": frac, "ranks": rows}
     return out
+
+
+# ------------------------------------------------------------------ 参加ルームの強さ・出るイベントの選び方
+STRENGTH_EVENTS = 10  # ルームの強さを見る、終わったイベントの数 (新しい順)
+CHOICE_TTL = 600  # 出るイベントの選び方を使い回す時間 (秒)
+CHOICE_MIN_ROOMS = 3  # 参加ルームがこれより少ないイベントは選び方に出さない
+
+STRENGTH_TTL = 6 * 3600  # ルームの強さを使い回す時間 (秒。終わったイベントの結果が入るのは 1 日 1 回ほど)
+_choice: dict[tuple[str, tuple[int, ...]], tuple[float, dict[str, Any]]] = {}
+_strengths: dict[str, tuple[float, dict[int, Any]]] = {}
+
+
+def room_strength(s: Store, rid: int, now: float, cache: dict[int, Any] | None = None) -> dict[str, Any] | None:
+    """ルームの強さ = 最近の終わったイベントで、1 日あたりに取ったポイントの真ん中の値 (期間の長さのちがいをならすため)。"""
+    if cache is not None and rid in cache:
+        return cache[rid]
+    rows = s.all("""SELECT re.point, e.start, e.end FROM room_events re JOIN events e USING(event_id)
+                    WHERE re.room_id=? AND re.point > 0 AND e.end < ? AND e.start IS NOT NULL AND e.rooms_at >= e.end
+                    ORDER BY e.end DESC LIMIT ?""", (int(rid), now, STRENGTH_EVENTS))
+    per_day = [r["point"] / max(1.0, (r["end"] - r["start"]) / 86400) for r in rows]
+    out = {"per_day": median(per_day), "events": len(per_day), "best": max(per_day)} if per_day else None
+    if cache is not None:
+        cache[rid] = out
+    return out
+
+
+def _place(value: float, others: list[float]) -> int:
+    return 1 + sum(1 for v in others if v > value)
+
+
+def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int] | None = None,
+                   cache: dict[int, Any] | None = None) -> dict[str, Any]:
+    """イベントの参加ルームの強さと、強さの順に並べた時の見込みの順位。focus のルーム (応援ルーム) は、
+    参加していなくても、出た時に何位くらいかを出す。"""
+    now = time.time() if now is None else now
+    cache = {} if cache is None else cache
+    rooms = [r[0] for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (int(eid),))]
+    known = {rid: st for rid in rooms for st in [room_strength(s, rid, now, cache)] if st}
+    vals = {rid: st["per_day"] for rid, st in known.items()}
+    order = sorted(vals, key=lambda r: -vals[r])
+    out_rooms = [{"room_id": rid, **known[rid], "place": i + 1} for i, rid in enumerate(order)]
+    focus_out = []
+    for rid in focus or []:
+        st = room_strength(s, rid, now, cache)
+        if st:
+            others = [v for r, v in vals.items() if r != rid]
+            focus_out.append({"room_id": rid, **st, "place": _place(st["per_day"], others), "of": len(others) + 1,
+                              "joined": rid in rooms})
+        else:
+            focus_out.append({"room_id": rid, "per_day": None, "place": None, "of": len(vals) + 1, "joined": rid in rooms})
+    info = s.one("SELECT reward_rank FROM event_info WHERE event_id=?", (int(eid),))
+    return {"rooms": out_rooms, "unknown": len(rooms) - len(known), "total": len(rooms), "focus": focus_out,
+            "reward_rank": info["reward_rank"] if info is not None else None}
+
+
+def event_choice(s: Store, focus: list[int], now: float | None = None) -> dict[str, Any]:
+    """開催中・これからのイベントごとに、応援ルームが出たら何位くらいか (参加ルームの強さから)。"""
+    now = time.time() if now is None else now
+    key = (str(s.state_dir), tuple(sorted(focus)))
+    hit = _choice.get(key)
+    if hit and now - hit[0] < CHOICE_TTL:
+        return hit[1]
+    # ルームの強さは、イベントをまたいで使い回す (1 ルームはいくつものイベントに出るので)。STRENGTH_TTL ごとに作り直す
+    held = _strengths.get(str(s.state_dir))
+    if held is None or now - held[0] > STRENGTH_TTL:
+        held = _strengths[str(s.state_dir)] = (now, {})
+    cache = held[1]
+    events = s.all("""SELECT e.event_id, e.name, e.start, e.end, COUNT(re.room_id) AS rooms FROM events e
+                      JOIN room_events re USING(event_id) WHERE e.end > ? GROUP BY e.event_id HAVING rooms >= ?
+                      ORDER BY e.start""", (now, CHOICE_MIN_ROOMS))
+    out = []
+    for e in events:
+        st = event_strength(s, e["event_id"], now, focus, cache)
+        out.append({"event_id": e["event_id"], "name": e["name"], "start": e["start"], "end": e["end"], "rooms": st["total"],
+                    "unknown": st["unknown"], "reward_rank": st["reward_rank"], "focus": st["focus"],
+                    "top": st["rooms"][0]["per_day"] if st["rooms"] else None})
+    result = {"now": now, "events": out}
+    _choice[key] = (now, result)
+    return result

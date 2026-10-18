@@ -408,10 +408,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                                                     q.get("depth")))
                 elif url.path == "/api/room":
                     self._json(explore.room_detail(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
+                elif url.path == "/api/events" and q.get("state") == "choice":
+                    self._json(explore.event_choice(state_dir, self._support(q)))
                 elif url.path == "/api/events":
                     self._json(explore.event_list(state_dir, q.get("state", "ongoing")))
                 else:
-                    self._json(explore.event_detail(state_dir, q.get("event", "")))
+                    self._json(explore.event_detail(state_dir, q.get("event", ""), self._support(q)))
             elif url.path == "/api/lookup/user":
                 from .listing import lookup_user
 

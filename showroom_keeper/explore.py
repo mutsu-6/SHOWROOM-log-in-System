@@ -241,7 +241,35 @@ def event_list(state_dir: Path, state: str = "ongoing", limit: int = EVENT_LIST)
                             "leader": r["leader"], "type": r["type"]} for r in rows]}
 
 
-def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
+def _room_ids(s: Store, keys: list[str] | None) -> list[int]:
+    out = []
+    for k in keys or []:
+        r = s.one("SELECT room_id FROM rooms WHERE key=?", (k,))
+        if r is not None:
+            out.append(int(r[0]))
+    return out
+
+
+def _room_labels(s: Store, rows: list[dict[str, Any]]) -> None:
+    for r in rows:
+        x = s.one("SELECT key, name FROM rooms WHERE room_id=?", (r["room_id"],))
+        r["key"] = (x["key"] if x is not None else None) or str(r["room_id"])
+        r["name"] = (x["name"] if x is not None else None) or r["key"]
+
+
+def event_choice(state_dir: Path, support: list[str]) -> dict[str, Any]:
+    """応援ルームに合うイベント: 開催中・これからのイベントで、応援ルームが出たら何位くらいか。"""
+    with Store(state_dir) as s:
+        ids = _room_ids(s, support)
+        out = dict(event_analysis.event_choice(s, ids))
+        out["events"] = [dict(e, focus=[dict(f) for f in e["focus"]]) for e in out["events"]]
+        for e in out["events"]:
+            _room_labels(s, e["focus"])
+        out["support"] = len(ids)
+        return out
+
+
+def event_detail(state_dir: Path, event_id: Any, support: list[str] | None = None) -> dict[str, Any]:
     """1 つのイベントの参加ルームの順位・ポイントの推移・貢献者。"""
     ref = str(event_id or "").strip()
     if not ref:
@@ -297,7 +325,15 @@ def event_detail(state_dir: Path, event_id: Any) -> dict[str, Any]:
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
                 "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details,
-                "needed": event_analysis.needed_points(s, eid, now)}
+                "needed": event_analysis.needed_points(s, eid, now), "strength": _strength(s, eid, now, support)}
+
+
+def _strength(s: Store, eid: int, now: float, support: list[str] | None) -> dict[str, Any]:
+    st = event_analysis.event_strength(s, eid, now, _room_ids(s, support))
+    st["rooms"] = st["rooms"][:EVENT_ROOMS]
+    _room_labels(s, st["rooms"])
+    _room_labels(s, st["focus"])
+    return st
 
 
 def _progress(s: Store, eid: int, rooms: list[dict[str, Any]]) -> dict[str, Any]:

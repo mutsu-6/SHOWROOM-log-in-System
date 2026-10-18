@@ -398,6 +398,7 @@ td a.name-link, td a { word-break: break-word; }
       <a href="#events" data-sub="ongoing">開催中</a>
       <a href="#events/upcoming" data-sub="upcoming">これから</a>
       <a href="#events/ended" data-sub="ended">終わった</a>
+      <a href="#events/choice" data-sub="choice">応援ルームに合うイベント</a>
     </nav>
     <div id="ev-body"></div>
   </section>
@@ -2333,12 +2334,50 @@ document.addEventListener("click", (ev) => {
 });
 
 /* ------------------------------------------------------------ イベント (一覧) */
+const STRENGTH_NOTE = "強さ = そのルームが最近の終わったイベント (10 件まで) で、1 日あたりに取ったポイントの真ん中の値。見込みの順位は、参加ルームを強さの順に並べた時の位置 (強さの分からないルームは数えない)";
+const guessPlace = (f) => f.place == null ? '<span class="uid">分からない</span>' : `<b>${num(f.place)}</b> <span class="uid">/ ${num(f.of)}</span>`;
+async function showEventChoice(box) {
+  let d;
+  try { d = await api(`/api/events?state=choice`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "events") return;
+  if (!d.support) { box.innerHTML = `<div class="empty">応援ルームが設定されていません (「設定」の「応援しているルーム」で入れられます)。</div>`; return; }
+  const rows = d.events.flatMap((e) => e.focus.map((f) => ({ ...e, f })));
+  box.innerHTML = `<div class="hint" style="margin-top:0">開催中・これからのイベントで、応援ルームが出たら何位くらいか。${STRENGTH_NOTE}</div>`
+    + dataTable("events-choice", [
+      { label: "イベント", value: (r) => r.name, html: (r) => eventLink(r.event_id, r.name), cls: "name" },
+      { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
+      { label: "応援ルーム", value: (r) => r.f.name, html: (r) => `${roomLink(r.f.key, r.f.name)}${r.f.joined ? ' <span class="tag live">参加中</span>' : ""}` },
+      { label: "見込みの順位", num: true, value: (r) => r.f.place, html: (r) => guessPlace(r.f) },
+      { label: "特典", num: true, value: (r) => r.reward_rank, html: (r) => r.reward_rank ? `${num(r.reward_rank)} 位まで${r.f.place && r.f.place <= r.reward_rank ? ' <span class="tag live">入れそう</span>' : ""}` : "-" },
+      { label: "参加ルーム", num: true, value: (r) => r.rooms, html: (r) => `${num(r.rooms)}${r.unknown ? ` <span class="uid">(強さ不明 ${num(r.unknown)})</span>` : ""}` },
+      { label: "いちばん強いルーム", num: true, value: (r) => r.top, html: (r) => r.top ? `${shortNum(r.top)} <small>pt/日</small>` : "-" },
+    ], rows, { sort: 3, desc: false, limit: 100, csvName: "応援ルームに合うイベント", rowAttr: (r) => `class="clickable" data-go="#event/${esc(r.event_id)}"`,
+      empty: "参加ルームの分かった、開催中・これからのイベントがありません" });
+}
+function eventStrength(st) {
+  if (!st || !st.rooms.length) return "";
+  let h = `<h3>参加ルームの強さ <small class="muted">${num(st.rooms.length)} / ${num(st.total)} ルームの強さが分かりました</small></h3><div class="hint" style="margin-top:0">${STRENGTH_NOTE}</div>`;
+  if (st.focus.length) {
+    h += `<div class="tiles">${st.focus.map((f) => tile(`${esc(f.name)}${f.joined ? "" : " (出たら)"}`, guessPlace(f),
+      f.per_day ? `強さ ${shortNum(f.per_day)} pt/日 (${num(f.events)} イベント)${st.reward_rank ? ` ・ 特典は ${num(st.reward_rank)} 位まで` : ""}` : "終わったイベントの結果がまだありません",
+      f.place && st.reward_rank && f.place <= st.reward_rank ? "ok" : "")).join("")}</div>`;
+  }
+  h += dataTable("ep-strength", [
+    { label: "見込み", num: true, value: (r) => r.place, html: (r) => num(r.place) },
+    { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+    { label: "強さ (pt/日)", num: true, value: (r) => r.per_day, html: (r) => `<b>${num(Math.round(r.per_day))}</b>` },
+    { label: "いちばん良かった回", num: true, value: (r) => r.best, html: (r) => num(Math.round(r.best)) },
+    { label: "見たイベント", num: true, value: (r) => r.events, html: (r) => num(r.events) },
+  ], st.rooms, { sort: 0, desc: false, limit: 10, csvName: "参加ルームの強さ", rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
+  return h;
+}
 const eventLists = {};
 async function showEvents(sub) {
-  sub = ["ongoing", "upcoming", "ended"].includes(sub) ? sub : "ongoing";
+  sub = ["ongoing", "upcoming", "ended", "choice"].includes(sub) ? sub : "ongoing";
   setSub("#ev-tabs", sub);
   const box = $("#ev-body");
   box.innerHTML = loadingHtml();
+  if (sub === "choice") return showEventChoice(box);
   let d;
   try { d = await api(`/api/events?state=${sub}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "events") return;
@@ -2429,7 +2468,7 @@ async function showEvent(id) {
       ${tile("貢献ランキング", `${num(d.rankings)} <small>/ ${num(d.room_total)}</small>`, d.rankings_pending ? `取る予定 ${num(d.rankings_pending)} ルーム` : d.state === "ended" ? "取れる分は取りました" : "終わってから取ります", d.rankings_pending ? "warn" : "")}
       ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
     </div>
-    <div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventDetails(d.details)}`;
+    <div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
   html += `<div class="cols"><div><h3>参加ルームの順位</h3>${dataTable("ep-rooms", [
       { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
       { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
