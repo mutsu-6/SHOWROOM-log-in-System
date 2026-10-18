@@ -227,6 +227,92 @@ def _room_congestion(s: Store, rid: int, now: float) -> dict[str, Any] | None:
             "league_name": event_analysis.LEAGUES.get(lg) if lg is not None else None}
 
 
+METRIC_DAYS = 400  # 日ごとの数字を出す日数の上限
+
+
+def room_daily_metrics(state_dir: Path, key: Any, days: int = METRIC_DAYS) -> dict[str, Any]:
+    """ルームの日ごとの数字 (日本時間の日): 配信の時間・回数・盛り上がり度・フォロワー・ギフト・コメント・来場。
+
+    ギフト・コメント・来場は、記録しているルームだけ (記録が無い日は 0 ではなく「無し」)。
+    """
+    from datetime import datetime
+
+    from . import comment_counts, listing, live_events
+    from .status import JST
+
+    now = time.time()
+    since = now - days * 86400
+
+    def day_of(t: float) -> str:
+        return datetime.fromtimestamp(t, JST).strftime("%Y-%m-%d")
+
+    out: dict[str, dict[str, float]] = {}
+
+    def put(d: str, k: str, v: float, add: bool = True) -> None:
+        row = out.setdefault(d, {})
+        row[k] = row.get(k, 0) + v if add else v
+
+    with Store(state_dir) as s:
+        row = _find_room(s, key)
+        if row is None:
+            return {"found": False}
+        rid, rkey = int(row["room_id"]), row["key"]
+        for r in s.all("SELECT day, followers, view_max FROM room_daily WHERE room_id=? AND day >= ? ORDER BY day", (rid, day_of(since))):
+            if r["followers"] is not None:
+                put(r["day"], "followers", r["followers"], add=False)
+            if r["view_max"]:
+                put(r["day"], "view_max", r["view_max"], add=False)
+        for r in s.all("SELECT started_at, last_seen FROM room_lives WHERE room_id=? AND started_at >= ?", (rid, since)):
+            d = day_of(r["started_at"])
+            put(d, "lives", 1)
+            put(d, "hours", max(0.0, r["last_seen"] - r["started_at"] + room_analysis.LIVE_SEEN_GAP / 2) / 3600)
+    recorded = False
+    if rkey:
+        files = listing._record_files(state_dir)
+        if rkey in files:
+            recorded = True
+            catalog = listing.gift_catalog(state_dir, [rkey])
+            gifters: dict[str, set[Any]] = {}
+            for g in listing._load_file(files[rkey]):
+                if g["at"] < since:
+                    continue
+                d = day_of(g["at"])
+                pt, free = listing._points(catalog, g)
+                put(d, "free_points" if free else "paid_points", pt)
+                put(d, "gifts", int(g.get("num") or 1))
+                if g.get("user_id") is not None and not free:
+                    gifters.setdefault(d, set()).add(g["user_id"])
+            for d, us in gifters.items():
+                put(d, "paid_gifters", len(us), add=False)
+        for live in comment_counts.load(state_dir, rkey):
+            if live.get("first") and live["first"] >= since:
+                d = day_of(live["first"])
+                recorded = True
+                put(d, "comments", live.get("comments") or 0)
+                put(d, "commenters", live.get("users") or 0)
+        for e in live_events.load(state_dir, rkey, since):
+            if e.get("kind") == "visit":
+                recorded = True
+                d = day_of(e["at"])
+                put(d, "visits", 1)
+                if e.get("n") == 1:
+                    put(d, "first_visits", 1)
+            elif e.get("kind") == "fan_level":
+                put(day_of(e["at"]), "level_ups", 1)
+    # フォロワーの増減 (前に記録した日から)
+    prev = None
+    for d in sorted(out):
+        f = out[d].get("followers")
+        if f is not None:
+            if prev is not None:
+                out[d]["follower_gain"] = f - prev
+            prev = f
+    rec_keys = ("paid_points", "free_points", "gifts", "comments", "visits")
+    rec_days = [d for d in sorted(out) if any(k in out[d] for k in rec_keys)]
+    return {"found": True, "key": rkey, "recorded": recorded, "rec_from": rec_days[0] if rec_days else None,
+            "days": [{"day": d, **out[d]} for d in sorted(out)]}
+
+
 def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
     """1 つのルームの、集めた情報 (累計ランキング・ギフター・イベントの成績・重なるルーム)。"""
     now = time.time()

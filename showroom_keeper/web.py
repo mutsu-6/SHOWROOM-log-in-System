@@ -399,7 +399,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import research
 
                 self._json(research.gifter_detail(self._state_dir(), q.get("user"), self._support(q)))
-            elif url.path in ("/api/search", "/api/room", "/api/events", "/api/event", "/api/room_profiles"):
+            elif url.path in ("/api/search", "/api/room", "/api/events", "/api/event", "/api/room_profiles", "/api/room_metrics"):
                 from . import explore
 
                 state_dir = self._state_dir()
@@ -408,6 +408,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 elif url.path == "/api/room_profiles":
                     self._json(explore.room_profiles(state_dir, q.get("type"), q.get("style"), q.get("order", "momentum"),
                                                     q.get("depth")))
+                elif url.path == "/api/room_metrics":
+                    self._json(explore.room_daily_metrics(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
                 elif url.path == "/api/room":
                     self._json(explore.room_detail(state_dir, normalize_room_key(q.get("room", "")) or q.get("room", "")))
                 elif url.path == "/api/events" and q.get("state") == "choice":

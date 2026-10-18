@@ -130,3 +130,25 @@ def test_search_ignores_spaces_width_and_kana(tmp_path, monkeypatch):
     assert [x["key"] for x in r["rooms"]] == ["wnb", "new1"] and r["rooms"][1]["source"] == "showroom"
     with Store(tmp_path) as s:
         assert s.one("SELECT found_via FROM rooms WHERE room_id=99")[0] == "search"
+
+
+def test_room_daily_metrics(tmp_path):
+    import json as _json
+
+    from showroom_keeper import live_events
+
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "aaa", "name": "A"}], "live", NOW)
+        s.add_room_daily([{"room_id": 1, "followers": 10, "viewers": 50}], NOW - 86400)
+        s.add_room_daily([{"room_id": 1, "followers": 13, "viewers": 70}], NOW)
+        s.add_room_lives([{"room_id": 1, "started_at": int(NOW - 3600)}], NOW - 150)
+    (tmp_path / "gifts").mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(_json.dumps({"gifts": {"1": {"point": 100, "free": False}}}))
+    (tmp_path / "gifts" / "aaa.jsonl").write_text(_json.dumps({"at": int(NOW - 600), "live_id": 1, "user_id": 7, "gift_id": 1, "num": 2}) + "\n")
+    live_events.append(tmp_path, "aaa", {"at": int(NOW - 500), "live_id": 1, "user_id": 8, "kind": "visit", "n": 1})
+    m = explore.room_daily_metrics(tmp_path, "aaa")
+    last = m["days"][-1]
+    assert m["recorded"] and round(last["hours"], 2) == 1.0 and last["lives"] == 1 and last["follower_gain"] == 3
+    assert last["paid_points"] == 200 and last["paid_gifters"] == 1 and last["visits"] == 1 and last["first_visits"] == 1
+    assert explore.room_daily_metrics(tmp_path, "zzz") == {"found": False}
