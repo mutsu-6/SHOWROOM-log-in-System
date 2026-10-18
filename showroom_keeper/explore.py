@@ -182,7 +182,8 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                 "found_at": row["found_at"], "cumulative": cumulative, "gifters": gifters, "gifter_total": gifter_total,
                 "events": events, "event_total": event_total, "overlap": overlap,
                 "event_stats": _room_event_stats(s, rid), "analysis": room_analysis.room_analysis(s, rid, now),
-                "balance": room_analysis.balance(state_dir, row["key"], now) if row["key"] else None}
+                "balance": room_analysis.balance(state_dir, row["key"], now) if row["key"] else None,
+                "lure": room_analysis.lure_throws(state_dir, row["key"], now) if row["key"] else None}
 
 
 def _room_event_stats(s: Store, rid: int) -> dict[str, Any]:

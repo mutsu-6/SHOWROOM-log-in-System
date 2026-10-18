@@ -416,3 +416,55 @@ def test_tactics_marks(tmp_path):
         t = ra.tactics(s, 1)
         assert t["wins"] == 2 and t["close_wins"] == 1 and abs(t["win_margin"] - (0.02 + 0.5) / 2) < 1e-9
         assert t["early_leads"] == 1 and t["early_gap"] == 0.75 and t["swaps"] == 2
+
+
+def test_listener_rounds(tmp_path):
+    with Store(tmp_path) as s:
+        # イベント 1: ルーム 1 と 2 が競争。同じ時期のイベント 2 にはルーム 3 (競争相手ではない) が出ている
+        for eid in (1, 2):
+            s.upsert_events([{"event_id": eid, "start": NOW - 10 * DAY, "end": NOW - 3 * DAY}])
+        s.upsert_events([{"event_id": 0, "start": NOW - 40 * DAY, "end": NOW - 30 * DAY}])  # 前のイベント
+        s.set_event_rooms(0, [{"room_id": 3, "point": 100, "rank": 1}], NOW)
+        s.set_contributions(0, 3, [{"user_id": 50, "point": 10}], NOW, final=True)  # 50 はルーム 3 のファン
+        s.set_event_rooms(1, [{"room_id": 1, "point": 1000, "rank": 1}, {"room_id": 2, "point": 900, "rank": 2}], NOW)
+        s.set_event_rooms(2, [{"room_id": 3, "point": 500, "rank": 1}, {"room_id": 2, "point": 1, "rank": 2}], NOW)
+        s.set_contributions(1, 1, [{"user_id": 10, "point": 800}, {"user_id": 50, "point": 30}], NOW, final=True)
+        s.set_contributions(1, 2, [{"user_id": 20, "point": 900}], NOW, final=True)
+        # ルーム 1 のコアな人 (10) が、ルーム 3 (競争相手でない) とルーム 2 (競争相手) に送った
+        s.set_contributions(2, 3, [{"user_id": 10, "point": 50}], NOW, final=True)
+        s.set_contributions(2, 2, [{"user_id": 10, "point": 5}], NOW, final=True)
+        r = ra.listener_rounds(s, 1)
+    e = next(x for x in r["events"] if x["event_id"] == 1)
+    assert e["rooms"] == 1 and e["points"] == 50 and e["visitors"] == 1  # 競争相手のルーム 2 は数えない
+    assert e["returned"] == 1  # ルーム 3 のファン (50) が、初めてルーム 1 に来た
+
+
+def test_lure_throws(tmp_path):
+    (tmp_path / "gifts").mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 100, "free": False},
+                                                                                  "2": {"point": 10000, "free": False}}}))
+    lines = []
+    t0 = int(NOW) - 3600
+    for k in range(10):  # 常連 1 と 2 が交互に少額 (100 G) を送り、そのたびに 30 秒後にほかの人が続く
+        t = t0 + k * 300
+        lines += [{"at": t, "live_id": 1, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1},
+                  {"at": t + 30, "live_id": 1, "user_id": 90 + k, "gift_id": 1, "num": 1}]
+    lines.append({"at": t0 + 10, "live_id": 1, "user_id": 1, "gift_id": 2, "num": 10})  # 常連 1 の大きいギフト
+    (tmp_path / "gifts" / "aaa.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+    ra.LURE_CORE, old = 2, ra.LURE_CORE
+    try:
+        r = ra.lure_throws(tmp_path, "aaa", NOW)
+    finally:
+        ra.LURE_CORE = old
+    assert r["core"] == 2 and r["small"] == 10 and r["follow_rate"] == 1.0
+    assert r["lift"] > 3 and r["alternations"] == 0  # 5 分おきなので「交互」ではない
+    # 2 人が 30 秒おきに交互に送る
+    quick = [{"at": t0 + k * 30, "live_id": 2, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1} for k in range(6)]
+    (tmp_path / "gifts" / "bbb.jsonl").write_text("".join(json.dumps(x) + "\n" for x in quick))
+    ra.LURE_CORE = 2
+    try:
+        assert ra.lure_throws(tmp_path, "bbb", NOW)["alternations"] == 4
+    finally:
+        ra.LURE_CORE = old
+    assert ra.lure_throws(tmp_path, "zzz", NOW) is None
