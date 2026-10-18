@@ -67,7 +67,7 @@ POST = {"Content-Type": "application/json", "X-Showroom-Keeper": "1"}
 def test_page_and_overview(admin):
     keeper, base = admin
     code, html = call(base + "/")
-    assert code == 200 and "SHOWROOM keeper" in html
+    assert code == 200 and "SHOWROOM Analytics" in html
     code, body = call(base + "/api/overview")
     data = json.loads(body)
     assert code == 200 and [r["key"] for r in data["rooms"]] == ["a", "b"]

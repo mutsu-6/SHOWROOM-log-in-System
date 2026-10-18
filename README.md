@@ -1,7 +1,13 @@
-# SHOWROOM log in System
+# SHOWROOM Analytics
 
-[SHOWROOM](https://www.showroom-live.com/) にログインした状態で、指定したルームの **視聴状態を維持し続ける** 常駐システムです。
-ヘッドレス Chromium (Playwright) で実際に配信ページを開き、止まったら自動で復旧します。
+[SHOWROOM](https://www.showroom-live.com/) の **ギフターの分析と、イベントの作戦** のためのシステムです。
+ルーム・イベント・貢献ランキング・ギフト・配信の記録を集めて残し、管理画面で、ギフターの動き・ルームの強さ・
+イベントの必要ポイント・大会の勝ち上がりなどを見られます。
+あわせて、ログインした状態で指定したルームの視聴を続け (ヘッドレス Chromium・Playwright。止まったら自動で復旧)、
+配信のギフトやコメントを記録します。
+
+> 名前について: 2026-10-19 に「SHOWROOM keeper」から「SHOWROOM Analytics」に変えました。変えたのは画面と説明書の名前だけで、
+> プログラムの名前 (`showroom_keeper`・Docker・自動の更新・`.env` の `SHOWROOM_` で始まる設定) は前のままです。
 
 > Mac から管理画面を開くときは、[tools/管理画面を開く.command](tools/管理画面を開く.command) をダブルクリックすると、サーバーへのつなぎ道を開いてブラウザで管理画面を開きます (切れても自動でつなぎ直し、開いている間は Mac をスリープさせません)。
 >

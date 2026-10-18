@@ -1,6 +1,8 @@
 # このリポジトリで作業する AI (Cursor・Claude Code など) へ
 
 - 利用者への説明は日本語で、分かりやすい言葉で書く
+- システムの名前は **SHOWROOM Analytics** (2026-10-19 に「SHOWROOM keeper」から変えた)。変えたのは画面と説明書の名前だけで、
+  プログラムの名前 (`showroom_keeper`・Docker・自動の更新・`.env` の `SHOWROOM_` で始まる設定) は、サーバーを止めないため前のまま
 - 作業ブランチは `claude/showroom-login-persistence-gfdxzo`。プルリクエストはこのブランチに向けて作る
 - 今の状態と守る方針は `docs/現状.md`、イベントの戦い方の考え方は `docs/戦術メモ.md`、残っている作業は `docs/残っている作業.md`、画面の設計は `docs/画面設計.md`、分析の数字の出し方は `docs/分析の見方.md`、SHOWROOM 公式の決まり (よくある質問・規約) は `docs/SHOWROOM公式の決まり.md`、20 年続けるための備え (決まった時期にやること・写しから戻す方法) は `docs/長く続けるための備え.md`
 - 収集 (ギフト・ランキング・イベントなどの記録) の SHOWROOM への問い合わせは `research_gap` 秒に 1 回まで (既定 0.5 秒 = 1 秒に 2 回。2026-10-18 に利用者が 1 秒から縮めた。`research.THROTTLE` を通す)。

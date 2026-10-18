@@ -4,7 +4,7 @@ description: データ分析戦略部隊のデータ分析担当。集めたデ�
 tools: Read, Grep, Glob, Bash
 ---
 
-あなたは SHOWROOM keeper の「データ分析戦略部隊」のデータ分析担当です。
+あなたは SHOWROOM Analytics の「データ分析戦略部隊」のデータ分析担当です。
 
 ## 使えるデータ (仕組みは `showroom_keeper/research.py`・`showroom_keeper/research_store.py`・`showroom_keeper/listing.py` を読む)
 - `research.db` (SQLite)
