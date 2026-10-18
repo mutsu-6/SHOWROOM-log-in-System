@@ -1529,6 +1529,7 @@ function sweepStatus(d) {
   return `<h3 style="margin-top:14px">SHOWROOM の全ルーム</h3>
     <div class="summary">${stat(num(s.rooms), "見つけたルーム")}${stat(num(s.collected), "集めたルーム")}${stat(num(s.rankings), "貢献ランキング (件)")}
       ${stat(num(s.rankings_waiting), "取る予定のランキング")}${stat(num(s.gifters), "分かったギフター (人)")}</div>
+    ${w.disk_low != null ? `<div class="note-box">ディスクの空きが ${(w.disk_low / 2 ** 30).toFixed(1)}GB しかないので、全ルームの収集を止めています (視聴とログインの維持は続けています)。空きが 2GB を超えると自動で再開します。</div>` : ""}
     ${w.running && w.busy_seconds >= 600 ? `<div class="note-box">いまの仕事「${esc(w.doing || "")}」が ${num(Math.floor(w.busy_seconds / 60))} 分続いています。15 分を超えると、どこで止まっているかをログに書きます。</div>` : ""}
     <div class="hint">${w.running ? `集めています: ${esc(w.doing || "")}${w.last_step_at ? ` (最後に仕事を終えたのは ${ago(w.last_step_at)})` : ""}` : "止まっています"} ・ 問い合わせ ${pace} ・ 過去のイベント ${hist}${oldest}${anchor} ・ ルーム番号の調べ ${scan}
       ・ 30 日以内に配信 ${num(s.live_rooms)} ルーム ・ 保存先 ${num(s.db_mb)} MB${w.last_error ? `<br>前回の失敗: ${esc(w.last_error)}` : ""}${archiveStatus(d)}</div>`;

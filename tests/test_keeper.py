@@ -241,3 +241,41 @@ async def test_page_factory_keeps_one_blank_page_in_front():
     off = FakeContext()
     page = await page_factory(off, Config(background_tabs=False))()
     assert off.pages == [page] and off.front is page
+
+
+def test_broken_login_state_falls_back_to_backup(tmp_path):
+    from showroom_keeper import keeper as kp
+
+    state = tmp_path / "storage_state.json"
+    assert kp._readable_state(state) is None
+    state.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+    assert kp._readable_state(state) == str(state)
+    (tmp_path / "storage_state.json.bak").write_text('{"cookies": [1]}', encoding="utf-8")
+    state.write_text('{"cookies": [', encoding="utf-8")  # 書き込みが途中で止まった
+    assert kp._readable_state(state) == str(tmp_path / "storage_state.json.bak")
+
+
+def test_save_state_keeps_previous_file_when_writing_fails(tmp_path):
+    import asyncio
+
+    from showroom_keeper import keeper as kp
+    from showroom_keeper.config import Config
+
+    cfg = Config(state_file=tmp_path / "s.json")
+    (tmp_path / "s.json").write_text('{"cookies": ["old"]}', encoding="utf-8")
+
+    class Ctx:
+        def __init__(self, text):
+            self.text = text
+
+        async def storage_state(self, path):
+            from pathlib import Path
+
+            Path(path).write_text(self.text, encoding="utf-8")
+
+    asyncio.run(kp.save_state(Ctx('{"cookies": ['), cfg))  # 途中で切れた (ディスクが一杯など)
+    assert (tmp_path / "s.json").read_text(encoding="utf-8") == '{"cookies": ["old"]}'
+    assert not (tmp_path / "s.json.tmp").exists()
+    asyncio.run(kp.save_state(Ctx('{"cookies": ["new"]}'), cfg))
+    assert "new" in (tmp_path / "s.json").read_text(encoding="utf-8")
+    assert "old" in (tmp_path / "s.json.bak").read_text(encoding="utf-8")

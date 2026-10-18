@@ -171,7 +171,7 @@ async def _user_agent(browser: Browser, cfg: Config) -> str | None:
 
 
 async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
-    state = str(cfg.state_file) if Path(cfg.state_file).exists() else None
+    state = _readable_state(Path(cfg.state_file))
     if state:
         log.info("保存済みセッションを読み込みます: %s", state)
     ctx = await browser.new_context(
@@ -219,12 +219,47 @@ def page_factory(ctx: BrowserContext, cfg: Config) -> Any:
     return new_page
 
 
+def _readable_state(path: Path) -> str | None:
+    """読めるログイン状態のファイル。壊れていれば (前の版の書き込みが途中で止まったなど)、前の版 (.bak) を使う。"""
+    import json
+
+    for p in (path, path.with_name(path.name + ".bak")):
+        try:
+            if isinstance(json.loads(p.read_text(encoding="utf-8")), dict):
+                if p != path:
+                    log.warning("ログイン状態のファイルが壊れていたので、前の版 (%s) を使います", p.name)
+                return str(p)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 async def save_state(ctx: BrowserContext, cfg: Config) -> None:
+    """ログイン状態を保存する。ディスクが一杯などで書き込みが途中で止まっても、前のログイン状態が残るように、
+    別の名前に書いて中身を確かめてから置き換える (前の版は .bak に残す)。"""
+    import json
+    import os
+    import shutil
+
     path = Path(cfg.state_file)
     path.parent.mkdir(parents=True, exist_ok=True)
-    await ctx.storage_state(path=str(path))
-    with suppress(OSError):
-        path.chmod(0o600)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        await ctx.storage_state(path=str(tmp))
+        data = json.loads(tmp.read_text(encoding="utf-8"))  # 途中で切れていれば、ここで失敗する
+        if not isinstance(data, dict) or "cookies" not in data:
+            raise ValueError("ログイン状態の形が正しくありません")
+        with suppress(OSError):
+            tmp.chmod(0o600)
+        if path.exists():
+            with suppress(OSError):
+                shutil.copy2(path, path.with_name(path.name + ".bak"))
+        os.replace(tmp, path)
+    except (OSError, ValueError) as e:
+        with suppress(OSError):
+            tmp.unlink()
+        log.warning("ログイン状態を保存できませんでした (前の状態のまま使います): %s", e)
+        return
     log.debug("セッションを保存しました: %s", path)
 
 

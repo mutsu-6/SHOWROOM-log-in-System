@@ -2,7 +2,11 @@
 
 全ルームの収集は全部そろうまで約 2 か月かかるので、壊れたり消えたりした時に集め直さずに済むよう、
 毎日 1 回、state_dir/backup/ に写しを作る。書き込み中のファイルをそのままコピーすると壊れた写しになることが
-あるため (research.db は WAL を使う)、SQLite のバックアップの仕組み (sqlite3.Connection.backup) で写す。
+あるため (research.db は WAL を使う)、SQLite の VACUUM INTO で写す。
+
+sqlite3.Connection.backup は、写している途中にほかの接続が書き込むと最初から写し直すので、収集が 1 秒ごとに
+書き込んでいると、DB が大きいほどいつまでも終わらない。VACUUM INTO は、始めた時の中身を 1 回読むだけで写せて、
+そのあいだも収集の書き込みは止めない。
 """
 
 from __future__ import annotations
@@ -25,8 +29,6 @@ log = logging.getLogger("backup")
 BACKUP_DIR = "backup"
 KEEP = 2  # 残す写しの数 (古いものから消す)
 MIN_FREE = 1 << 30  # 写しを作ったあとにも残しておくディスクの空き (1GB)
-STEP_PAGES = 4096  # 1 回に写すページ数 (間に休みを入れて、収集の書き込みを止めすぎない)
-STEP_SLEEP = 0.02  # ページを写す合間の休み (秒)
 LAST_FILE = "last.json"
 
 
@@ -64,6 +66,10 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
     folder = backup_dir(state_dir)
     folder.mkdir(parents=True, exist_ok=True)
     size = _db_size(src)
+    # 新しい写しを作る前に、古い写しを消しておく (作ったあとに消すと、一時的に DB の何倍もの空きが要るため)。
+    # 作るあいだも keep - 1 個は残しておくので、作るのに失敗しても前の写しはある
+    for old in sorted(folder.glob("research-*.db"), key=lambda p: p.name, reverse=True)[max(keep - 1, 0):]:
+        old.unlink(missing_ok=True)
     free = shutil.disk_usage(folder).free
     if free < size * 1.2 + MIN_FREE:
         result = {"ok": False, "at": now, "reason": f"ディスクの空きが足りません (空き {free / 1e9:.1f}GB、写しに約 {size / 1e9:.1f}GB 要る)"}
@@ -75,16 +81,17 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
     tmp = folder / f"{name}.tmp"
     started = time.time()
     try:
+        tmp.unlink(missing_ok=True)  # VACUUM INTO は、同じ名前のファイルがあると失敗する
         source = sqlite3.connect(str(src), timeout=60)
         try:
-            dest = sqlite3.connect(str(tmp))
-            try:
-                source.backup(dest, pages=STEP_PAGES, sleep=STEP_SLEEP)
-                check = dest.execute("PRAGMA quick_check").fetchone()[0]
-            finally:
-                dest.close()
+            source.execute("VACUUM INTO ?", (str(tmp),))
         finally:
             source.close()
+        dest = sqlite3.connect(str(tmp))
+        try:
+            check = dest.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            dest.close()
         if check != "ok":
             raise sqlite3.DatabaseError(f"写しの確認で問題が見つかりました ({check})")
         os.replace(tmp, folder / name)

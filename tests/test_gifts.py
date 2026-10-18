@@ -95,3 +95,19 @@ def test_fetch_contributions_does_not_cache_partial_results(tmp_path):
     rows, failed = fetch_contributions(tmp_path, 5, rooms, final=True, fetch=_contrib_fetch([], fail={2}), now=1)
     assert failed == 1 and {r["room"] for r in rows} == {"R1"}
     assert not contribution_cache(tmp_path, 5).exists()
+
+
+def test_official_ranking_uses_collected_rankings_first(tmp_path, monkeypatch):
+    from showroom_keeper import research
+    from showroom_keeper.gifts import fetch_contributions
+    from showroom_keeper.research_store import Store
+
+    with Store(tmp_path) as s:  # 全ルームの収集が、ルーム 1 の分はもう取ってある
+        s.set_contributions(5, 1, [{"user_id": 7, "name": "集めた人", "point": 300, "rank": 1}], 1, final=True)
+    asked = []
+    monkeypatch.setattr(research.THROTTLE, "call", lambda get, path: asked.append(path) or {"ranking": [
+        {"rank": 1, "user_id": 8, "name": "聞いた人", "point": 50}]})
+    rows, failed = fetch_contributions(tmp_path, 5, [{"room_id": 1, "room_name": "A"}, {"room_id": 2, "room_name": "B"}],
+                                       final=True, now=1)
+    assert failed == 0 and {(r["room"], r["user_id"], r["name"]) for r in rows} == {("A", 7, "集めた人"), ("B", 8, "聞いた人")}
+    assert asked == ["/api/event/contribution_ranking?event_id=5&room_id=2"]  # 取ってない分だけ、決まりを通して聞く

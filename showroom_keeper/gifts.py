@@ -284,7 +284,18 @@ def fetch_contributions(state_dir: Path, event_id: Any, rooms: list[dict[str, An
         return cached, 0
     now = time.time() if now is None else now
     path = contribution_cache(state_dir, event_id)
-    get = fetch or _get
+    # 終わったイベントで、全ルームの収集がもう取ってある分 (research.db) は、問い合わせずにそれを使う (速く、問い合わせも減る)
+    known = _collected_contributions(state_dir, event_id, rooms) if final else {}
+    rooms = [r for r in rooms if str(r.get("room_id")) not in known]
+    if fetch is None:
+        # SHOWROOM に聞く分は、収集と同じ決まり (1 秒に 1 回まで、research.THROTTLE) を通す
+        from .research import THROTTLE
+
+        def get(path: str) -> Any:
+            return THROTTLE.call(_get, path)
+        workers = 1
+    else:
+        get, workers = fetch, CONTRIB_WORKERS
 
     def one(room: dict[str, Any]) -> list[dict[str, Any]] | None:
         name = room.get("room_name") or room.get("room_url_key")
@@ -297,14 +308,37 @@ def fetch_contributions(state_dir: Path, event_id: Any, rooms: list[dict[str, An
                 for r in (data.get("ranking") or []) if isinstance(r, dict)]
 
     targets = [r for r in rooms if r.get("room_id")]
-    with ThreadPoolExecutor(CONTRIB_WORKERS) as ex:
+    with ThreadPoolExecutor(workers) as ex:
         results = list(ex.map(one, targets))
     failed = sum(1 for r in results if r is None)
-    rows = [row for r in results if r for row in r]
+    rows = [row for got in known.values() for row in got] + [row for r in results if r for row in r]
     if not failed:  # 一部が欠けた結果は保存しない (終了済みイベントで欠けたまま固定されないように)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"at": now, "final": final, "rows": rows}, ensure_ascii=False), encoding="utf-8")
     return rows, failed
+
+
+def _collected_contributions(state_dir: Path, event_id: Any, rooms: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """全ルームの収集が research.db に取ってある、終わったイベントの貢献ランキング {room_id: 行の一覧}。"""
+    from .research_store import Store, db_path
+
+    if not db_path(state_dir).exists():
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    names = {str(r.get("room_id")): r.get("room_name") or r.get("room_url_key") for r in rooms}
+    try:
+        with Store(state_dir) as st:
+            for room_id, name in names.items():
+                if not room_id.isdigit() or not st.one("SELECT 1 FROM room_events WHERE event_id=? AND room_id=? AND final=1",
+                                                      (int(event_id), int(room_id))):
+                    continue
+                out[room_id] = [{"room": name, "rank": r["rank"], "user_id": r["user_id"], "name": r["name"], "point": r["point"]}
+                                for r in st.all("""SELECT c.rank, c.user_id, u.name, c.point FROM contributions c
+                                                   LEFT JOIN users u USING(user_id) WHERE c.event_id=? AND c.room_id=?
+                                                   ORDER BY c.rank""", (int(event_id), int(room_id)))]
+    except Exception:  # noqa: BLE001 - 読めなければ SHOWROOM に聞く
+        return {}
+    return out
 
 
 def summarize_official(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

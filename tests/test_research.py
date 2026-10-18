@@ -744,3 +744,41 @@ def test_sweep_logs_where_it_is_stuck(tmp_path, monkeypatch, caplog):
     msg = next(r.message for r in caplog.records if "続いています" in r.message)
     assert "gate.wait" in msg or "wait" in msg  # どこで止まっているかが分かる
     assert sw.last_step_at and sw.step_started_at is None
+
+
+def test_sweep_retries_live_progress_soon_after_a_failure(tmp_path):
+    clock = [NOW]
+    fail = [True]
+
+    def get(path):
+        if "room_list?event_id=8" in path:
+            if fail[0]:
+                raise urllib.error.HTTPError(path, 500, "busy", {}, None)
+            return {"list": [{"room_id": 4, "point": 100, "rank": 1}], "next_page": None}
+        return {}
+
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 8, "name": "開催中", "start": NOW - 86400, "end": NOW + 86400}])
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False,
+                       clock=lambda: clock[0])
+    assert sw._next_progress(NOW)  # 1 回失敗
+    fail[0] = False
+    assert not sw._next_progress(NOW + 60)  # すぐには読み直さない
+    clock[0] = NOW + sweep.PROGRESS_RETRY + 1
+    assert sw._next_progress(clock[0])  # 1 日ではなく、10 分ほどで読み直す
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT COUNT(*) FROM event_progress WHERE event_id=8") == 1
+
+
+def test_sweep_stops_when_disk_is_almost_full(tmp_path, monkeypatch):
+    class Usage:
+        free = 100
+
+    monkeypatch.setattr(sweep.shutil, "disk_usage", lambda path: Usage)
+    calls = []
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: calls.append(p) or {}, throttle=quiet_throttle()),
+                       scan=False)
+    assert sw.step() is False and calls == [] and sw.state()["disk_low"] == 100
+    Usage.free = 10 << 30
+    sw._disk_checked = 0
+    assert sw.step() is True and sw.state()["disk_low"] is None  # 空きが戻ったら再開する

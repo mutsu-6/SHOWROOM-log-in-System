@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import sys
 import threading
 import time
@@ -45,6 +46,9 @@ SCAN_MARGIN = 20000  # ルーム番号の順番の調べを、見つかってい
 IDLE = 60  # することが無いときに待つ時間 (秒)
 STALL = 900  # 1 つの仕事がこれより長くかかったら、どこで止まっているかをログに書く (秒)
 RETRY_AFTER = 86400  # 失敗したルーム・イベントを後回しにする時間 (秒)
+PROGRESS_RETRY = 600  # 開催中のイベントのポイントが読めなかった時に、読み直すまでの時間 (秒。推移が抜けないように短く)
+DISK_MIN = 2 << 30  # ディスクの空きがこれより少なくなったら、収集を止める (ログイン状態などが書けなくならないように)
+DISK_CHECK_EVERY = 600  # ディスクの空きを確かめる間隔 (秒)
 BATCH = 100  # 次の仕事の候補をまとめて調べる件数
 ANCHOR_ROOMS = 3  # 1 つのイベントで貢献ランキングを取るルームの数 (上位・中ほど・下位)
 
@@ -68,6 +72,8 @@ class Sweeper:
         self.step_started_at: float | None = None  # 今の仕事を始めた時刻 (仕事の合間は None)
         self.last_step_at: float | None = None  # 最後に仕事を終えた時刻
         self._thread_id: int | None = None
+        self._disk_checked = 0.0
+        self.disk_low: int | None = None  # ディスクの空きが少なくて止めている時の空き (バイト)
         self._stop = threading.Event()
 
     @property
@@ -78,7 +84,7 @@ class Sweeper:
         busy = self._clock() - self.step_started_at if self.step_started_at else 0
         return {"enabled": True, "running": self.running, "doing": self.doing, "started_at": self.started_at,
                 "last_error": self.last_error, "requests": self.c.requests, "failures": self.c.failures,
-                "scan": self.scan, "last_step_at": self.last_step_at, "busy_seconds": round(busy)}
+                "scan": self.scan, "last_step_at": self.last_step_at, "busy_seconds": round(busy), "disk_low": self.disk_low}
 
     # ---------------------------------------------------------------- 動かす
     def stop(self) -> None:
@@ -124,9 +130,27 @@ class Sweeper:
             self.running = False
             self.c.close()
 
+    def _disk_ok(self, now: float) -> bool:
+        """ディスクの空きが DISK_MIN より多いか (DISK_CHECK_EVERY ごとに確かめる)。少ない時は収集を止めて、ログと画面に出す。"""
+        if now - self._disk_checked >= DISK_CHECK_EVERY:
+            self._disk_checked = now
+            free = shutil.disk_usage(self.state_dir).free
+            if free < DISK_MIN:
+                if self.disk_low is None:
+                    log.warning("ディスクの空きが %.1fGB しかないので、全ルームの収集を止めます (空きが %.0fGB を超えたら再開します)。"
+                                "視聴とログインの維持は続けます", free / 2**30, DISK_MIN / 2**30)
+                self.disk_low = free
+            elif self.disk_low is not None:
+                log.info("ディスクの空きが戻ったので、全ルームの収集を再開します")
+                self.disk_low = None
+        return self.disk_low is None
+
     def step(self) -> bool:
         """仕事を 1 つ行う。することが無ければ False。"""
         now = self._clock()
+        if not self._disk_ok(now):
+            self.doing = "ディスクの空きが少ないので止めています"
+            return False
         st = self.store
         if now - (st.meta("live_at") or 0) >= LIVE_EVERY:
             return self._onlives(now)
@@ -223,7 +247,9 @@ class Sweeper:
         try:
             rooms = self._read_event_rooms(e["event_id"], now)
         except Exception as err:  # noqa: BLE001
-            self._failed("events", "event_id", e["event_id"], now, err)
+            # 開催中・これからのイベントは、推移を止めないように PROGRESS_RETRY 後に読み直す
+            ongoing = e["end"] is None or e["end"] > now
+            self._failed("events", "event_id", e["event_id"], now, err, after=PROGRESS_RETRY if ongoing else RETRY_AFTER)
             return True
         if e["progress_at"] is not None and e["end"] is not None and e["end"] <= now:
             # 推移を残していたイベントが終わった: 終わった時のポイント (最終結果) も、終わった時刻の値として推移に入れる
@@ -258,8 +284,10 @@ class Sweeper:
         try:
             rooms = self._read_event_rooms(e["event_id"], now)
         except Exception as err:  # noqa: BLE001
-            self.store.conn.execute("UPDATE events SET progress_at=? WHERE event_id=?", (now, e["event_id"]))
-            self._failed("events", "event_id", e["event_id"], now, err)
+            # 1 回の失敗で丸 1 日止めると、その日の推移が抜けて走り方が出せなくなるので、PROGRESS_RETRY 後に読み直す
+            self.store.conn.execute("UPDATE events SET progress_at=? WHERE event_id=?",
+                                    (now - PROGRESS_EVERY + PROGRESS_RETRY, e["event_id"]))
+            self._failed("events", "event_id", e["event_id"], now, err, after=PROGRESS_RETRY)
             return True
         self.store.add_progress(e["event_id"], rooms, now)
         return True
@@ -355,9 +383,9 @@ class Sweeper:
         return True
 
     # ---------------------------------------------------------------- 集める
-    def _failed(self, table: str, id_col: str, value: int, now: float, err: BaseException) -> None:
-        """失敗したルーム・イベントは RETRY_AFTER 秒後まで後回しにする (同じものを続けて問い合わせない)。"""
-        self.store.conn.execute(f"UPDATE {table} SET retry_at=? WHERE {id_col}=?", (now + RETRY_AFTER, value))
+    def _failed(self, table: str, id_col: str, value: int, now: float, err: BaseException, after: float = RETRY_AFTER) -> None:
+        """失敗したルーム・イベントは after 秒後まで後回しにする (同じものを続けて問い合わせない)。"""
+        self.store.conn.execute(f"UPDATE {table} SET retry_at=? WHERE {id_col}=?", (now + after, value))
         self.last_error = f"{self.doing}: {str(err).splitlines()[0] if str(err) else type(err).__name__}"
         log.warning("全ルームの収集で失敗したので後回しにします (%s)", self.last_error)
 

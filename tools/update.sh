@@ -29,6 +29,9 @@ git log -1 --format='%h %ci' > showroom_keeper/VERSION
 cat showroom_keeper/VERSION
 
 echo "== 3. 作り直して起動し直します (数分かかることがあります)"
+# 起動の確かめに失敗した時に戻せるよう、いま動いている版のイメージを覚えておく
+old_image=$(sudo docker compose images -q showroom-keeper 2>/dev/null | head -1 || true)
+image_name=$(sudo docker compose config --images 2>/dev/null | head -1 || true)
 if ! sudo docker compose up -d --build; then
   # 作り直しに失敗した時は、前の版が動いたままなので、版の番号も前に戻す
   # (戻さないと、新しい版が動いていると思い込み、自動の更新もやり直さない)
@@ -49,6 +52,16 @@ for _ in $(seq 1 30); do
   fi
   sleep 2
 done
-echo "   60 秒たっても管理画面が動きません。ログを見てください:"
+echo "   60 秒たっても管理画面が動きません。ログ:"
 sudo docker compose logs --tail 40 showroom-keeper
+# 新しい版が動かないので、前の版のイメージで起動し直す (版の番号も前に戻す)
+if [ -n "$old_image" ] && [ -n "$image_name" ]; then
+  echo "== 前の版に戻します"
+  if sudo docker tag "$old_image" "$image_name" && sudo docker compose up -d --no-build; then
+    if [ -n "$previous" ]; then echo "$previous" > showroom_keeper/VERSION; else rm -f showroom_keeper/VERSION; fi
+    echo "   前の版に戻しました (${previous:-版の番号は不明})。新しい版のどこが悪いかを、上のログで確かめてください"
+  else
+    echo "   前の版に戻せませんでした。上のメッセージを確かめてください"
+  fi
+fi
 exit 1

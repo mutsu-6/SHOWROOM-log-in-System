@@ -60,3 +60,41 @@ def test_backup_skips_without_db_or_disk_space(tmp_path, monkeypatch):
     r = backup.backup_research_db(tmp_path)
     assert r["ok"] is False and "空き" in r["reason"] and not list(backup.backup_dir(tmp_path).glob("research-*.db"))
     assert db_path(tmp_path).exists()
+
+
+def test_backup_finishes_while_writes_never_stop(tmp_path):
+    # 前の作り (Connection.backup) は、写す途中に書き込みがあると最初から写し直し、書き込みが続くと終わらなかった
+    _fill(tmp_path, 60000)  # 十数 MB
+    stop = threading.Event()
+
+    def writer():
+        with Store(tmp_path) as s:
+            while not stop.is_set():
+                s.conn.execute("INSERT INTO t(v) VALUES ('y')")
+                time.sleep(0.002)
+
+    t = threading.Thread(target=writer)
+    t.start()
+    started = time.time()
+    try:
+        r = backup.backup_research_db(tmp_path, now=1792000000)
+    finally:
+        stop.set()
+        t.join()
+    assert r["ok"] and time.time() - started < 20
+
+
+def test_backup_removes_old_copies_before_making_new_one(tmp_path, monkeypatch):
+    _fill(tmp_path, 10)
+    backup.backup_research_db(tmp_path, keep=1, now=1792000000)
+    seen = []
+    real = backup.shutil.disk_usage
+
+    def usage(path):  # 空きを調べる時には、もう古い写しが消えている
+        seen.append(sorted(p.name for p in backup.backup_dir(tmp_path).glob("research-*.db")))
+        return real(path)
+
+    monkeypatch.setattr(backup.shutil, "disk_usage", usage)
+    r = backup.backup_research_db(tmp_path, keep=1, now=1792000000 + 86400)
+    assert r["ok"] and seen == [[]]
+    assert len(list(backup.backup_dir(tmp_path).glob("research-*.db"))) == 1
