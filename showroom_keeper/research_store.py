@@ -169,7 +169,8 @@ class Store:
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
                                    ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
-                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL")):
+                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"),
+                                   ("user_rooms", "room_key TEXT")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -496,11 +497,12 @@ class Store:
             c.execute("UPDATE rooms SET fans_at=? WHERE room_id=?", (now, rid))
             self._names(c, [{"user_id": int(u["user_id"]), "name": u.get("user_name")} for u in users if u.get("user_id")], now)
 
-    def set_user_room(self, user_id: int, room_id: Any, now: float) -> None:
-        """ユーザーが持っているルーム (無い・非公開なら None) を残す。"""
-        self.conn.execute("""INSERT INTO user_rooms(user_id, room_id, checked_at) VALUES (?, ?, ?)
-                             ON CONFLICT(user_id) DO UPDATE SET room_id=excluded.room_id, checked_at=excluded.checked_at""",
-                          (int(user_id), None if room_id in (None, "", 0) else int(room_id), now))
+    def set_user_room(self, user_id: int, room_id: Any, now: float, key: Any = None) -> None:
+        """ユーザーが持っているルーム (無い・非公開なら None) と、そのルームの URL の名前を残す。"""
+        self.conn.execute("""INSERT INTO user_rooms(user_id, room_id, checked_at, room_key) VALUES (?, ?, ?, ?)
+                             ON CONFLICT(user_id) DO UPDATE SET room_id=excluded.room_id, checked_at=excluded.checked_at,
+                             room_key=excluded.room_key""",
+                          (int(user_id), None if room_id in (None, "", 0) else int(room_id), now, key or None))
 
     def add_final(self, event_id: int, rows: list[dict[str, Any]], now: float) -> int:
         """終わる直前の細かい推移を残す。戻り値は残したルームの数。"""

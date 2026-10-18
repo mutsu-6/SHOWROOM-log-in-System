@@ -451,14 +451,27 @@ def test_listener_rounds_counts_fans_and_the_streamer(tmp_path):
         s.set_contributions(1, 1, [{"user_id": 10, "point": 800}], NOW, final=True)
         ym = datetime.fromtimestamp(NOW - 3 * DAY, JST).strftime("%Y%m")
         s.set_active_fans(1, ym, 30, 2, [{"user_id": 60, "level": 9, "user_name": "常連"}], NOW)  # ポイントに出ない常連
-        s.set_user_room(70, 1, NOW)  # 70 はルーム 1 の配信者
+        s.set_user_room(70, 1, NOW, "abc0070")  # 70 はルーム 1 の配信者 (URL の名前が ID で終わる)
         s.set_contributions(2, 3, [{"user_id": 60, "point": 20}], NOW, final=True)  # 常連がルーム 3 に挨拶回り
         s.set_contributions(2, 4, [{"user_id": 70, "point": 15}], NOW, final=True)  # 配信者がルーム 4 に挨拶回り
         r = ra.listener_rounds(s, 1)
         reg = ra.regulars(s, 1)
     e = r["events"][0]
-    assert r["owner"] and e["rooms"] == 2 and e["owner_rooms"] == 1 and e["visitors"] == 2
+    # 配信者はコアな人に入れず、別に数える (配信者が分からないルームとくらべられるように)
+    assert r["owner"] and e["rooms"] == 1 and e["visitors"] == 1 and e["owner_rooms"] == 1 and e["owner_points"] == 15
     assert reg["total"] == 2 and reg["silent"] == 1  # 貢献ランキングに出ていない常連が 1 人
+
+
+def test_room_owner_only_when_sure(tmp_path):
+    with Store(tmp_path) as s:
+        s.set_user_room(70, 1, NOW, "abc0070")
+        assert ra.room_owner(s, 1) == 70
+        s.set_user_room(71, 2, NOW, "my_room")  # URL の名前が ID と合わない → 本人と決めない
+        assert ra.room_owner(s, 2) is None
+        s.set_user_room(80, 1, NOW, "def0080")  # 1 つのルームに 2 人 → 分からない
+        assert ra.room_owner(s, 1) is None
+        s.set_user_room(90, 3, NOW)  # 前の版で残した (URL の名前が無い)
+        assert ra.room_owner(s, 3) is None
 
 
 def test_lure_throws(tmp_path):
@@ -484,10 +497,17 @@ def test_lure_throws(tmp_path):
         assert r["people_before"] == 4 and r["people_after"] == 12 and r["people_ratio"] == 3.0  # 誘い投げのあと、送る人が 3 倍
         assert r["points_ratio"] is None  # 前の 3 分には有料ギフトが無い (くらべられない)
         assert r["per_hour"] > 1
-        # 2 人が 30 秒おきに交互に送る
-        quick = [{"at": t0 + k * 30, "live_id": 2, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1} for k in range(6)]
+        # 3 人が 20 秒おきに順に送る (常連でない人も入る)・5 分あけて 1 人が続けて送る (リレーではない)
+        quick = [{"at": t0 + k * 20, "live_id": 2, "user_id": (1, 2, 300)[k % 3], "gift_id": 1, "num": 1} for k in range(6)]
+        quick += [{"at": t0 + 400 + k * 10, "live_id": 2, "user_id": 301, "gift_id": 1, "num": 1} for k in range(4)]
+        quick.append({"at": t0 + 1000, "live_id": 2, "user_id": 302, "gift_id": 2, "num": 1})  # 大きなギフトに
+        quick.append({"at": t0 + 1010, "live_id": 2, "user_id": 303, "gift_id": 1, "num": 1})  # 10 秒後にほかの人が応えた
         (tmp_path / "gifts" / "bbb.jsonl").write_text("".join(json.dumps(x) + "\n" for x in quick))
-        assert ra.lure_throws(tmp_path, "bbb", NOW)["alternations"] == 4
+        q = ra.lure_throws(tmp_path, "bbb", NOW)
+        assert q["relays"] == 1 and q["relay_people_max"] == 3 and q["relay_longest"] == 6
+        assert q["relay_share"] == 600 / (1100 + 10000) and q["relay_core_start"] == 0.0  # コアな常連 (多く送った 2 人) は始めていない
+        assert q["respond"]["大きなギフト"] == {"n": 1, "rate": 1.0}
+        assert q["respond_base"] is not None and q["respond_base"] < 1
     finally:
         ra.LURE_CORE = old
     assert ra.lure_throws(tmp_path, "zzz", NOW) is None

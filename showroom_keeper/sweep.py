@@ -517,7 +517,8 @@ class Sweeper:
         アクティブファンのレベルの高い人から読む (配信者はほかのルームでも常連になっていることが多いため)。
         """
         r = self._take(self._owners, """SELECT af.user_id FROM active_fans af LEFT JOIN user_rooms ur USING(user_id)
-               WHERE ur.user_id IS NULL OR ur.checked_at < ? GROUP BY af.user_id ORDER BY MAX(af.level) DESC""",
+               WHERE ur.user_id IS NULL OR ur.checked_at < ? OR (ur.room_id IS NOT NULL AND ur.room_key IS NULL)
+               GROUP BY af.user_id ORDER BY MAX(af.level) DESC""",
                        (now - OWNER_EVERY,))
         if r is None:
             return False
@@ -529,7 +530,7 @@ class Sweeper:
                 raise
             p = {}
         room = p.get("room_profile") if isinstance(p.get("room_profile"), dict) else {}
-        self.store.set_user_room(r["user_id"], room.get("room_id"), now)
+        self.store.set_user_room(r["user_id"], room.get("room_id"), now, room.get("room_url_key"))
         if room.get("room_id"):
             self.store.upsert_rooms([{"room_id": room["room_id"], "key": room.get("room_url_key"), "name": room.get("room_name"),
                                       "followers": room.get("follower_num")}], "owner", now)

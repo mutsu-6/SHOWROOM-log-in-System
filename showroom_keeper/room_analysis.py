@@ -418,9 +418,16 @@ TSUKIAI = 0.2  # 最推しのルームの 1 イベントで送った最大の量
 
 
 def room_owner(s: Store, room_id: int) -> int | None:
-    """ルームの配信者のユーザー ID (プロフィールでルームを公開している時だけ分かる)。"""
-    row = s.one("SELECT user_id FROM user_rooms WHERE room_id=? ORDER BY checked_at DESC LIMIT 1", (int(room_id),))
-    return row[0] if row is not None else None
+    """ルームの配信者のユーザー ID。分からない時は None (推測はしない)。
+
+    配信者は自分のルームのファンにはならないので、ほかのルームのアクティブファンのプロフィールから見つける
+    (プロフィールでルームを公開している人だけ)。次の両方を満たす時だけ「本人」とみる:
+    - ルームの URL の名前が、SHOWROOM が最初に付ける形 (ユーザー ID で終わる) で、その人の ID と合う
+    - そのルームに結び付いた人が 1 人だけ
+    """
+    rows = s.all("SELECT user_id, room_key FROM user_rooms WHERE room_id=?", (int(room_id),))
+    sure = [r[0] for r in rows if r[1] and str(r[1]).endswith(str(r[0]))]
+    return sure[0] if len(sure) == 1 else None
 
 
 def regulars(s: Store, room_id: int) -> dict[str, Any] | None:
@@ -455,9 +462,12 @@ def _oshi(s: Store, uid: int, room_id: int, amount: int, cache: dict[int, tuple[
 
 
 def listener_rounds(s: Store, room_id: int) -> dict[str, Any]:
-    """リス活: イベント中に、コアな人 (配信者本人・貢献上位・ファンレベルの高い常連) が、競争相手 (同じイベントのルーム)
+    """リス活: イベント中に、コアな人 (貢献上位・ファンレベルの高い常連) が、競争相手 (同じイベントのルーム)
     以外のルームにギフトを送って回ったか。そのイベントの貢献者を「推し・掛け持ち・付き合い投げ」に分け、
     回った先のルームが最推しの人 (お返しに来た人の目安) を数える。
+
+    配信者本人は、アカウントが分かるルームと分からないルームがあるので、コアな人には入れず、別の数字にする
+    (入れると、分かったルームだけ数字が大きくなり、ルームどうしでくらべられなくなるため)。
     """
     rid = int(room_id)
     owner = room_owner(s, rid)
@@ -472,36 +482,41 @@ def listener_rounds(s: Store, room_id: int) -> dict[str, Any]:
         ym = datetime.fromtimestamp(ev["end"], JST).strftime("%Y%m")
         fans = [r[0] for r in s.all("SELECT user_id FROM active_fans WHERE room_id=? AND ym<=? ORDER BY ym DESC, level DESC LIMIT ?",
                                     (rid, ym, ROUND_FANS))]
-        core = list(dict.fromkeys(([owner] if owner else []) + [r["user_id"] for r in contrib[:ROUND_CORE]] + fans))
+        core = [u for u in dict.fromkeys([r["user_id"] for r in contrib[:ROUND_CORE]] + fans) if u != owner]
         rivals = {r[0] for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (eid,))}
-        visited: dict[int, int] = {}
-        visitors = 0
-        owner_rooms = 0
-        for uid in core:
+
+        def rounds(uid: int) -> list[Any]:
             rows = s.all("""SELECT c.room_id, SUM(c.point) AS points FROM contributions c JOIN events e USING(event_id)
                             WHERE c.user_id=? AND c.event_id != ? AND e.end > ? AND e.start < ? GROUP BY c.room_id""",
                          (uid, eid, ev["start"], ev["end"]))
-            rooms = [r for r in rows if r["room_id"] not in rivals and r["room_id"] != rid]
-            if rooms:
-                visitors += 1
-            if uid == owner:
-                owner_rooms = len(rooms)
+            return [r for r in rows if r["room_id"] not in rivals and r["room_id"] != rid]
+
+        visited: dict[int, int] = {}
+        visitors = 0
+        for uid in core:
+            rooms = rounds(uid)
+            visitors += bool(rooms)
             for r in rooms:
                 visited[r["room_id"]] = visited.get(r["room_id"], 0) + r["points"]
+        by_owner = {r["room_id"]: r["points"] for r in rounds(owner)} if owner else {}
         kinds = {"推し": 0, "掛け持ち": 0, "付き合い": 0}
-        returned = 0
+        returned = owner_returned = 0
         for r in contrib:
             kind, main = _oshi(s, r["user_id"], rid, r["point"], cache)
             kinds[kind] += 1
             if kind != "推し" and main in visited:
                 returned += 1
+            elif kind != "推し" and main in by_owner:
+                owner_returned += 1  # コアな人は回っていないが、配信者が回った先から来た
         out.append({"event_id": eid, "name": ev["name"], "end": ev["end"], "core": len(core), "visitors": visitors,
-                    "rooms": len(visited), "points": sum(visited.values()), "owner_rooms": owner_rooms if owner else None,
-                    "returned": returned, "kinds": kinds})
+                    "rooms": len(visited), "points": sum(visited.values()), "returned": returned, "kinds": kinds,
+                    "owner_rooms": len(by_owner) if owner else None, "owner_points": sum(by_owner.values()) if owner else None,
+                    "owner_returned": owner_returned if owner else None})
     done = [e for e in out if e["core"]]
     return {"owner": bool(owner), "events": out,
             "avg_rooms": sum(e["rooms"] for e in done) / len(done) if done else None,
             "avg_returned": sum(e["returned"] for e in done) / len(done) if done else None,
+            "avg_owner_rooms": sum(e["owner_rooms"] for e in out) / len(out) if owner and out else None,
             "kinds": {k: sum(e["kinds"][k] for e in out) for k in ("推し", "掛け持ち", "付き合い")}}
 
 
@@ -728,7 +743,10 @@ LURE_CORE = 5  # 有料ギフトの多い順に、何人を「コアな常連」
 LURE_FANS = 10  # アクティブファンのレベルの高い何人を、コアな常連に足すか
 LURE_SMALL = 1000  # 少額ギフト: 1 回に送った有料ギフトがこれ以下 (1 SG = 1 円なので 1000 円以下)
 LURE_WINDOW = 180  # 誘い投げの前後をくらべる時間 (秒)
-LURE_ALTERNATE = 120  # 2 人の常連が、この秒数のうちに交互に少額ギフトを送ったら「交互」と数える
+RELAY_GAP = 60  # リレー: 有料ギフトがこの秒数より短い間隔で、ちがう人へと続いたら、ひと続きとみる
+RELAY_HANDS = 2  # リレー: ひと続きの中で、送る人が何回以上替わったら「リレー」とみるか (A→B→A・A→B→C から)
+RESPOND_WINDOW = 30  # 呼応: ある人の有料ギフトのあと、この秒数のうちに、ほかの人が有料ギフトを送ったら「呼応した」とみる
+RESPOND_BIG = 10000  # 呼応: 1 回にこのポイント以上の有料ギフトを「大きなギフト」とみる
 
 
 def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: int = BALANCE_DAYS,
@@ -740,6 +758,7 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
     - 盛り上がり = 同じ配信の中で、誘い投げの「後の 3 分」と「前の 3 分」をくらべる (配信の流れで自然に増え減りする分を除くため)。
       ほかの人のギフト (無料も含む) を送った人数・有料のポイント・コメントの数
     - こまめさ = 配信 1 時間あたりの誘い投げの回数と、間隔の真ん中の値
+    - リレー・呼応 = relay_and_respond (常連に限らず、すべての人の有料ギフトで見る)
     """
     from . import comment_counts, listing
 
@@ -788,9 +807,69 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
         spans.setdefault(live, []).append(t)
     hours = sum((max(v) - min(v)) / 3600 for v in spans.values())
     gaps = [b[0] - a[0] for a, b in zip(lures, lures[1:]) if a[4] == b[4]]
-    alternations = sum(1 for a, b, c in zip(lures, lures[1:], lures[2:])
-                       if a[1] == c[1] != b[1] and a[4] == c[4] and c[0] - a[0] <= LURE_ALTERNATE)
     return {"days": days, "core": len(core), "lures": len(lures), "per_hour": len(lures) / hours if hours else None,
-            "gap": median(gaps), "alternations": alternations, "window": LURE_WINDOW,
+            "gap": median(gaps), "window": LURE_WINDOW, **relay_and_respond(gifts, core),
             "people_ratio": ratio[0], "points_ratio": ratio[1], "comments_ratio": ratio[2],
             "people_before": before[0], "people_after": after[0], "has_comments": any(minutes.values())}
+
+
+def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str, Any]:
+    """有料ギフトの流れ: リレー (何人かで続けて送る) と、呼応 (だれかのギフトに、ほかの人が応える)。
+
+    gifts は (時刻, ユーザー, ポイント, 無料か, 配信) を時刻の順に並べたもの。常連かどうか・人数は問わない。
+    - リレー: 同じ配信で、有料ギフトが RELAY_GAP 秒より短い間隔で続き、送る人が RELAY_HANDS 回以上替わったひと続き。
+      何人で回したか・最初に送ったのがコアな常連か・すべての有料ポイントのうちリレーの中で送られた割合
+    - 呼応: 有料ギフトのあと RESPOND_WINDOW 秒のうちに、ほかの人が有料ギフトを送った割合。送ったギフトの種類
+      (コアな常連の少額 = 誘い投げ・大きなギフト・そのほか) ごとに出し、「いつもの割合」(配信中の 10 秒ごとの時刻から、
+      RESPOND_WINDOW 秒のうちにだれかが有料ギフトを送った割合) とくらべる
+    """
+    paid = [g for g in gifts if not g[3] and g[2] > 0]
+    relays: list[list[tuple[Any, ...]]] = []
+    run: list[tuple[Any, ...]] = []
+    for g in paid + [None]:  # type: ignore[list-item]
+        if g is not None and run and g[4] == run[-1][4] and g[0] - run[-1][0] < RELAY_GAP:
+            run.append(g)
+            continue
+        if sum(1 for a, b in zip(run, run[1:]) if a[1] != b[1]) >= RELAY_HANDS:
+            relays.append(run)
+        run = [g] if g is not None else []
+    people = [len({g[1] for g in r}) for r in relays]
+    total = sum(g[2] for g in paid)
+
+    kinds: dict[str, list[int]] = {"誘い投げ": [0, 0], "大きなギフト": [0, 0], "そのほか": [0, 0]}
+    lives: dict[Any, list[tuple[Any, ...]]] = {}
+    for g in paid:
+        lives.setdefault(g[4], []).append(g)
+    spans: dict[Any, list[float]] = {}
+    for x in gifts:
+        span = spans.setdefault(x[4], [x[0], x[0]])
+        span[0], span[1] = min(span[0], x[0]), max(span[1], x[0])
+    base = [0, 0]
+    for live, rows in lives.items():
+        times = [g[0] for g in rows]
+        for i, g in enumerate(rows):
+            kind = "大きなギフト" if g[2] >= RESPOND_BIG else "誘い投げ" if g[1] in core and g[2] <= LURE_SMALL else "そのほか"
+            answered = False
+            for h in rows[i + 1:]:
+                if h[0] - g[0] > RESPOND_WINDOW:
+                    break
+                if h[1] != g[1] and h[0] > g[0]:
+                    answered = True
+                    break
+            kinds[kind][0] += 1
+            kinds[kind][1] += answered
+        # いつもの割合: 配信の中 (ほかのギフトも含めた最初と最後のあいだ) を 10 秒ごとに
+        t, j = spans[live][0], 0
+        while t <= spans[live][1]:
+            while j < len(times) and times[j] <= t:
+                j += 1
+            base[0] += 1
+            base[1] += j < len(times) and times[j] - t <= RESPOND_WINDOW
+            t += 10
+    return {"relays": len(relays), "relay_people_avg": sum(people) / len(people) if people else None,
+            "relay_people_max": max(people, default=0), "relay_longest": max((len(r) for r in relays), default=0),
+            "relay_share": sum(g[2] for r in relays for g in r) / total if total else None,
+            "relay_core_start": sum(1 for r in relays if r[0][1] in core) / len(relays) if relays else None,
+            "relay_gap": RELAY_GAP, "respond_window": RESPOND_WINDOW, "respond_big": RESPOND_BIG,
+            "respond": {k: {"n": v[0], "rate": v[1] / v[0] if v[0] else None} for k, v in kinds.items()},
+            "respond_base": base[1] / base[0] if base[0] else None}
