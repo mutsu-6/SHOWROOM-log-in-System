@@ -104,6 +104,8 @@ def watcher_view(w: Any) -> dict[str, Any]:
         state = "starting"
     elif status.is_live and alive:
         state = "watching"
+    elif status.is_live and getattr(w, "waiting_memory", False):
+        state = "memory"
     elif status.is_live:
         state = "opening"
     else:

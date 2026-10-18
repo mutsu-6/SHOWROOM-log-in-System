@@ -65,6 +65,31 @@ async def _limit_quality(ctx: BrowserContext, quality: int) -> None:
 # ページを開いておくのに必要なメモリの目安 (GB)。計測では 1 ルーム目で約 0.6〜1GB、以降 1 ルームにつき約 0.5GB
 BROWSER_BASE_GB = 0.5
 ROOM_GB = 0.5
+# ほかのページが開いている時に、もう 1 ページ開くのに要るメモリの空き (GB)。配信のページは 1 つ 0.5〜0.55GB 使う
+# (2026-10-18 に e2-small で測った。1 ページの時の空き 1.06GB・2 ページの時 0.63GB)。足りないまま開くと全部のページが重くなる
+OPEN_PAGE_GB = 0.7
+
+
+def available_gb() -> float | None:
+    """今のメモリの空き (MemAvailable、GB)。分からなければ None。"""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1024 / 1024
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def page_opener(watchers: list[Any], available: Any = available_gb) -> Any:
+    """ページを開いてよいかを決める関数を作る。ほかにページが 1 つも開いていなければ必ず開く (視聴を優先)。
+    ほかに開いている時は、メモリの空きが OPEN_PAGE_GB 以上ある時だけ開く。"""
+    def may_open(me: Any) -> bool:
+        if not any(w is not me and w._page_alive() for w in watchers):
+            return True
+        free = available()
+        return free is None or free >= OPEN_PAGE_GB
+    return may_open
 
 
 def memory_gb() -> float | None:
@@ -575,8 +600,10 @@ class Keeper:
 
             new_page = page_factory(ctx, self.cfg)  # 空白のページはルーム全体で 1 つ
             watchers = [RoomWatcher(key, self.cfg, api.room_status, new_page) for key in self.cfg.rooms]
+            may_open = page_opener(watchers)
             for w in watchers:
                 w.keep_open = keep_open
+                w.may_open = may_open
             self.watchers = watchers
             enter_rooms = [key for key in self.cfg.enter_rooms if key not in self.cfg.rooms]
             self.browser_state = "動作中"
