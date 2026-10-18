@@ -192,15 +192,33 @@ def upload_gcs(state_dir: Path, bucket: str, now: float | None = None) -> dict[s
 DISK_FILE = "disk_history.json"  # ディスクの空きを 1 日 1 回残したもの (増え方から、いっぱいになる日を見積もる)
 
 
+# 大きさを見張る記録 (state_dir の中)。増え方の大きいものを、ディスクの知らせに出す
+WATCHED = ("research.db", "gifts", "live_events", "backup")
+
+
+def _size(path: Path) -> int:
+    if path.is_file():
+        return sum(p.stat().st_size for p in (path, path.with_name(path.name + "-wal")) if p.exists())
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
 def record_disk(state_dir: Path, now: float | None = None) -> None:
-    """ディスクの空きを 1 日 1 回残す (毎日のバックアップの時と、管理画面を開いた時。400 日分)。"""
+    """ディスクの空きと、見張る記録 (WATCHED) の大きさを 1 日 1 回残す (毎日のバックアップの時と、管理画面を開いた時。400 日分)。"""
     now = time.time() if now is None else now
     path = Path(state_dir) / DISK_FILE
     hist = _disk_history(path)
     if hist and now - hist[-1][0] < 86400:
         return
     try:
-        hist = (hist + [[now, shutil.disk_usage(state_dir).free]])[-400:]
+        sizes = {name: _size(Path(state_dir) / name) for name in WATCHED if (Path(state_dir) / name).exists()}
+        hist = (hist + [[now, shutil.disk_usage(state_dir).free, sizes]])[-400:]
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(hist), encoding="utf-8")
         os.replace(tmp, path)
@@ -223,3 +241,14 @@ def disk_days_left(state_dir: Path, free: int, now: float) -> float | None:
         return None
     per_day = (old[0][1] - free) / ((now - old[0][0]) / 86400)
     return free / per_day if per_day > 0 else None
+
+
+def growth(state_dir: Path, now: float) -> list[tuple[str, float]]:
+    """見張る記録の、最近 30 日の 1 日あたりの増え方 (バイト)。多い順。1 日分たまるまでは空。"""
+    hist = [h for h in _disk_history(Path(state_dir) / DISK_FILE) if len(h) > 2 and now - h[0] <= 31 * 86400]
+    if len(hist) < 2 or hist[-1][0] - hist[0][0] < 86400:
+        return []
+    days = (hist[-1][0] - hist[0][0]) / 86400
+    first, last = hist[0][2], hist[-1][2]
+    out = [(name, (last[name] - first.get(name, 0)) / days) for name in last]
+    return sorted(out, key=lambda x: -x[1])

@@ -171,7 +171,9 @@ def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str
     elif free is not None:
         days = backup.disk_days_left(state_dir, free, now)
         if days is not None and days < DISK_WARN_DAYS:
-            out.append(f"このままだと、ディスクがあと {days:.0f} 日ほどでいっぱいになります (空き {free / 2**30:.1f}GB)")
+            top = backup.growth(state_dir, now)[:1]
+            most = f"。いちばん増えているのは {top[0][0]} (1 日 約 {top[0][1] / 1e6:.0f}MB)" if top and top[0][1] > 0 else ""
+            out.append(f"このままだと、ディスクがあと {days:.0f} 日ほどでいっぱいになります (空き {free / 2**30:.1f}GB{most})")
     st = sweep.state()
     if st.get("enabled") and st.get("last_step_at") and not st.get("disk_low") and now - st["last_step_at"] > 3600:
         out.append(f"全ルームの収集が {(now - st['last_step_at']) / 3600:.0f} 時間進んでいません (「{st.get('doing') or ''}」で止まっています)")
