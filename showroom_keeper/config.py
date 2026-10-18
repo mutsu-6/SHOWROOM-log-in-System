@@ -132,6 +132,7 @@ class Config:
     # 退会したユーザーの前の名前を取り戻す (問い合わせ先は SHOWROOM ではない。4 秒に 1 回、数日かかる)
     research_archive: bool = True
     research_gap: float = 1.0
+    research_archive_gap: float = 6.0  # Internet Archive への問い合わせの間隔 (秒)
     # research.db のバックアップ (state_dir/backup/ に SQLite のバックアップの仕組みで写す) の時刻 (日本時間、毎日) と残す数
     research_backup_times: str = "4:00"
     research_backup_keep: int = 2

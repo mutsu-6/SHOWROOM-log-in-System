@@ -33,7 +33,7 @@ from .research_store import Store
 log = logging.getLogger("archive")
 
 ARCHIVE = "https://web.archive.org"
-ARCHIVE_GAP = 4.0  # Internet Archive への問い合わせの間隔 (秒)
+ARCHIVE_GAP = 6.0  # Internet Archive への問い合わせの間隔 (秒)。4 秒ではつなぎを断られることが続いたので下げた (2026-10-18)
 INDEX_URL = "showroom-live.com/event/*"  # 保存されているページの一覧を取る範囲
 PAGE_TRIES = 3  # 1 つのページで、読めるものが見つかるまで試す保存の数 (新しい保存から)
 IDLE = 3600  # することが無いときに待つ時間 (秒)。新しく集めたイベント・ルームと、後から突き合わせられる
@@ -345,8 +345,8 @@ def status(store: Store) -> dict[str, Any]:
 
 
 class ArchiveWorker:
-    def __init__(self, state_dir: Path):
-        self.c = ArchiveCollector(state_dir)
+    def __init__(self, state_dir: Path, gap: float = ARCHIVE_GAP):
+        self.c = ArchiveCollector(state_dir, throttle=Throttle(gap))
         self.running = False
         self._stop = threading.Event()
 
@@ -378,10 +378,10 @@ class ArchiveWorker:
 WORKER: ArchiveWorker | None = None
 
 
-def start(state_dir: Path) -> ArchiveWorker:
+def start(state_dir: Path, gap: float = ARCHIVE_GAP) -> ArchiveWorker:
     global WORKER
     if WORKER is None or not WORKER.running:
-        WORKER = ArchiveWorker(state_dir)
+        WORKER = ArchiveWorker(state_dir, gap)
         threading.Thread(target=WORKER.run_forever, daemon=True, name="archive").start()
     return WORKER
 

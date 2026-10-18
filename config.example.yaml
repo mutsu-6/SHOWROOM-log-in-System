@@ -24,6 +24,7 @@ research_rooms: []
 research_all: false
 research_scan: true     # ルーム番号を 1 から順に 1 回だけ調べる (約 58 万回、1 秒に 1 回で約 7 日)
 research_gap: 1.0       # 問い合わせの間隔 (秒)。混んでいれば自動で広げ、続けて失敗したら 1 時間止める
+research_archive_gap: 6.0  # Internet Archive への問い合わせの間隔 (秒)
 
 # ログイン情報。パスワードはこのファイルではなく環境変数
 # SHOWROOM_ACCOUNT_ID / SHOWROOM_PASSWORD (.env) で渡すことを推奨します。

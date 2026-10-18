@@ -454,7 +454,7 @@ class Keeper:
             if self.cfg.research_archive:
                 from . import archive
 
-                archive.start(state_dir)
+                archive.start(state_dir, self.cfg.research_archive_gap)
         loop = asyncio.get_running_loop()
         first = True
         while True:
