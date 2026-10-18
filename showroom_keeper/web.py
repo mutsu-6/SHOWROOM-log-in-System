@@ -145,29 +145,6 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
 
 
 DISK_WARN_DAYS = 180  # ディスクがこの日数のうちにいっぱいになりそうなら知らせる
-DISK_FILE = "disk_history.json"  # ディスクの空きを 1 日 1 回残したもの (増え方から、いっぱいになる日を見積もる)
-
-
-def disk_days_left(state_dir: Path, free: int, now: float) -> float | None:
-    """ディスクの空きを 1 日 1 回残し、最近 30 日の減り方で、あと何日でいっぱいになるかを見積もる (7 日分たまるまでは None)。"""
-    path = Path(state_dir) / DISK_FILE
-    try:
-        hist = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        hist = []
-    if not hist or now - hist[-1][0] >= 86400:
-        hist = (hist + [[now, free]])[-400:]
-        try:
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(hist), encoding="utf-8")
-            tmp.replace(path)
-        except OSError:
-            pass
-    old = [h for h in hist if now - h[0] <= 31 * 86400]
-    if not old or now - old[0][0] < 7 * 86400:
-        return None
-    per_day = (old[0][1] - free) / ((now - old[0][0]) / 86400)
-    return free / per_day if per_day > 0 else None
 
 
 def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str]:
@@ -190,7 +167,7 @@ def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str
         out.append(f"ディスクの空きが {free / 2**30:.1f}GB しかありません"
                    f" ({sweep.DISK_MIN / 2**30:.0f}GB を切ると全ルームの収集が止まります)")
     elif free is not None:
-        days = disk_days_left(state_dir, free, now)
+        days = backup.disk_days_left(state_dir, free, now)
         if days is not None and days < DISK_WARN_DAYS:
             out.append(f"このままだと、ディスクがあと {days:.0f} 日ほどでいっぱいになります (空き {free / 2**30:.1f}GB)")
     st = sweep.state()

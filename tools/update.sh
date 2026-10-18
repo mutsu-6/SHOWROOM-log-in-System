@@ -48,8 +48,8 @@ for _ in $(seq 1 30); do
     echo "   管理画面が動いています"
     sudo docker compose logs --tail 15 showroom-keeper
     # 更新のたびに作り直しの途中のファイルと古いイメージがたまり、ディスク (29GB) を食うので片付ける
-    # (7 日以内のものは、次の作り直しを速くするために残す)
-    sudo docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+    # (2GB までは、次の作り直しを速くするために残す。4 日で 5.9GB たまっていた)
+    sudo docker builder prune -f --max-used-space 2GB >/dev/null 2>&1 || true
     sudo docker image prune -f >/dev/null 2>&1 || true
     echo "== 終わりました ($after)"
     exit 0
