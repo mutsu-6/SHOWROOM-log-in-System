@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS room_lives (
     room_id INTEGER, started_at INTEGER, live_id INTEGER, last_seen REAL, view_max INTEGER,
     followers_start INTEGER, followers_end INTEGER, PRIMARY KEY (room_id, started_at)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS room_lives_start ON room_lives(started_at);
+-- 記録したギフトの、ルーム × 日 (日本時間) の合計。ギフトの記録のファイル (gifts/<ルーム>.jsonl) を、前に読んだところから先だけ足す
+CREATE TABLE IF NOT EXISTS room_gift_daily (
+    room_key TEXT, day TEXT, paid_points INTEGER DEFAULT 0, free_points INTEGER DEFAULT 0, gifts INTEGER DEFAULT 0,
+    PRIMARY KEY (room_key, day)) WITHOUT ROWID;
+-- その日に有料ギフトを送った人 (人数を数えるため)
+CREATE TABLE IF NOT EXISTS room_gift_day_users (room_key TEXT, day TEXT, user_id INTEGER, PRIMARY KEY (room_key, day, user_id)) WITHOUT ROWID;
+-- ギフトの記録のファイルを、どこまで足したか (バイトの位置と、その時のファイルの大きさ)
+CREATE TABLE IF NOT EXISTS room_gift_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
 -- SHOWROOM のお知らせ (ログインが要る)
 CREATE TABLE IF NOT EXISTS notices (notice_id INTEGER PRIMARY KEY, label TEXT, title TEXT, created_at REAL, contents TEXT, at REAL);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す

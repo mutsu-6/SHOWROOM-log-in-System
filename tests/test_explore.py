@@ -152,3 +152,36 @@ def test_room_daily_metrics(tmp_path):
     assert m["recorded"] and round(last["hours"], 2) == 1.0 and last["lives"] == 1 and last["follower_gain"] == 3
     assert last["paid_points"] == 200 and last["paid_gifters"] == 1 and last["visits"] == 1 and last["first_visits"] == 1
     assert explore.room_daily_metrics(tmp_path, "zzz") == {"found": False}
+
+
+def test_gift_daily_is_added_incrementally(tmp_path):
+    import json as _json
+    from datetime import datetime
+
+    from showroom_keeper.status import JST
+
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "aaa", "name": "A"}], "live", NOW)
+    (tmp_path / "gifts").mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(_json.dumps({"gifts": {"1": {"point": 100, "free": False},
+                                                                                  "2": {"point": 1, "free": True}}}))
+    f = tmp_path / "gifts" / "aaa.jsonl"
+    t1 = datetime(2026, 10, 17, 23, 59, tzinfo=JST).timestamp()  # 日本時間の日の境目
+    t2 = datetime(2026, 10, 18, 0, 1, tzinfo=JST).timestamp()
+    f.write_text(_json.dumps({"at": t1, "user_id": 7, "gift_id": 1, "num": 2}) + "\n")
+    with Store(tmp_path) as s:
+        explore.update_gift_daily(tmp_path, s, "aaa")
+        with f.open("a") as w:  # 新しいギフトと、書きかけの行
+            w.write(_json.dumps({"at": t2, "user_id": 7, "gift_id": 1, "num": 1}) + "\n" + _json.dumps({"at": t2, "user_id": 8, "gift_id": 2}) + "\n")
+            w.write('{"at": ')
+        explore.update_gift_daily(tmp_path, s, "aaa")
+        explore.update_gift_daily(tmp_path, s, "aaa")  # 2 回目は何も足さない
+        rows = {r["day"]: tuple(r)[2:] for r in s.all("SELECT * FROM room_gift_daily WHERE room_key='aaa'")}
+        assert rows == {"2026-10-17": (200, 0, 2), "2026-10-18": (100, 1, 2)}
+        assert s.scalar("SELECT COUNT(*) FROM room_gift_day_users WHERE room_key='aaa' AND day='2026-10-18'") == 1
+        f.write_text(_json.dumps({"at": t2, "user_id": 9, "gift_id": 1, "num": 1}) + "\n")  # 小さくなった: 作り直す
+        explore.update_gift_daily(tmp_path, s, "aaa")
+        rows = {r["day"]: tuple(r)[2:] for r in s.all("SELECT * FROM room_gift_daily WHERE room_key='aaa'")}
+        assert rows == {"2026-10-18": (100, 0, 1)}
+    assert explore._jst_day(t1) == "2026-10-17" and explore._jst_day(t2) == "2026-10-18"

@@ -7,6 +7,7 @@ SHOWROOM には問い合わせない。分析 (research.analyze) のように全
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -228,6 +229,81 @@ def _room_congestion(s: Store, rid: int, now: float) -> dict[str, Any] | None:
 
 
 METRIC_DAYS = 400  # 日ごとの数字を出す日数の上限
+_gift_daily_lock = threading.Lock()
+
+
+_EPOCH_DAYS: dict[int, str] = {}  # 1970-01-01 からの日数 → "YYYY-MM-DD" (作った分を使い回す)
+
+
+def _jst_day(t: float) -> str:
+    """日本時間の日 (YYYY-MM-DD)。日本時間は +9 時間で決まっているので、1 件ずつ datetime を作らずに出す (ギフトは数が多いため)。"""
+    n = (int(t) + 32400) // 86400
+    text = _EPOCH_DAYS.get(n)
+    if text is None:
+        from datetime import date, timedelta
+
+        text = _EPOCH_DAYS[n] = (date(1970, 1, 1) + timedelta(days=n)).isoformat()
+    return text
+
+
+def update_gift_daily(state_dir: Path, s: Store, room_key: str) -> None:
+    """記録したギフトのファイルの、前に足したところから先だけを、ルーム × 日の合計 (room_gift_daily) に足す。
+
+    ファイルが前より小さくなっていたら (作り直し・まとめ直し)、そのルームの分を最初から作り直す。
+    ポイントは足した時のギフトの一覧で数える (一覧に無いギフトは 0 pt)。
+    """
+    from . import listing
+
+    path = listing._record_files(state_dir).get(room_key)
+    if path is None:
+        return
+    with _gift_daily_lock:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        row = s.one("SELECT pos, size FROM room_gift_pos WHERE room_key=?", (room_key,))
+        pos = row["pos"] if row is not None else 0
+        if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
+            with s.tx() as c:
+                c.execute("DELETE FROM room_gift_daily WHERE room_key=?", (room_key,))
+                c.execute("DELETE FROM room_gift_day_users WHERE room_key=?", (room_key,))
+            pos = 0
+        if size <= pos:
+            return
+        with path.open("rb") as f:
+            f.seek(pos)
+            chunk = f.read(size - pos)
+        end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
+        if end <= 0:
+            return
+        catalog = listing.gift_catalog(state_dir, [room_key])
+        sums: dict[str, list[int]] = {}
+        users: set[tuple[str, int]] = set()
+        for line in chunk[:end].splitlines():
+            try:
+                g = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(g, dict) or "at" not in g:
+                continue
+            d = _jst_day(g["at"])
+            pt, free = listing._points(catalog, g)
+            acc = sums.setdefault(d, [0, 0, 0])
+            acc[1 if free else 0] += pt
+            acc[2] += int(g.get("num") or 1)
+            if not free and g.get("user_id") is not None:
+                users.add((d, int(g["user_id"])))
+        with s.tx() as c:
+            c.executemany("""INSERT INTO room_gift_daily(room_key, day, paid_points, free_points, gifts) VALUES (?, ?, ?, ?, ?)
+                             ON CONFLICT(room_key, day) DO UPDATE SET paid_points=paid_points+excluded.paid_points,
+                               free_points=free_points+excluded.free_points, gifts=gifts+excluded.gifts""",
+                          [(room_key, d, v[0], v[1], v[2]) for d, v in sums.items()])
+            c.executemany("INSERT OR IGNORE INTO room_gift_day_users(room_key, day, user_id) VALUES (?, ?, ?)",
+                          [(room_key, d, u) for d, u in users])
+            c.execute("""INSERT INTO room_gift_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
+                         ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
+                      (room_key, pos + end, pos + end, time.time()))
 
 
 def room_daily_metrics(state_dir: Path, key: Any, days: int = METRIC_DAYS) -> dict[str, Any]:
@@ -235,16 +311,12 @@ def room_daily_metrics(state_dir: Path, key: Any, days: int = METRIC_DAYS) -> di
 
     ギフト・コメント・来場は、記録しているルームだけ (記録が無い日は 0 ではなく「無し」)。
     """
-    from datetime import datetime
-
     from . import comment_counts, listing, live_events
-    from .status import JST
 
     now = time.time()
     since = now - days * 86400
 
-    def day_of(t: float) -> str:
-        return datetime.fromtimestamp(t, JST).strftime("%Y-%m-%d")
+    day_of = _jst_day
 
     out: dict[str, dict[str, float]] = {}
 
@@ -268,22 +340,18 @@ def room_daily_metrics(state_dir: Path, key: Any, days: int = METRIC_DAYS) -> di
             put(d, "hours", max(0.0, r["last_seen"] - r["started_at"] + room_analysis.LIVE_SEEN_GAP / 2) / 3600)
     recorded = False
     if rkey:
-        files = listing._record_files(state_dir)
-        if rkey in files:
+        if rkey in listing._record_files(state_dir):
             recorded = True
-            catalog = listing.gift_catalog(state_dir, [rkey])
-            gifters: dict[str, set[Any]] = {}
-            for g in listing._load_file(files[rkey]):
-                if g["at"] < since:
-                    continue
-                d = day_of(g["at"])
-                pt, free = listing._points(catalog, g)
-                put(d, "free_points" if free else "paid_points", pt)
-                put(d, "gifts", int(g.get("num") or 1))
-                if g.get("user_id") is not None and not free:
-                    gifters.setdefault(d, set()).add(g["user_id"])
-            for d, us in gifters.items():
-                put(d, "paid_gifters", len(us), add=False)
+            with Store(state_dir) as s:
+                update_gift_daily(state_dir, s, rkey)  # 新しいギフトの分だけ足す
+                start = day_of(since)
+                for r in s.all("SELECT day, paid_points, free_points, gifts FROM room_gift_daily WHERE room_key=? AND day >= ?", (rkey, start)):
+                    put(r["day"], "paid_points", r["paid_points"])
+                    put(r["day"], "free_points", r["free_points"])
+                    put(r["day"], "gifts", r["gifts"])
+                for r in s.all("""SELECT day, COUNT(*) AS n FROM room_gift_day_users WHERE room_key=? AND day >= ? GROUP BY day""",
+                               (rkey, start)):
+                    put(r["day"], "paid_gifters", r["n"], add=False)
         for live in comment_counts.load(state_dir, rkey):
             if live.get("first") and live["first"] >= since:
                 d = day_of(live["first"])
