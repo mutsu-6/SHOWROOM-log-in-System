@@ -498,7 +498,9 @@ class Keeper:
         while True:
             if due:
                 try:
-                    await loop.run_in_executor(None, backup.backup_research_db, state_dir, self.cfg.research_backup_keep)
+                    made = await loop.run_in_executor(None, backup.backup_research_db, state_dir, self.cfg.research_backup_keep)
+                    if made and made.get("ok") and self.cfg.research_backup_gcs:
+                        await loop.run_in_executor(None, backup.upload_gcs, state_dir, self.cfg.research_backup_gcs)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001 - 次の日にもう一度試す

@@ -167,6 +167,9 @@ def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str
         out.append(f"research.db のバックアップに失敗しました: {last.get('reason') or '理由不明'}")
     elif last and now - float(last.get("at") or 0) > 2 * 86400:
         out.append("research.db のバックアップが 2 日以上作られていません")
+    sent = backup.last_upload(state_dir)
+    if sent and not sent.get("ok"):
+        out.append(f"バックアップをサーバーの外 (gs://{sent.get('bucket')}) に送れませんでした: {sent.get('reason') or '理由不明'}")
     return out
 
 
@@ -421,6 +424,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         cfg = self.keeper.cfg
         out = {"job": research.JOB.state(), "status": research.status(self._state_dir(), research.research_keys(cfg)),
                "throttle": research.THROTTLE.state(), "sweep": sweep.state(), "backup": backup.last_backup(self._state_dir()),
+               "upload": backup.last_upload(self._state_dir()),
                "archive": archive.state()}
         if cfg.research_all:
             now = time.time()

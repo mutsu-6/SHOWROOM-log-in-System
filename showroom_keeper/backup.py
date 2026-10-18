@@ -17,6 +17,9 @@ import os
 import shutil
 import sqlite3
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +33,9 @@ BACKUP_DIR = "backup"
 KEEP = 2  # 残す写しの数 (古いものから消す)
 MIN_FREE = 1 << 30  # 写しを作ったあとにも残しておくディスクの空き (1GB)
 LAST_FILE = "last.json"
+GCS_CHUNK = 16 << 20  # サーバーの外 (Google Cloud Storage) に送る時の 1 回の大きさ (256KB の倍数。メモリ 2GB でも小さく)
+GCS_FILE = "gcs.json"
+TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 
 
 def backup_dir(state_dir: Path) -> Path:
@@ -111,4 +117,73 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
               "copies": min(len(copies), max(keep, 1))}
     log.info("research.db のバックアップを作りました: %s (%.1f MB、%.0f 秒)", name, mb, result["seconds"])
     _save_last(state_dir, result)
+    return result
+
+
+def last_upload(state_dir: Path) -> dict[str, Any] | None:
+    """前回サーバーの外 (Google Cloud Storage) に送った結果 (管理画面用)。"""
+    try:
+        return json.loads((backup_dir(state_dir) / GCS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _token(cache: dict[str, Any]) -> str:
+    """VM のサービスアカウントのトークン (期限の 5 分前に取り直す)。"""
+    if cache.get("token") and time.time() < cache.get("until", 0):
+        return cache["token"]
+    req = urllib.request.Request(TOKEN_URL, headers={"Metadata-Flavor": "Google"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.load(resp)
+    cache.update(token=data["access_token"], until=time.time() + float(data.get("expires_in", 300)) - 300)
+    return cache["token"]
+
+
+def upload_gcs(state_dir: Path, bucket: str, now: float | None = None) -> dict[str, Any] | None:
+    """いちばん新しい写しを gs://<bucket>/ に曜日ごとの名前 (research-mon.db など) で送る。7 日分が順に上書きされて残る。
+
+    サーバーが壊れたり消えたりしても集めた情報が残るように。VM のサービスアカウントに Cloud Storage へ書き込む権限が要る。
+    大きなファイルを一度に読まないよう、分けて送る (resumable upload)。戻り値は {ok, at, name, mb, seconds, reason}。
+    """
+    state_dir = Path(state_dir)
+    copies = sorted(backup_dir(state_dir).glob("research-*.db"), key=lambda p: p.name, reverse=True)
+    if not bucket or not copies:
+        return None
+    src, now = copies[0], time.time() if now is None else now
+    name = f"research-{('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')[datetime.fromtimestamp(now, JST).weekday()]}.db"
+    size, started, cache = src.stat().st_size, time.time(), {}
+    try:
+        query = urllib.parse.urlencode({"uploadType": "resumable", "name": name})
+        req = urllib.request.Request(f"https://storage.googleapis.com/upload/storage/v1/b/{urllib.parse.quote(bucket)}/o?{query}",
+                                     data=b"", method="POST", headers={"Authorization": f"Bearer {_token(cache)}",
+                                                                       "X-Upload-Content-Length": str(size)})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            session = resp.headers["Location"]
+        with src.open("rb") as f:
+            sent = 0
+            while sent < size:
+                chunk = f.read(GCS_CHUNK)
+                req = urllib.request.Request(session, data=chunk, method="PUT", headers={
+                    "Authorization": f"Bearer {_token(cache)}", "Content-Range": f"bytes {sent}-{sent + len(chunk) - 1}/{size}"})
+                try:
+                    with urllib.request.urlopen(req, timeout=300):
+                        pass
+                except urllib.error.HTTPError as e:
+                    if e.code != 308:  # 308 はまだ続きがあるという返事
+                        raise
+                sent += len(chunk)
+    except Exception as e:  # noqa: BLE001 - 送れなくても収集は続ける (次の日にまた送る)
+        reason = str(e).splitlines()[0] if str(e) else type(e).__name__
+        if isinstance(e, urllib.error.HTTPError) and e.code == 403:
+            reason += " (VM に Cloud Storage へ書き込む権限がありません)"
+        result = {"ok": False, "at": now, "bucket": bucket, "reason": reason}
+        log.warning("バックアップをサーバーの外に送れませんでした: %s", reason)
+    else:
+        result = {"ok": True, "at": now, "bucket": bucket, "name": name, "mb": round(size / 1e6, 1),
+                  "seconds": round(time.time() - started, 1)}
+        log.info("バックアップを gs://%s/%s に送りました (%.1f MB、%.0f 秒)", bucket, name, result["mb"], result["seconds"])
+    folder = backup_dir(state_dir)
+    tmp = folder / f"{GCS_FILE}.tmp"
+    tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, folder / GCS_FILE)
     return result

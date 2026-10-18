@@ -136,6 +136,8 @@ class Config:
     # research.db のバックアップ (state_dir/backup/ に SQLite のバックアップの仕組みで写す) の時刻 (日本時間、毎日) と残す数
     research_backup_times: str = "4:00"
     research_backup_keep: int = 2
+    # バックアップをサーバーの外にも送る Google Cloud Storage のバケット名 (空なら送らない。VM に書き込む権限が要る)
+    research_backup_gcs: str = ""
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
     # 見張っているルームのギフト (無料の星を含む) を state_dir/gifts/ に記録する
     record_gifts: bool = True

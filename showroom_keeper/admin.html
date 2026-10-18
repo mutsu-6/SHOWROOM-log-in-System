@@ -2367,6 +2367,8 @@ function renderCollect(d) {
   const pauses = (t.pause_log || []).slice(0, 5).map((p) => `${tm(p.at, true).slice(0, 11)} から ${durationText(p.seconds)} (${esc(p.why)}・続けて ${p.count} 回目)`);
   $("#r-backup").innerHTML = (!b ? "バックアップ: まだありません" : b.ok ? `バックアップ: ${tm(b.at, true).slice(0, 11)} (${num(b.mb)} MB・毎日 4:00)`
     : `<b style="color:var(--accent)">バックアップに失敗 (${esc(tm(b.at, true).slice(0, 11))}): ${esc(b.reason || "")}</b>`)
+    + (d.upload ? (d.upload.ok ? ` ・ サーバーの外: gs://${esc(d.upload.bucket)}/${esc(d.upload.name)} (${tm(d.upload.at, true).slice(0, 11)})`
+      : ` ・ <b style="color:var(--accent)">サーバーの外に送れませんでした: ${esc(d.upload.reason || "")}</b>`) : "")
     + (pauses.length ? `<br>問い合わせを止めた記録: ${pauses.join(" / ")}` : "");
   $("#c-coverage").innerHTML = d.coverage ? coverageBlock(d.coverage).replace('<details class="more">', '<details class="more" open>') : "";
 }
