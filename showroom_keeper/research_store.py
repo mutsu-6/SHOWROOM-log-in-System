@@ -157,7 +157,9 @@ class Store:
                                    ("room_events", "c_p100 INTEGER"), ("room_profile", "depth_pt REAL"),
                                    ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT"),
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
-                                   ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL")):
+                                   ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
+                                   ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
+                                   ("room_event_style", "rival_slow REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")

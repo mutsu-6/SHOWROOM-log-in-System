@@ -2110,7 +2110,7 @@ document.addEventListener("change", (ev) => {
 });
 
 function roomAnalysisHtml(d) {
-  const a = d.analysis, m = a.metrics, mo = a.momentum, st = a.style, b = d.balance;
+  const a = d.analysis, m = a.metrics, mo = a.momentum, st = a.style, b = d.balance, tc = a.tactics || {};
   const styleCounts = Object.entries(st.counts || {}).map(([k, v]) => `${k} ${v}`).join("・");
   let html = `<h3>ルームの分析</h3><div class="note-box">${esc(a.caution)}</div><div class="tiles">
     ${tile("タイプ", a.type ? esc(a.type) : '<small>判定できない</small>', a.type ? esc(a.type_note) : esc(a.type_why || ""))}
@@ -2127,6 +2127,14 @@ function roomAnalysisHtml(d) {
       : `順位の位置 ${placeText(mo.prev_place)} → ${placeText(mo.recent_place)} (${num(mo.prev_events)} 件 → ${num(mo.recent_events)} 件)${mo.label_why ? `。${esc(mo.label_why)}` : mo.label === "変わらない" && Math.abs(mo.value) >= 0.1 ? "。差はあるが、イベントごとのばらつきの範囲" : ""}`, mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}
     ${tile("戦術", st.style ? esc(st.style) : '<small>判定できない</small>', st.style ? `${num(st.events)} イベントから (${esc(styleCounts)})`
       : `走り方を見たイベント (推移の分かったもの) が 3 件より少ない (今 ${num(st.events)} 件)`)}
+    ${tile("節約して勝つ", tc.win_margin == null ? "—" : `${pctText(tc.win_margin, 1)} <small>差</small>`, tc.wins
+      ? `1 位になった ${num(tc.wins)} イベントの、2 位との差 ÷ 自分のポイント (真ん中の値)。小さいほど必要な分だけで勝った。5% 未満の僅差勝ち ${num(tc.close_wins)} 回`
+      : "1 位になったイベントがまだありません")}
+    ${tile("逆転の多さ", tc.swaps == null ? "—" : `${tc.swaps.toFixed(1)} <small>回</small>`, tc.swap_events
+      ? `走り方を見た ${num(tc.swap_events)} イベントで、1 位になった・1 位から落ちた回数の平均。多いほど抜きつ抜かれつ (逆転圏を保つ戦い方)` : "推移の分かったイベントがまだありません")}
+    ${tile("逃げの引き離し", tc.early_gap == null ? "—" : pctText(tc.early_gap), tc.early_leads
+      ? `序盤に 1 位だった ${num(tc.early_leads)} イベントの、2 位との差の割合。${tc.rival_slow == null ? "" : `引き離された 2 位の伸びの速さは ${tc.rival_slow.toFixed(2)} 倍に${tc.rival_slow < 1 ? "鈍った" : "なった"}`}`
+      : "序盤に 1 位だったイベントがまだありません")}
     ${tile("新しく来た人", a.new_share.value == null ? "—" : pctText(a.new_share.value), a.new_share.value == null ? "イベントが 2 件より少ない"
       : "このルームの前のイベントの貢献ランキング (上位 100 人) に、一度も出ていなかった人の割合 (真ん中の値)")}
     ${tile("フォロワーの増え方", a.followers ? `${a.followers.change >= 0 ? "+" : ""}${num(a.followers.change)}` : "—",
@@ -2143,6 +2151,8 @@ function roomAnalysisHtml(d) {
       { label: "終盤", num: true, value: (e) => e.late == null ? null : -e.late, html: (e) => placeText(e.late) },
       { label: "最後", num: true, value: (e) => e.final == null ? null : -e.final, html: (e) => placeText(e.final) },
       { label: "最終日の伸び", num: true, value: (e) => e.last_day_share, html: (e) => pctText(e.last_day_share), },
+      { label: "1 位の入れ替わり", num: true, value: (e) => e.swaps, html: (e) => e.swaps == null ? "-" : `${num(e.swaps)} 回` },
+      { label: "序盤の引き離し", num: true, value: (e) => e.early_gap, html: (e) => e.early_gap == null ? "-" : `${pctText(e.early_gap)}${e.rival_slow == null ? "" : ` <span class="uid">2 位の伸び ${e.rival_slow.toFixed(2)} 倍</span>`}` },
     ], a.event_styles, { sort: 1, limit: 10, csvName: `${d.key}_走り方`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"`,
       note: "位置は参加ルームの中の位置 (上から何%)。最終日の伸びは、最後の 24 時間に得たポイントの割合" });
   }

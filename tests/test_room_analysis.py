@@ -392,3 +392,27 @@ def test_thin_progress_keeps_what_the_analysis_needs(tmp_path):
         s.conn.execute("UPDATE events SET style_at=? WHERE event_id=10", (NOW,))
         ra.step(s, NOW)
         assert s.one("SELECT thinned_at FROM events WHERE event_id=10")[0] is None
+
+
+def test_tactics_marks(tmp_path):
+    with Store(tmp_path) as s:
+        start, end = NOW - 10 * DAY, NOW - 3 * DAY
+        s.upsert_events([{"event_id": 9, "start": start, "end": end}])
+        # ルーム 1 は序盤に大きく引き離す。2 位のルーム 2 は、引き離されたあと伸びが鈍る。ルーム 3 と 4 は 1 位を取り合う回がある
+        plan = {0.05: (500, 100, 50, 40, 30), 0.25: (2000, 500, 400, 300, 200), 0.5: (3000, 600, 3500, 400, 300),
+                0.75: (4000, 700, 3800, 4500, 400), 6 / 7: (5000, 800, 4000, 4600, 500), 1.0: (9000, 900, 4100, 4700, 600)}
+        for f, pts in plan.items():
+            s.add_progress(9, [{"room_id": r + 1, "point": p} for r, p in enumerate(pts)], start + f * (end - start))
+        rows = {r[1]: r for r in ra.event_styles(s, 9)}
+        assert abs(rows[1][11] - 0.75) < 1e-9  # 序盤の 2 位との差 (2000 - 500) / 2000
+        assert rows[1][12] < 0.5  # 2 位の伸びが鈍った
+        assert rows[2][11] is None  # 序盤に 1 位でなかったルームには付けない
+        assert rows[1][10] == 2 and rows[3][10] == 2 and rows[4][10] == 2 and rows[2][10] == 0  # 1 位が 1→3→4→1 と入れ替わった
+        s.conn.executemany("""INSERT INTO room_event_style(event_id, room_id, style, swaps, early_gap, rival_slow)
+                              VALUES (?, ?, ?, ?, ?, ?)""", [(9, r[1], r[2], r[10], r[11], r[12]) for r in rows.values()])
+        # 節約: 1 位になったイベントで、2 位との差の割合
+        for eid, (p1, p2) in enumerate(((1000, 980), (1000, 500)), 20):
+            _event(s, eid, NOW - eid * DAY, {1: (p1, 1, []), 2: (p2, 2, []), **{r: (10, r, []) for r in range(3, 7)}})
+        t = ra.tactics(s, 1)
+        assert t["wins"] == 2 and t["close_wins"] == 1 and abs(t["win_margin"] - (0.02 + 0.5) / 2) < 1e-9
+        assert t["early_leads"] == 1 and t["early_gap"] == 0.75 and t["swaps"] == 2

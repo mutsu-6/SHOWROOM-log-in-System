@@ -284,12 +284,16 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
     # 1 位の回: 1 位が 1 ルームだけで、ポイントがある回だけ数える (全員 0 や同点の回は、だれの 1 位にもしない)
     leads: dict[int, int] = {}
     scored = 0
+    tops: list[int | None] = []  # 回ごとの 1 位 (同点や全員 0 は None)。1 位の入れ替わりを数えるため
     for at in ats:
         top = s.all("SELECT room_id, point FROM event_progress WHERE event_id=? AND at=? ORDER BY point DESC LIMIT 2", (eid, at))
         if top and (top[0][1] or 0) > 0:
             scored += 1  # 誰かにポイントのある回 (1 位の割合は、この回の数で割る)
             if len(top) == 1 or (top[1][1] or 0) < top[0][1]:
                 leads[top[0][0]] = leads.get(top[0][0], 0) + 1
+                tops.append(top[0][0])
+            else:
+                tops.append(None)
     # 序盤にほとんど誰もポイントを持っていない (まだ始まっていない) 時は、みな同じ「最下位」になり、
     # 上位で終えたルームがみな「差し」に見えてしまう。その時は序盤の位置を使わない (先行・差しを付けない)
     if sum(p > 0 for p in snaps[final_at].values()) < STYLE_MIN_ROOMS:
@@ -297,6 +301,25 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
     early_snap = snaps.get(t_early) or {}
     early_known = bool(early_snap) and sum(p > 0 for p in early_snap.values()) >= STYLE_EARLY_ACTIVE * len(early_snap)
     expected_day = 86400 / dur  # ならした時の、最後の 24 時間の割合
+    # 1 位の入れ替わり: 1 位が決まっている回どうしで、1 位が変わった回 (そのルームが 1 位になった・1 位から落ちた)
+    leaders = [t for t in tops if t is not None]
+    swaps: dict[int, int] = {}
+    for a, b in zip(leaders, leaders[1:]):
+        if a != b:
+            swaps[a] = swaps.get(a, 0) + 1
+            swaps[b] = swaps.get(b, 0) + 1
+    # 逃げの引き離し: 序盤の 1 位の、2 位との差 (1 位のポイントに対する割合)。相手の失速: その 2 位の、序盤から終盤までの
+    # 伸びの速さ ÷ 始まりから序盤までの速さ (1 より小さいほど、引き離されたあと伸びが鈍った)
+    early_gap, rival_slow, early_leader = None, None, None
+    if early_known and t_early is not None:
+        order = sorted(early_snap.items(), key=lambda kv: (-kv[1], kv[0]))
+        if len(order) >= 2 and order[0][1] > order[1][1] > 0:
+            early_leader, rival = order[0][0], order[1][0]
+            early_gap = (order[0][1] - order[1][1]) / order[0][1]
+            if t_late is not None and t_late > t_early > start:
+                before = order[1][1] / (t_early - start)
+                after = (snaps[t_late].get(rival, order[1][1]) - order[1][1]) / (t_late - t_early)
+                rival_slow = after / before if before > 0 else None
     out = []
     for rid, final_pt in snaps[final_at].items():
         if final_pt <= 0:
@@ -309,7 +332,8 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
         last_day = (final_pt - day_pt) / final_pt if day_pt is not None else None
         lead = leads.get(rid, 0) / scored if scored else 0.0
         style = classify_run(early, late, final, last_day, lead, expected_day)
-        out.append((eid, rid, style, early, mid, late, final, last_day, None if early is None else early - final, lead))
+        out.append((eid, rid, style, early, mid, late, final, last_day, None if early is None else early - final, lead,
+                    swaps.get(rid, 0), early_gap if rid == early_leader else None, rival_slow if rid == early_leader else None))
     return out
 
 
@@ -354,6 +378,34 @@ def room_style(s: Store, room_id: int) -> dict[str, Any]:
     else:
         style = "型なし"
     return {"style": style, "events": len(rows), "counts": counts}
+
+
+# ------------------------------------------------------------------ 戦い方の目印 (docs/戦術メモ.md)
+WIN_EVENTS = 20  # 節約の目印に使う、直近の 1 位のイベントの数
+
+
+def tactics(s: Store, room_id: int) -> dict[str, Any]:
+    """戦い方の目印: 節約して勝てたか・逆転の多さ・逃げの引き離しと相手の失速 (人数の割合などは出さない)。
+
+    - 節約: 1 位になったイベントで、2 位との差 ÷ 自分のポイント。小さいほど、必要な分だけで勝った (真ん中の値)
+    - 逆転: 走り方を見たイベントで、そのルームが 1 位になった・1 位から落ちた回数の平均
+    - 逃げ: 序盤に 1 位だったイベントで、2 位との差の割合と、2 位の伸びの速さの変わり方 (1 より小さいほど鈍った)
+    """
+    rid = int(room_id)
+    wins = s.all("""SELECT re.event_id, re.point, e.name, e.end,
+                           (SELECT MAX(o.point) FROM room_events o WHERE o.event_id = re.event_id AND o.room_id != re.room_id) AS second
+                    FROM room_events re JOIN events e USING(event_id)
+                    WHERE re.room_id=? AND re.rank=1 AND re.point > 0 AND e.rooms_at >= e.end AND e.room_count >= ?
+                    ORDER BY e.end DESC LIMIT ?""", (rid, STYLE_MIN_ROOMS, WIN_EVENTS))
+    margins = [(w["point"] - (w["second"] or 0)) / w["point"] for w in wins if w["second"]]
+    rows = s.all("""SELECT st.swaps, st.early_gap, st.rival_slow FROM room_event_style st JOIN events e USING(event_id)
+                    WHERE st.room_id=? ORDER BY e.end DESC LIMIT ?""", (rid, STYLE_RECENT))
+    swaps = [r["swaps"] for r in rows if r["swaps"] is not None]
+    gaps = [r["early_gap"] for r in rows if r["early_gap"] is not None]
+    slows = [r["rival_slow"] for r in rows if r["rival_slow"] is not None]
+    return {"wins": len(wins), "win_margin": median(margins), "close_wins": sum(m < 0.05 for m in margins),
+            "swaps": sum(swaps) / len(swaps) if swaps else None, "swap_events": len(swaps),
+            "early_leads": len(gaps), "early_gap": median(gaps), "rival_slow": median(slows)}
 
 
 # ------------------------------------------------------------------ ルームのページ
@@ -411,12 +463,13 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
             "depth": depth, "depth_note": DEPTH_NOTES.get(depth or ""), "depths": DEPTH_NOTES,
             "size_name": SIZE_NAMES[m["size_class"]] if m else None,
             "momentum": momentum(s, room_id, now), "style": room_style(s, room_id), "event_styles": styles,
+            "tactics": tactics(s, room_id),
             "new_share": new_share(s, room_id), "followers": followers_growth(s, room_id, now), "daily": daily[::-1],
             "types": TYPES, "styles": STYLES, "caution": CAUTION}
 
 
 # ------------------------------------------------------------------ 1 日 1 回の作り直し
-STYLE_VERSION = 4  # 4: 狙った時刻から離れた回を使わない・参加ルームの少ないイベントを除く・追い込みを期間の長さでくらべる。 走り方の出し方を変えたら上げる (前に作った分を作り直す。3: 序盤にポイントの無い回を使わない)
+STYLE_VERSION = 5  # 5: 1 位の入れ替わり・序盤の引き離し・相手の失速も残す。 4: 狙った時刻から離れた回を使わない・参加ルームの少ないイベントを除く・追い込みを期間の長さでくらべる。 走り方の出し方を変えたら上げる (前に作った分を作り直す。3: 序盤にポイントの無い回を使わない)
 
 
 def step(s: Store, now: float) -> bool:
@@ -435,7 +488,7 @@ def step(s: Store, now: float) -> bool:
         with s.tx() as c:
             c.execute("DELETE FROM room_event_style WHERE event_id=?", (e["event_id"],))
             c.executemany("""INSERT INTO room_event_style(event_id, room_id, style, early, mid, late, final, last_day_share, climb,
-                             lead_share) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+                             lead_share, swaps, early_gap, rival_slow) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
             c.execute("UPDATE events SET style_at=? WHERE event_id=?", (now, e["event_id"]))
         return True
     # 走り方を作り終えて日がたったイベントの推移を間引く (残すのは、作り直しと終盤の分析に使う回)
