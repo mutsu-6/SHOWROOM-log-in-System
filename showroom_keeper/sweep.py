@@ -50,6 +50,8 @@ FINAL_WINDOW = 3 * 3600  # 終わるこれだけ前から、上位 30 ルーム�
 FINAL_EVERY = 60  # その間隔 (秒)
 FINAL_LAST = 600  # 終わるこれだけ前からは、さらに細かく (秒)
 FINAL_LAST_EVERY = 15  # その間隔 (秒)
+FINAL_SPRINT = 60  # 終わるこれだけ前からは、もっと細かく (ラスト数秒のまとめ投げを見るため。秒)
+FINAL_SPRINT_EVERY = 2  # その間隔 (秒。同時に終わるイベントが多い時は、問い合わせの間隔 0.5 秒の分ずつ遅れる)
 FINAL_AFTER = 900  # 終わったあとも、これだけのあいだは 1 分ごとに読む (最後のギフトの反映を見るため。秒)
 PROGRESS_RETRY = 600  # 開催中のイベントのポイントが読めなかった時に、読み直すまでの時間 (秒。推移が抜けないように短く)
 DISK_MIN = 2 << 30  # ディスクの空きがこれより少なくなったら、収集を止める (ログイン状態などが書けなくならないように)
@@ -278,16 +280,20 @@ class Sweeper:
         self._aggregated = not (self.store.build_room_stats() or months)
 
     def _next_final(self, now: float) -> bool:
-        """終わる直前の推移: 終わる FINAL_WINDOW 前から FINAL_EVERY ごと (最後の FINAL_LAST は FINAL_LAST_EVERY ごと)、
+        """終わる直前の推移: 終わる FINAL_WINDOW 前から FINAL_EVERY ごと (最後の FINAL_LAST は FINAL_LAST_EVERY ごと、
+        最後の FINAL_SPRINT は FINAL_SPRINT_EVERY ごと)、
         終わったあと FINAL_AFTER のあいだも FINAL_EVERY ごとに、参加ルームの 1 ページ目 (上位 30 ルーム) を event_final に残す。
 
         追い上げがどれだけ終わりぎりぎりに集まっているか (差し・追い込みの上手さ) を見るため。1 時間ごとの推移では見えない。
-        1 イベントにつき 3 時間で 220 回ほど問い合わせる (同時に終わるイベントが多い時は、間隔の過ぎたものから順に)。
+        1 イベントにつき 3 時間で 250 回ほど問い合わせる (同時に終わるイベントが多い時は、間隔の過ぎたものから順に)。
+        ポイントは遅れずに反映される (利用者に確かめた。ラスト 5 秒にまとめて投げることもできる) ので、最後の 1 分を細かく読む。
         """
         due = []
         for e in self.store.all("""SELECT event_id, name, end FROM events WHERE progress_at IS NOT NULL AND end > ? AND end <= ?""",
                                 (now - FINAL_AFTER, now + FINAL_WINDOW)):
-            every = FINAL_LAST_EVERY if 0 < e["end"] - now <= FINAL_LAST else FINAL_EVERY
+            left = e["end"] - now
+            every = (FINAL_SPRINT_EVERY if 0 < left <= FINAL_SPRINT else FINAL_LAST_EVERY if 0 < left <= FINAL_LAST
+                     else FINAL_EVERY)
             last = self._final_at.get(e["event_id"], 0)
             if now - last >= every:
                 due.append((now - last - every, e))

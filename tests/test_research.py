@@ -848,3 +848,14 @@ def test_sweep_records_the_last_hours_finely(tmp_path):
     with Store(tmp_path) as s:
         rows = s.all("SELECT at, point FROM event_final WHERE event_id=8 ORDER BY at")
     assert len(rows) == 5 and all("p=1" in c for c in calls)  # 1 ページ目 (上位 30 ルーム) だけ
+
+
+def test_sweep_reads_every_two_seconds_in_the_last_minute(tmp_path):
+    def get(path):
+        return {"list": [{"room_id": 4, "point": 1, "rank": 1}]}
+
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 8, "name": "まもなく終了", "start": NOW - 86400, "end": NOW + 30}])
+        s.conn.execute("UPDATE events SET progress_at=? WHERE event_id=8", (NOW,))
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    assert sw._next_final(NOW) and not sw._next_final(NOW + 1) and sw._next_final(NOW + 2)  # 最後の 1 分は 2 秒ごと

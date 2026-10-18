@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS watch (user_id INTEGER PRIMARY KEY, memo TEXT, added_
 CREATE TABLE IF NOT EXISTS event_progress (
     event_id INTEGER, room_id INTEGER, at REAL, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, room_id, at));
 CREATE INDEX IF NOT EXISTS event_progress_at ON event_progress(event_id, at);
--- 終わる直前の細かい推移 (終わる 3 時間前から 1 分ごと、10 分前から 15 秒ごと。上位 30 ルーム)。追い上げの時刻を見るため
+-- 終わる直前の細かい推移 (終わる 3 時間前から 1 分ごと、10 分前から 15 秒ごと、1 分前から 2 秒ごと。上位 30 ルーム)。追い上げの時刻を見るため
 CREATE TABLE IF NOT EXISTS event_final (
     event_id INTEGER, at REAL, room_id INTEGER, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, at, room_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS room_events (
