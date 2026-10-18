@@ -269,3 +269,27 @@ def test_alerts_for_login_disk_and_backup(tmp_path, monkeypatch):
     usage = namedtuple("usage", "total used free")
     monkeypatch.setattr(shutil, "disk_usage", lambda p: usage(10 << 30, 9 << 30, 1 << 30))
     assert "1.0GB" in build_alerts(tmp_path, {}, now)[0]
+
+
+def test_alerts_for_stalled_sweep_pauses_and_disk_forecast(tmp_path, monkeypatch):
+    import shutil
+    from collections import namedtuple
+
+    from showroom_keeper import research, sweep, web
+
+    now = time.time()
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: usage(30 << 30, 20 << 30, 10 << 30))
+    monkeypatch.setattr(sweep, "state", lambda: {"enabled": True, "last_step_at": now - 2 * 3600, "doing": "ルームの分析"})
+    monkeypatch.setattr(research.THROTTLE, "pause_log", [{"at": now - 60}] * 3)
+    alerts = web.build_alerts(tmp_path, {}, now)
+    assert any("2 時間進んでいません" in a for a in alerts)
+    assert any("3 回止められました" in a for a in alerts)
+    assert not any("いっぱい" in a for a in alerts)  # 7 日分たまるまでは見積もらない
+    # 30 日前に空きが 40GB で、今 10GB (1 日 1GB ずつ減る) → あと 10 日
+    (tmp_path / web.DISK_FILE).write_text(json.dumps([[now - 30 * 86400, 40 << 30]]), encoding="utf-8")
+    assert web.disk_days_left(tmp_path, 10 << 30, now) == pytest.approx(10, rel=0.01)
+    monkeypatch.setattr(research.THROTTLE, "pause_log", [])
+    monkeypatch.setattr(sweep, "state", lambda: {"enabled": False})
+    alerts = web.build_alerts(tmp_path, {}, now)
+    assert len(alerts) == 1 and "あと 10 日ほど" in alerts[0]
