@@ -24,7 +24,7 @@ from typing import Any
 
 from .research_store import Store
 
-SERIES_VERSION = 3  # まとめ方を変えた時に上げる (自動でまとめた分を、作り直す)
+SERIES_VERSION = 4  # まとめ方を変えた時に上げる (自動でまとめた分を、作り直す)
 SERIES_GAP = 200 * 86400  # 前の段階が終わってから、次の段階が始まるまでの日数の上限 (大きな大会は半年ほど続く)
 SERIES_MAX = 365 * 86400  # 大会の最初の段階の始まりから、最後の段階の終わりまでの上限 (くり返し開かれるイベントをまとめないため)
 FINAL_SHARE = 0.8  # 名前がちがっても、ファイナル審査などで、ルームのこれだけが同じ大会の前の段階にいればつなぐ
@@ -100,6 +100,12 @@ def route_label(name: str | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _route_kind(route: str | None) -> str | None:
+    """番号の付いた道すじの種類 (本選権#1〜#3 → 本選権)。種類が同じで番号のちがう道すじは、別の並びの道すじ。"""
+    m = re.match(r"(本選権)#[0-9]+$", route or "")
+    return m.group(1) if m else None
+
+
 def entrance(name: str | None) -> str | None:
     """入口の枠 (【SR枠】【男性枠】など)。無ければ None。"""
     m = re.search(r"【([^】]*枠[^】]*)】", unicodedata.normalize("NFKC", name or ""))
@@ -130,10 +136,20 @@ _NUMS = (re.compile(r"(20[0-9]{2})"), re.compile(r"第\s*([0-9]+)\s*回"), re.co
 _FINAL = re.compile(r"ファイナル|最終審査|最終選考|決勝|グランプリ|final", re.IGNORECASE)
 
 
-def _has_num(name: str | None) -> bool:
-    """年か第何回が書いてある (大会らしい名前)。"""
+def _years(name: str | None) -> set[str]:
+    """大会の年。【】の大会の名前の印 (【フレキャン2025】【ミスサー枠】など) があれば、【】の中の年だけ
+    (「超十代 2026」「お台場冒険王 2024」のような、段階になっている別のオーディションの年を、大会の年とみないため)。
+    印が無い (【SR枠】【aw本選権#1】だけ、か【】が無い) 時は、名前の中の年。"""
     f = _fold(name)
-    return bool(_NUMS[0].search(f) or _NUMS[1].search(f))
+    inside = [m.group(1) for m in _BRACKET.finditer(f)]
+    if any(_bare(_NUMS[0].sub("", x)) for x in inside):
+        return {y for x in inside for y in _NUMS[0].findall(x)}
+    return set(_NUMS[0].findall(f))
+
+
+def _has_num(name: str | None) -> bool:
+    """大会の年か第何回が書いてある (大会らしい名前)。"""
+    return bool(_years(name) or _NUMS[1].search(_fold(name)))
 
 
 def _final(name: str | None) -> bool:
@@ -143,8 +159,8 @@ def _final(name: str | None) -> bool:
 def conflict(a: str | None, b: str | None) -> bool:
     """年・第何回・何月・vol.・第何弾が、どちらにも書いてあって、ちがう (別の回)。"""
     fa, fb = _fold(a), _fold(b)
-    for rx in _NUMS:
-        x, y = set(rx.findall(fa)), set(rx.findall(fb))
+    for i, rx in enumerate(_NUMS):
+        x, y = (_years(a), _years(b)) if i == 0 else (set(rx.findall(fa)), set(rx.findall(fb)))
         if x and y and not x & y:
             return True
     return False
@@ -236,7 +252,7 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
                 first, names = g["members"][0][0]["start"] or start, [g["members"][0][0]["name"]]
             else:
                 first, _, names = _series_span(s, key)
-            g["first"] = first
+            g["first"], g["names"] = first, names
             if end - first > SERIES_MAX or any(conflict(name, n) for n in names):
                 del groups[key]
         need = max(2, PARENT_SHARE * len(rooms))
@@ -258,9 +274,11 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
             use.sort(key=order)
             target = use[0]
             sid = int(target["members"][0][0]["event_id"]) if isinstance(target["key"], tuple) else int(target["key"])
+            target_names = target.get("names") or []
             for g in use:
-                if g is not target and (end - min(g["first"], target["first"]) > SERIES_MAX):
-                    continue  # 合わせると 1 年を超える
+                if g is not target and (end - min(g["first"], target["first"]) > SERIES_MAX
+                                        or any(conflict(a, b) for a in g.get("names") or [] for b in target_names)):
+                    continue  # 合わせると 1 年を超える・第何回などのちがう大会どうし (番号の無い段階でつながないように)
                 if isinstance(g["key"], tuple):
                     p, got = g["members"][0]
                     _place(s, int(p["event_id"]), p["name"], sid, 1, [], route_label(p["name"]), "auto", now)
@@ -279,7 +297,11 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
                 last[k] = (p, last[k][1] if k in last else set())
             last[k][1].update(got)
         need = max(2, PARENT_SHARE * len(rooms))
-        cands = [(p, got) for p, got in last.values() if len(got) >= need] or [max(last.values(), key=lambda x: len(x[1]))]
+        kind = _route_kind(route)
+        # 本選権#2 の予選の前の段階を、本選権#1 の段階にしない (#1 で負けたルームが #2 に出直すため、ルームは重なる)
+        last = {k: v for k, v in last.items() if not (kind and _route_kind(k) == kind and k != route)}
+        cands = [(p, got) for p, got in last.values() if len(got) >= need] or \
+            ([max(last.values(), key=lambda x: len(x[1]))] if last else [])
         same = [(p, got) for p, got in cands if route and p["route"] == route]
         if same:  # 同じ道すじの前の段階があれば、そこにつなぐ (共通のアピールタイムなどを、前の段階にしない)
             parents = [same[0][0]]
@@ -287,8 +309,8 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
             # ルームの多くが、もっとあとに終わった候補にも出ていれば、そちらが前の段階 (合流したあとの段階につなぐ)
             parents = [p for p, got in cands if not any((q["end"] or 0) > (p["end"] or 0) and len(got & qgot) * 2 >= len(got)
                                                        for q, qgot in cands)]
-        no = max(p["stage_no"] or 1 for p in parents) + 1
-        own = route or (parents[0]["route"] if len({p["route"] for p in parents}) == 1 else None)
+        no = max(p["stage_no"] or 1 for p in parents) + 1 if parents else 1  # 前の段階が無い: 新しい道すじの最初の段階
+        own = route or (parents[0]["route"] if parents and len({p["route"] for p in parents}) == 1 else None)
         _place(s, eid, name, sid, no, sorted(int(p["event_id"]) for p in parents), own, "auto", now)
         return sid
     if start and _eligible(name):

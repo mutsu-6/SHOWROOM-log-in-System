@@ -273,3 +273,39 @@ def test_version_change_rebuilds_auto_but_keeps_manual(db):
         assert s.one("SELECT how FROM event_series WHERE event_id=301")["how"] == "manual"
         _run_all(s)
         assert series.series_of(s, 103)["series_id"] == 101
+
+
+def test_years_of_other_auditions_inside_names_do_not_split():
+    """名前の中の「超十代 2026」「お台場冒険王 2024」は、段階になっている別のオーディションの年で、大会の年ではない。"""
+    assert not series.conflict("【ミスサー枠】超十代 2026", "【MISS CIRCLE CONTEST 2025】ファイナル審査")
+    assert not series.conflict("【ミスサー二次審査】お台場冒険王 2024", "【ミスサー二次審査】TGCしずおか 2025")
+    assert series.conflict("【フレキャン2025】CanCam賞", "【フレキャン2026】CanCam賞")  # 【】の中の年はくらべる
+    assert series.conflict("ミスターオブミスター2025-予選-", "ミスターオブミスター2026-決勝-")  # 印が無ければ名前の中の年
+    assert series.conflict("【aw本選権＃1】ハワイアンウェディング2026 予選", "【aw枠】ハワイアンウェディング2025 本選1st")
+
+
+def test_other_entry_number_is_not_the_previous_stage(tmp_path):
+    """本選権#1 で負けたルームが #2 に出直しても、#2 の予選の前の段階を #1 の段階にしない。"""
+    t0 = NOW - 200 * DAY
+    hw = "ハワイアンウェディング2026"
+    with Store(tmp_path) as s:
+        _stage(s, 1, f"【aw本選権＃1】{hw} 予選", t0, 7, [(r, 100) for r in range(1, 13)])
+        _stage(s, 2, f"【aw本選権＃1】{hw} 準決勝", t0 + 10 * DAY, 7, [(r, 100) for r in range(1, 9)])
+        _stage(s, 3, f"【aw本選権＃2】{hw} 予選", t0 + 20 * DAY, 7, [(r, 100) for r in range(3, 13)])  # ほとんどが #1 に出ていた
+        _stage(s, 4, f"【aw本選権＃2】{hw} 準決勝", t0 + 30 * DAY, 7, [(r, 100) for r in range(3, 9)])
+        rows = _run_all(s)
+    assert rows[3]["series_id"] == 1 and rows[3]["parents"] is None and rows[3]["stage_no"] == 1 and rows[3]["route"] == "本選権#2"
+    assert rows[4]["parents"] == "3" and rows[4]["stage_no"] == 2
+
+
+def test_numberless_stage_does_not_join_two_editions(tmp_path):
+    """番号の無い段階が、第 3 回と第 4 回の両方とルームが重なっても、2 つの大会を 1 つにしない。"""
+    t0 = NOW - 300 * DAY
+    with Store(tmp_path) as s:
+        _stage(s, 1, "Popteen専属モデルオーディション 第3回 予選", t0, 7, [(r, 100) for r in range(1, 11)])
+        _stage(s, 2, "Popteen専属モデルオーディション 第3回 決勝", t0 + 10 * DAY, 7, [(r, 100) for r in range(1, 6)])
+        _stage(s, 3, "Popteen専属モデルオーディション 第4回 予選", t0 + 30 * DAY, 7, [(r, 100) for r in range(4, 14)])
+        _stage(s, 4, "Popteen専属モデルオーディション 第4回 決勝", t0 + 40 * DAY, 7, [(r, 100) for r in range(4, 9)])
+        _stage(s, 5, "Popteen専属モデルオーディション 敗者復活 決勝", t0 + 50 * DAY, 3, [(r, 100) for r in (1, 2, 4, 5, 6, 7)])
+        rows = _run_all(s)
+    assert rows[2]["series_id"] == 1 and rows[4]["series_id"] == 3 and rows[3]["series_id"] == 3
