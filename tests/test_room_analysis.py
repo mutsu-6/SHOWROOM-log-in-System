@@ -511,3 +511,14 @@ def test_lure_throws(tmp_path):
     finally:
         ra.LURE_CORE = old
     assert ra.lure_throws(tmp_path, "zzz", NOW) is None
+
+def test_relay_welcome_and_mirror_ball():
+    M = ra.MIRROR_BALL
+    g = [(0, 9, 3000, False, 1, 5), (10, 1, 100, False, 1, 7),  # 応援に来た人 (9) の大きなギフトに、常連 1 が 10 秒で応えた (歓迎)
+         (300, 1, 500, False, 1, M), (320, 2, 500, False, 1, M), (340, 3, 500, False, 1, M),  # ミラーボールのリレー
+         (900, 8, 100, False, 1, 7), (1500, 1, 0, True, 1, 1)]  # 応えてもらえなかった (8)
+    r = ra.relay_and_respond(g, {1, 2})
+    assert r["relays"] == 1 and r["mirror"] == {"n": 3, "in_relay": 1.0, "relays": 1}
+    assert r["respond"]["大きなギフト"] == {"n": 1, "rate": 1.0}
+    # 常連でない人のギフト 3 回 (9・3・8) のうち、常連が応えたのは 9 の 1 回
+    assert r["welcome"]["n"] == 3 and abs(r["welcome"]["rate"] - 1 / 3) < 1e-9 and r["welcome"]["base"] < 1 / 3

@@ -2184,6 +2184,11 @@ function roomAnalysisHtml(d) {
       ${["誘い投げ", "大きなギフト", "そのほか"].map((k) => { const r = lu.respond[k]; return tile(`呼応 (${k})`, r.rate == null ? "—" : pctText(r.rate),
         `${k === "大きなギフト" ? `1 回 ${num(lu.respond_big)} pt 以上の有料ギフト` : k === "誘い投げ" ? "コアな常連の少額の有料ギフト" : "ほかの有料ギフト"} ${num(r.n)} 回のうち、${lu.respond_window} 秒のうちにほかの人が有料ギフトで応えた割合。いつもの割合 (配信中のどの時刻でも ${lu.respond_window} 秒のうちにだれかが送る割合) は ${pctText(lu.respond_base)}`,
         r.rate != null && lu.respond_base != null && r.rate >= lu.respond_base * 1.5 ? "ok" : ""); }).join("")}
+      ${tile("歓迎", lu.welcome.rate == null ? "—" : pctText(lu.welcome.rate), `コアな常連でない人 (応援に来た人) の有料ギフト ${num(lu.welcome.n)} 回のうち、${lu.respond_window} 秒のうちにコアな常連が有料ギフトで応えた割合。いつもの割合 (どの時刻でも ${lu.respond_window} 秒のうちにコアな常連が送る割合) は ${pctText(lu.welcome.base)}`,
+        lu.welcome.rate != null && lu.welcome.base != null && lu.welcome.rate >= lu.welcome.base * 1.5 ? "ok" : "")}
+      ${tile("ミラーボール", `${num(lu.mirror.n)} <small>回</small>`, lu.mirror.n
+        ? `500 pt のリレーの定番。${pctText(lu.mirror.in_relay)} がリレーの中で送られた。ミラーボールが 2 回以上入ったリレー ${num(lu.mirror.relays)} 回`
+        : "まだ送られていません")}
     </div>`;
   }
   if (b) {

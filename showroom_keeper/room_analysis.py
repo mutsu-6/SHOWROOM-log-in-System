@@ -746,7 +746,8 @@ LURE_WINDOW = 180  # 誘い投げの前後をくらべる時間 (秒)
 RELAY_GAP = 60  # リレー: 有料ギフトがこの秒数より短い間隔で、ちがう人へと続いたら、ひと続きとみる
 RELAY_HANDS = 2  # リレー: ひと続きの中で、送る人が何回以上替わったら「リレー」とみるか (A→B→A・A→B→C から)
 RESPOND_WINDOW = 30  # 呼応: ある人の有料ギフトのあと、この秒数のうちに、ほかの人が有料ギフトを送ったら「呼応した」とみる
-RESPOND_BIG = 10000  # 呼応: 1 回にこのポイント以上の有料ギフトを「大きなギフト」とみる
+RESPOND_BIG = 1000  # 呼応: 1 回にこのポイント以上の有料ギフトを「大きなギフト」とみる
+MIRROR_BALL = 800003  # ミラーボール (500 pt)。リレーの定番のギフト
 
 
 def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: int = BALANCE_DAYS,
@@ -772,12 +773,12 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
         if g["at"] < now - days * 86400 or g.get("user_id") is None:
             continue
         pt, free = listing._points(catalog, g)
-        gifts.append((g["at"], g.get("user_id"), pt, free, g.get("live_id")))
+        gifts.append((g["at"], g.get("user_id"), pt, free, g.get("live_id"), g.get("gift_id")))
     if not gifts:
         return None
     gifts.sort()
     totals: dict[Any, int] = {}
-    for _, uid, pt, free, _ in gifts:
+    for _, uid, pt, free, *_ in gifts:
         if not free:
             totals[uid] = totals.get(uid, 0) + pt
     core = set(sorted(totals, key=lambda u: -totals[u])[:LURE_CORE])
@@ -796,14 +797,14 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
 
     before = [0, 0, 0]
     after = [0, 0, 0]
-    for t, _, _, _, live in lures:
+    for t, _, _, _, live, _ in lures:
         for acc, w in ((before, window(live, t - LURE_WINDOW, t)), (after, window(live, t + 1, t + 1 + LURE_WINDOW))):
             for i in range(3):
                 acc[i] += w[i]
     ratio = [(a / b) if b else None for a, b in zip(after, before)]
     # こまめさ: 配信ごとの長さ (最初と最後のギフトのあいだ) あたりの回数と、同じ配信の中の誘い投げの間隔
     spans: dict[Any, list[float]] = {}
-    for t, *_, live in gifts:
+    for t, _, _, _, live, _ in gifts:
         spans.setdefault(live, []).append(t)
     hours = sum((max(v) - min(v)) / 3600 for v in spans.values())
     gaps = [b[0] - a[0] for a, b in zip(lures, lures[1:]) if a[4] == b[4]]
@@ -816,12 +817,15 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
 def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str, Any]:
     """有料ギフトの流れ: リレー (何人かで続けて送る) と、呼応 (だれかのギフトに、ほかの人が応える)。
 
-    gifts は (時刻, ユーザー, ポイント, 無料か, 配信) を時刻の順に並べたもの。常連かどうか・人数は問わない。
+    gifts は (時刻, ユーザー, ポイント, 無料か, 配信, ギフトの番号) を時刻の順に並べたもの。常連かどうか・人数は問わない。
     - リレー: 同じ配信で、有料ギフトが RELAY_GAP 秒より短い間隔で続き、送る人が RELAY_HANDS 回以上替わったひと続き。
       何人で回したか・最初に送ったのがコアな常連か・すべての有料ポイントのうちリレーの中で送られた割合
     - 呼応: 有料ギフトのあと RESPOND_WINDOW 秒のうちに、ほかの人が有料ギフトを送った割合。送ったギフトの種類
       (コアな常連の少額 = 誘い投げ・大きなギフト・そのほか) ごとに出し、「いつもの割合」(配信中の 10 秒ごとの時刻から、
       RESPOND_WINDOW 秒のうちにだれかが有料ギフトを送った割合) とくらべる
+    - 歓迎: コアな常連でない人 (応援に来た人) の有料ギフトに、RESPOND_WINDOW 秒のうちにコアな常連が有料ギフトで応えた割合。
+      いつもの割合 (どの時刻でも RESPOND_WINDOW 秒のうちにコアな常連が送る割合) とくらべる
+    - ミラーボール: 送られた数と、そのうちリレーの中で送られた割合、ミラーボールが 2 回以上入ったリレーの数
     """
     paid = [g for g in gifts if not g[3] and g[2] > 0]
     relays: list[list[tuple[Any, ...]]] = []
@@ -834,9 +838,12 @@ def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str,
             relays.append(run)
         run = [g] if g is not None else []
     people = [len({g[1] for g in r}) for r in relays]
+    balls = [g for g in paid if g[5] == MIRROR_BALL]
+    in_relay = {id(g) for r in relays for g in r}
     total = sum(g[2] for g in paid)
 
     kinds: dict[str, list[int]] = {"誘い投げ": [0, 0], "大きなギフト": [0, 0], "そのほか": [0, 0]}
+    welcome = [0, 0]
     lives: dict[Any, list[tuple[Any, ...]]] = {}
     for g in paid:
         lives.setdefault(g[4], []).append(g)
@@ -845,26 +852,28 @@ def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str,
         span = spans.setdefault(x[4], [x[0], x[0]])
         span[0], span[1] = min(span[0], x[0]), max(span[1], x[0])
     base = [0, 0]
+    core_base = 0
     for live, rows in lives.items():
+        core_times = [g[0] for g in rows if g[1] in core]
         times = [g[0] for g in rows]
         for i, g in enumerate(rows):
-            kind = "大きなギフト" if g[2] >= RESPOND_BIG else "誘い投げ" if g[1] in core and g[2] <= LURE_SMALL else "そのほか"
-            answered = False
-            for h in rows[i + 1:]:
-                if h[0] - g[0] > RESPOND_WINDOW:
-                    break
-                if h[1] != g[1] and h[0] > g[0]:
-                    answered = True
-                    break
+            kind = "誘い投げ" if g[1] in core and g[2] <= LURE_SMALL else "大きなギフト" if g[2] >= RESPOND_BIG else "そのほか"
+            answers = [h[1] for h in rows[i + 1:] if g[0] < h[0] <= g[0] + RESPOND_WINDOW and h[1] != g[1]]
             kinds[kind][0] += 1
-            kinds[kind][1] += answered
+            kinds[kind][1] += bool(answers)
+            if g[1] not in core:
+                welcome[0] += 1
+                welcome[1] += any(u in core for u in answers)
         # いつもの割合: 配信の中 (ほかのギフトも含めた最初と最後のあいだ) を 10 秒ごとに
-        t, j = spans[live][0], 0
+        t, j, k = spans[live][0], 0, 0
         while t <= spans[live][1]:
             while j < len(times) and times[j] <= t:
                 j += 1
+            while k < len(core_times) and core_times[k] <= t:
+                k += 1
             base[0] += 1
             base[1] += j < len(times) and times[j] - t <= RESPOND_WINDOW
+            core_base += k < len(core_times) and core_times[k] - t <= RESPOND_WINDOW
             t += 10
     return {"relays": len(relays), "relay_people_avg": sum(people) / len(people) if people else None,
             "relay_people_max": max(people, default=0), "relay_longest": max((len(r) for r in relays), default=0),
@@ -872,4 +881,8 @@ def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str,
             "relay_core_start": sum(1 for r in relays if r[0][1] in core) / len(relays) if relays else None,
             "relay_gap": RELAY_GAP, "respond_window": RESPOND_WINDOW, "respond_big": RESPOND_BIG,
             "respond": {k: {"n": v[0], "rate": v[1] / v[0] if v[0] else None} for k, v in kinds.items()},
-            "respond_base": base[1] / base[0] if base[0] else None}
+            "respond_base": base[1] / base[0] if base[0] else None,
+            "welcome": {"n": welcome[0], "rate": welcome[1] / welcome[0] if welcome[0] else None,
+                        "base": core_base / base[0] if base[0] else None},
+            "mirror": {"n": len(balls), "in_relay": sum(1 for g in balls if id(g) in in_relay) / len(balls) if balls else None,
+                       "relays": sum(1 for r in relays if sum(1 for g in r if g[5] == MIRROR_BALL) >= 2)}}
