@@ -10,7 +10,7 @@ DIR=$(pwd)
 USER_NAME=$(id -un)
 sudo tee /etc/systemd/system/showroom-auto-update.service >/dev/null <<UNIT
 [Unit]
-Description=SHOWROOM keeper: GitHub の新しい版を確かめて更新する
+Description=SHOWROOM Analytics: GitHub の新しい版を確かめて更新する
 After=network-online.target docker.service
 
 [Service]
@@ -21,7 +21,7 @@ ExecStart=/bin/bash $DIR/tools/auto-update.sh
 UNIT
 sudo tee /etc/systemd/system/showroom-auto-update.timer >/dev/null <<UNIT
 [Unit]
-Description=SHOWROOM keeper: 5 分ごとに新しい版を確かめる
+Description=SHOWROOM Analytics: 5 分ごとに新しい版を確かめる
 
 [Timer]
 OnBootSec=3min
