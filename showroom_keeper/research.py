@@ -757,7 +757,7 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
 
         cov = coverage(state_dir, max_age=0)
         trend = _trend(s, cov, left)
-        trend_ids = [r["user_id"] for kind in ("falling", "rising") for r in trend[kind]]
+        trend_ids = [r["user_id"] for kind in ("falling", "rising", "hidden") for r in trend[kind]]
 
         uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids + trend_ids))
         evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
@@ -783,8 +783,8 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
                 "fans": [summary[u] for u in fan_ids], "fan_count": fan_count, "similar": similar,
                 "pairs": pairs, "rooms": room_list, "room_count": room_count, "multi_count": multi_count,
                 "gifter_count": gifter_count, "coverage": cov,
-                "trend": {**trend, **{kind: [{**summary[r["user_id"]], "recent": r["recent"], "before": r["before"]} for r in trend[kind]]
-                                      for kind in ("falling", "rising")}}}
+                "trend": {**trend, **{kind: [{**summary[r["user_id"]], **r} for r in trend[kind]]
+                                      for kind in ("falling", "rising", "hidden")}}}
 
 
 # ------------------------------------------------------------------ 集まり具合と、支出の増え減り
@@ -872,7 +872,8 @@ def _trend(s: Store, cov: dict[str, Any], left: tuple[str, ...]) -> dict[str, An
         pass
     last, start = cov["last_full"], cov["complete_from"]
     period = next((p for p in TREND_PERIODS if start and _add_months(last, -(2 * p - 1)) >= start), None)
-    out: dict[str, Any] = {"period": period, "min": TREND_MIN, "falling": [], "rising": [], "falling_count": 0, "rising_count": 0}
+    out: dict[str, Any] = {"period": period, "min": TREND_MIN, "falling": [], "rising": [], "hidden": [], "falling_count": 0,
+                           "rising_count": 0, "hidden_count": 0}
     if period is None:
         return out
     recent_from, before_from = _add_months(last, -(period - 1)), _add_months(last, -(2 * period - 1))
@@ -886,9 +887,65 @@ def _trend(s: Store, cov: dict[str, Any], left: tuple[str, ...]) -> dict[str, An
                               ("rising", "recent >= ? AND recent >= before * 2", "recent - before")):
         where = f"{cond} AND NOT COALESCE({gone}, 0)"
         out[f"{kind}_count"] = s.scalar(f"SELECT COUNT(*) FROM tr WHERE {where}", (TREND_MIN, *left))
+        limit = TREND_CHECK if kind == "falling" else TREND_LIMIT
         out[kind] = [dict(r) for r in s.all(f"SELECT user_id, recent, before FROM tr WHERE {where} ORDER BY {order} DESC, user_id LIMIT ?",
-                                            (TREND_MIN, *left, TREND_LIMIT))]
+                                            (TREND_MIN, *left, limit))]
+    _check_falling(s, out, (_month_start(before_from), _month_start(recent_from)), (_month_start(recent_from), _month_start(_add_months(last, 1))))
     return out
+
+
+TREND_CHECK = 500  # 離れつつある人の候補のうち、「見えなくなっただけ」かを 1 人ずつ確かめる人数 (減った量の多い順)
+FALLING_ROOMS = 5  # 前の期間に送っていたルームのうち、確かめるルームの数 (多い順)
+
+
+def _month_start(month: str) -> float:
+    y, m = (int(x) for x in month.split("-"))
+    return datetime(y, m, 1, tzinfo=JST).timestamp()
+
+
+def _check_falling(s: Store, out: dict[str, Any], before: tuple[float, float], recent: tuple[float, float]) -> None:
+    """離れつつある人の候補を、1 人ずつ確かめる。
+
+    - 見えない分の上限: 貢献ランキングは上位 100 人しか見えないので、101 位に落ちただけでも 0 に見える。前の期間に送っていた
+      ルームの、最近の期間のイベントのうち、その人が載っていないイベントは「100 位の人のポイントより少なく送ったかもしれない」
+      として、100 位のポイントを足す (100 人に届かないイベントは、送っていれば載るので足さない)。
+      それでも最近 (上限) が前の期間の半分以下の人だけを「離れつつある」にする。そうでない人は「見えなくなっただけかも」
+    - 理由: いちばん送っていたルームが、最近の期間にイベントに出ていない・消えた → 「推しのルームが休んだ・消えた」。
+      それ以外は「本人が減った」
+    """
+    confirmed, hidden = [], []
+    for u in out["falling"]:
+        uid = u["user_id"]
+        rooms = s.all("""SELECT c.room_id, SUM(c.point) AS points FROM contributions c JOIN events e USING(event_id)
+                         WHERE c.user_id=? AND e.end >= ? AND e.end < ? GROUP BY c.room_id ORDER BY points DESC LIMIT ?""",
+                      (uid, *before, FALLING_ROOMS))
+        upper = 0
+        for r in rooms:
+            upper += s.scalar("""SELECT SUM(re.c_p100) FROM room_events re JOIN events e USING(event_id)
+                                 WHERE re.room_id=? AND re.final=1 AND re.c_count >= 100 AND e.end >= ? AND e.end < ?
+                                   AND NOT EXISTS (SELECT 1 FROM contributions c WHERE c.event_id=re.event_id
+                                                   AND c.room_id=re.room_id AND c.user_id=?)""",
+                              (r["room_id"], *recent, uid), default=0)
+        main = rooms[0]["room_id"] if rooms else None
+        reason = "本人が減った"
+        if main is not None:
+            room = s.room(room_id=main)
+            active = s.scalar("""SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id)
+                                 WHERE re.room_id=? AND e.end >= ? AND e.end < ?""", (main, *recent))
+            if (room is not None and room["gone"]) or not active:
+                reason = "推しのルームが休んだ・消えた"
+        u.update({"hidden_upper": upper, "recent_upper": u["recent"] + upper, "reason": reason, "main_room": main})
+        (confirmed if (u["recent"] + upper) * 2 <= u["before"] else hidden).append(u)
+    checked = len(out["falling"])
+    out["falling_checked"] = checked
+    out["falling_count"] = len(confirmed) + max(0, out["falling_count"] - checked)  # 確かめていない人は、そのまま数える
+    out["falling"] = confirmed[:TREND_LIMIT]
+    out["hidden"] = hidden[:TREND_LIMIT]
+    out["hidden_count"] = len(hidden)
+    reasons: dict[str, int] = {}
+    for u in confirmed:
+        reasons[u["reason"]] = reasons.get(u["reason"], 0) + 1
+    out["falling_reasons"] = reasons
 
 
 PAIR_MIN_SHARED = 2  # ルーム同士の重なりに出す、共通のギフターの最少人数

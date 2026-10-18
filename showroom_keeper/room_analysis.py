@@ -16,6 +16,7 @@ research.db を読んで作るだけで、SHOWROOM には問い合わせない�
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 
@@ -27,13 +28,17 @@ CAPPED = 100  # 貢献ランキングに載る人数の上限 (これに届い�
 SIZE_EDGES = (50, 300)  # 参加ルームの数 (真ん中の値) で、小さい・中くらい・大きいイベントに分ける
 SIZE_NAMES = ("小さいイベント (50 ルーム未満)", "中くらいのイベント (50〜299 ルーム)", "大きいイベント (300 ルーム以上)")
 MOMENTUM_DAYS = 60
-MOMENTUM_MIN = 2  # 勢いを出すのに、それぞれの期間に要るイベントの数
+MOMENTUM_MIN = 2  # 勢いの数字を出すのに、それぞれの期間に要るイベントの数
+MOMENTUM_LABEL_MIN = 5  # 「上り調子」「下り気味」と言うのに、それぞれの期間に要るイベントの数 (2 件ずつでは、偶然の差でも 7 割ほど付く)
 MOMENTUM_STEP = 0.1  # 位置がこれだけ変わったら「上り調子」「下り気味」
 MOMENTUM_MIN_ROOMS = 5  # これより参加ルームの少ないイベントは勢いに使わない (2 ルームなら位置が 0 か 1 しかなく、ぶれが大きい)
 STYLE_SNAPSHOTS = 6  # 走り方を出すのに要る、推移を残した回数
 STYLE_START = 0.3  # 推移を、イベントの期間のこの割合までに残し始めていること
 STYLE_EVENTS = 3  # ルームの戦術を出すのに要る、走り方の分かったイベントの数
 STYLE_RECENT = 10  # ルームの戦術に使う、直近のイベントの数
+STYLE_NEAR = 2 * 3600  # 序盤・中盤・終盤・最終日の前の回は、狙った時刻からこれより離れていたら「分からない」(秒)
+STYLE_MIN_ROOMS = 5  # これより参加ルームの少ないイベントでは走り方を出さない (2〜4 ルームでは逃げ・先行がほぼ必ず付く)
+STYLE_LATE_BOOST = 2.5  # 追い込み: 最後の 24 時間の伸びが、ならした伸び (24 時間 ÷ 期間) のこの倍以上
 STYLE_EARLY_ACTIVE = 0.1  # 序盤の回で、ポイントのあるルームがこの割合より少なければ、序盤の位置は分からない扱い
 STYLE_WAIT = 3 * 86400  # 終わった時の最終結果が読めない時に、走り方を作るまで待つ時間 (秒)
 PROFILE_EVERY = 86400  # 全部のルームの分を作り直す間隔 (秒)
@@ -200,9 +205,23 @@ def momentum(s: Store, room_id: int, now: float) -> dict[str, Any]:
     if len(recent) >= MOMENTUM_MIN and len(prev) >= MOMENTUM_MIN:
         # 画面には 100 倍して整数で出すので、判定も同じ丸めた値で行う (「+10 なのに変わらない」と見えないように)
         out["value"] = round((out["prev_place"] - out["recent_place"]) * 100) / 100
-        out["label"] = ("上り調子" if out["value"] >= MOMENTUM_STEP else
-                        "下り気味" if out["value"] <= -MOMENTUM_STEP else "変わらない")
+        # 差が、イベントごとのばらつきから来る誤差 (標準誤差) の 2 倍より大きい時だけ、上り・下りと言う
+        noise = math.sqrt(_var(recent) / len(recent) + _var(prev) / len(prev))
+        out["noise"] = round(noise, 3)
+        if len(recent) < MOMENTUM_LABEL_MIN or len(prev) < MOMENTUM_LABEL_MIN:
+            out["label_why"] = f"イベントが {MOMENTUM_LABEL_MIN} 件ずつそろうまでは、数字だけ出します"
+        elif abs(out["value"]) >= MOMENTUM_STEP and abs(out["value"]) > 2 * noise:
+            out["label"] = "上り調子" if out["value"] > 0 else "下り気味"
+        else:
+            out["label"] = "変わらない"
     return out
+
+
+def _var(xs: list[float]) -> float:
+    if len(xs) < 2:
+        return 0.0
+    m = sum(xs) / len(xs)
+    return sum((x - m) ** 2 for x in xs) / (len(xs) - 1)
 
 
 # ------------------------------------------------------------------ 戦術 (イベントの走り方)
@@ -222,6 +241,12 @@ def _places(order: list[tuple[int, int]]) -> dict[int, float]:
             out[order[k][0]] = j / (n - 1)
         i = j + 1
     return out
+
+
+def _near(ats: list[float], t: float) -> float | None:
+    """狙った時刻にいちばん近い回 (STYLE_NEAR より離れていれば None)。"""
+    best = min(ats, key=lambda a: abs(a - t))
+    return best if abs(best - t) <= STYLE_NEAR else None
 
 
 def _at_or_before(ats: list[float], t: float) -> float:
@@ -245,12 +270,13 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
         return None
     # 全部の回を一度に読むと、長いイベントでは数百万行になる (サーバーのメモリが 2GB なので)。
     # 位置を使う回 (序盤・中盤・終盤・最終日の前・最後) だけを読み、1 位は回ごとに 1 行だけ読む
-    t_early, t_mid, t_late = (_at_or_before(ats, start + f * dur) for f in (0.25, 0.5, 0.75))
-    t_day = _at_or_before(ats, end - 86400)
+    # 狙った時刻から離れた回で代わりに測ると、推移が途切れたイベントで位置や伸びがずれるので、「分からない」にする
+    t_early, t_mid, t_late = (_near(ats, start + f * dur) for f in (0.25, 0.5, 0.75))
+    t_day = _near(ats, end - 86400) if dur > 1.5 * 86400 else None  # 短いイベントは最終日の伸びを測らない
     final_at = ats[-1]
     snaps: dict[float, dict[int, int]] = {}
     places: dict[float, dict[int, float]] = {}
-    for at in {t_early, t_mid, t_late, t_day, final_at}:
+    for at in {t for t in (t_early, t_mid, t_late, t_day, final_at) if t is not None}:
         order = [(r[0], r[1] or 0) for r in s.all("""SELECT room_id, point FROM event_progress WHERE event_id=? AND at=?
                                                     ORDER BY point DESC, room_id""", (eid, at))]
         snaps[at] = dict(order)
@@ -266,31 +292,39 @@ def event_styles(s: Store, event_id: int) -> list[tuple[Any, ...]] | None:
                 leads[top[0][0]] = leads.get(top[0][0], 0) + 1
     # 序盤にほとんど誰もポイントを持っていない (まだ始まっていない) 時は、みな同じ「最下位」になり、
     # 上位で終えたルームがみな「差し」に見えてしまう。その時は序盤の位置を使わない (先行・差しを付けない)
-    early_snap = snaps[t_early]
+    if sum(p > 0 for p in snaps[final_at].values()) < STYLE_MIN_ROOMS:
+        return []  # 参加ルームが少ないイベント (走り方は出さないが、作り終えた印は付ける)
+    early_snap = snaps.get(t_early) or {}
     early_known = bool(early_snap) and sum(p > 0 for p in early_snap.values()) >= STYLE_EARLY_ACTIVE * len(early_snap)
+    expected_day = 86400 / dur  # ならした時の、最後の 24 時間の割合
     out = []
     for rid, final_pt in snaps[final_at].items():
         if final_pt <= 0:
             continue
         early = places[t_early].get(rid, 1.0) if early_known else None
-        mid = places[t_mid].get(rid, 1.0)
-        late = places[t_late].get(rid, 1.0)
+        mid = places[t_mid].get(rid, 1.0) if t_mid is not None else None
+        late = places[t_late].get(rid, 1.0) if t_late is not None else None
         final = places[final_at][rid]
-        day_pt = snaps[t_day].get(rid, 0) if t_day < end - 3600 else None
+        day_pt = snaps[t_day].get(rid, 0) if t_day is not None else None
         last_day = (final_pt - day_pt) / final_pt if day_pt is not None else None
         lead = leads.get(rid, 0) / scored if scored else 0.0
-        style = classify_run(early, late, final, last_day, lead)
+        style = classify_run(early, late, final, last_day, lead, expected_day)
         out.append((eid, rid, style, early, mid, late, final, last_day, None if early is None else early - final, lead))
     return out
 
 
-def classify_run(early: float | None, late: float, final: float, last_day: float | None, lead: float) -> str | None:
-    """early が None (序盤の位置が分からない) の時は、先行・差しを付けない。"""
+def classify_run(early: float | None, late: float | None, final: float, last_day: float | None, lead: float,
+                 expected_day: float = 1 / 7) -> str | None:
+    """early が None (序盤の位置が分からない) の時は、先行・差しを付けない。late・last_day が None なら追い込みを付けない。
+
+    追い込みの「最終日の伸び」は、ならした伸び (expected_day = 24 時間 ÷ 期間) の STYLE_LATE_BOOST 倍以上
+    (前は「4 割以上」と決めていたので、3 日のイベントでは毎日同じペースでも 33% になり、だれでも届きかけた)。
+    """
     if lead >= 0.5:
         return "逃げ"
     if early is not None and early <= 0.25 and final <= 0.25:
         return "先行"
-    if late > 0.5 and final <= 0.5 and last_day is not None and last_day >= 0.4:
+    if late is not None and late > 0.5 and final <= 0.5 and last_day is not None and last_day >= STYLE_LATE_BOOST * expected_day:
         return "追い込み"
     if early is not None and early > 0.25 and final <= 0.25 and final < early - 0.1:
         return "差し"
@@ -382,7 +416,7 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
 
 
 # ------------------------------------------------------------------ 1 日 1 回の作り直し
-STYLE_VERSION = 3  # 走り方の出し方を変えたら上げる (前に作った分を作り直す。3: 序盤にポイントの無い回を使わない)
+STYLE_VERSION = 4  # 4: 狙った時刻から離れた回を使わない・参加ルームの少ないイベントを除く・追い込みを期間の長さでくらべる。 走り方の出し方を変えたら上げる (前に作った分を作り直す。3: 序盤にポイントの無い回を使わない)
 
 
 def step(s: Store, now: float) -> bool:
@@ -426,12 +460,12 @@ def step(s: Store, now: float) -> bool:
                     int(bool(m.get("capped"))), m.get("rel_top10"), m.get("rel_per_contrib"), m.get("rel_point"),
                     classify(m or None, cuts), mo["value"], mo["recent_place"], mo["prev_place"], st["style"], st["events"],
                     json.dumps(st["counts"], ensure_ascii=False), m.get("depth_pt"), m.get("depth_rel"), depth_label(m or None, cuts),
-                    m.get("below_pt"), m.get("below_share")))
+                    m.get("below_pt"), m.get("below_share"), mo["label"]))
     with s.tx() as c:
         c.executemany("""INSERT OR REPLACE INTO room_profile(room_id, at, events, size_class, top1, top3, contributors, capped,
                            rel_top10, rel_per_contrib, rel_point, type, momentum, recent_place, prev_place, style, style_events,
-                           style_counts, depth_pt, depth_rel, depth, below_pt, below_share)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
+                           style_counts, depth_pt, depth_rel, depth, below_pt, below_share, momentum_label)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
     if len(rooms) == PROFILE_CHUNK:
         s.set_meta("room_profile_run", {**state, "next": rooms[-1]})
         return True
@@ -477,7 +511,7 @@ def profile_list(s: Store, rtype: str | None = None, style: str | None = None, o
             "depth_counts": depth_counts, "types": TYPES, "styles": STYLES, "depths": DEPTH_NOTES, "caution": CAUTION,
             "rooms": [{k: r[k] for k in ("room_id", "key", "name", "followers", "type", "style", "style_events", "momentum",
                                          "recent_place", "prev_place", "events", "top1", "contributors", "depth",
-                                         "depth_pt", "depth_rel", "below_pt", "below_share")} for r in rows]}
+                                         "depth_pt", "depth_rel", "below_pt", "below_share", "momentum_label")} for r in rows]}
 
 
 # ------------------------------------------------------------------ コメントとギフトの釣り合い (記録しているルームだけ)

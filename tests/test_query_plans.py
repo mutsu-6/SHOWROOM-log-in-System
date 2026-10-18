@@ -124,3 +124,11 @@ def test_sweep_jobs_do_not_read_whole_tables(traced):
         sw._next_event_rooms(NOW)
         c.close()
     check(traced, run)
+
+
+def test_falling_check_does_not_read_whole_tables(traced):
+    def check_falling(d):
+        with Store(d) as s:
+            out = {"falling": [{"user_id": 101, "recent": 0, "before": 50}], "falling_count": 1}
+            research._check_falling(s, out, (NOW - 60 * DAY, NOW - 15 * DAY), (NOW - 15 * DAY, NOW))
+    check(traced, check_falling)

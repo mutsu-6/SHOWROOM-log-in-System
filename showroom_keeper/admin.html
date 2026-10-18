@@ -1638,16 +1638,21 @@ function trendSection(d) {
   const list = (rows, kind) => rows.length ? table(rows.slice(0, 10), kind)
     + (rows.length > 10 ? `<details class="more"><summary>さらに表示 (${num(rows.length - 10)} 人)</summary>${table(rows.slice(10), kind)}</details>` : "")
     : `<div class="empty">当てはまる人はいません</div>`;
-  const table = (rows, kind) => `<div class="table-wrap"><table><thead><tr><th>ギフター</th><th class="num">前の ${t.period} か月</th><th class="num">最近 ${t.period} か月</th><th class="num">増え減り</th><th>主なルーム</th></tr></thead>
+  const table = (rows, kind) => `<div class="table-wrap"><table><thead><tr><th>ギフター</th><th class="num">前の ${t.period} か月</th><th class="num">最近 ${t.period} か月</th><th class="num">増え減り</th>${kind === "rising" ? "" : `<th class="num" title="101 位より下に落ちて見えなくなった分を、100 位の人のポイントまで足した、最近の期間の多くても">見えない分を足すと</th>`}${kind === "falling" ? "<th>理由</th>" : ""}<th>主なルーム</th></tr></thead>
     <tbody>${rows.map((u) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
       <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
       <td class="num">${num(u.before)} pt</td><td class="num"><b>${num(u.recent)}</b> pt</td>
       <td class="num" style="color:${kind === "rising" ? "var(--ok)" : "var(--accent)"}">${u.before ? `${u.recent >= u.before ? "+" : ""}${num(Math.round((u.recent / u.before - 1) * 100))}%` : "新しく"}</td>
+      ${kind === "rising" ? "" : `<td class="num">${u.recent_upper == null ? "-" : `${num(u.recent_upper)} pt まで`}</td>`}
+      ${kind === "falling" ? `<td>${u.reason ? `<span class="tag ${u.reason === "本人が減った" ? "warn" : "info"}">${esc(u.reason)}</span>` : ""}</td>` : ""}
       <td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td></tr>`).join("")}</tbody></table></div>`;
   return html + `<div class="hint" style="margin-top:0">イベントの貢献ポイントを、最近 ${t.period} か月 (${range(t.recent)}) とその前の ${t.period} か月 (${range(t.before)}) で比べます。どちらも集め終わった月です。
       離れつつある人: 前の期間に ${num(t.min)} pt 以上送り、最近は半分以下。伸びている人: 最近 ${num(t.min)} pt 以上送り、前の期間の 2 倍以上。</div>
     <div>
-      <div><b>離れつつある人</b> <small class="muted">${num(t.falling_count)} 人</small>${list(t.falling, "falling")}</div>
+      <div><b>離れつつある人</b> <small class="muted">${num(t.falling_count)} 人${t.falling_reasons ? ` (${Object.entries(t.falling_reasons).map(([k, v]) => `${esc(k)} ${num(v)}`).join("・")})` : ""}</small>
+        <div class="hint">101 位より下に落ちて見えなくなっただけの人を外しています (前に送っていたルームの、載っていないイベントの 100 位のポイントを足しても、前の半分以下の人だけ)。</div>${list(t.falling, "falling")}</div>
+      ${t.hidden && t.hidden.length ? `<div style="margin-top:12px"><b>見えなくなっただけかもしれない人</b> <small class="muted">${num(t.hidden_count)} 人</small>
+        <div class="hint">貢献ランキングには出てこなくなったが、101 位より下で送り続けているかもしれない人です。</div>${list(t.hidden, "hidden")}</div>` : ""}
       <div style="margin-top:12px"><b>伸びている人</b> <small class="muted">${num(t.rising_count)} 人</small>${list(t.rising, "rising")}</div>
     </div>${coverageBlock(c)}`;
 }
@@ -2053,7 +2058,7 @@ async function showRooms(sub) {
 const pctText = (x, d = 0) => x == null ? "—" : `${(x * 100).toFixed(d)}%`;
 const placeText = (x) => x == null ? "—" : `上から ${(x * 100).toFixed(0)}%`;
 const momentumHtml = (v, label) => v == null ? '<span class="uid">判定できない</span>'
-  : `<span class="tag ${v >= 0.1 ? "ok" : v <= -0.1 ? "warn" : ""}">${esc(label || (v >= 0.1 ? "上り調子" : v <= -0.1 ? "下り気味" : "変わらない"))}</span> <span class="uid" title="順位の位置 (上から何%) が、前の 60 日より何ポイント上がったか">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}</span>`;
+  : `${label ? `<span class="tag ${label === "上り調子" ? "ok" : label === "下り気味" ? "warn" : ""}">${esc(label)}</span>` : '<span class="uid" title="イベントが 5 件ずつそろうまでは、上り・下りと言わずに数字だけ出します">参考</span>'} <span class="uid" title="順位の位置 (上から何%) が、前の 60 日より何ポイント上がったか">${v > 0 ? "+" : ""}${Math.round(v * 100)}</span>`;
 const roomFilter = { type: "", style: "", depth: "", order: "momentum" };
 async function showRoomProfiles() {
   const box = $("#rm-body");
@@ -2084,7 +2089,7 @@ async function showRoomProfiles() {
     { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
     { label: "タイプ", value: (r) => r.type || "", html: (r) => r.type ? `<span class="tag info">${esc(r.type)}</span>` : '<span class="uid">判定できない</span>' },
     { label: "戦術", value: (r) => r.style || "", html: (r) => r.style ? `${esc(r.style)} <span class="uid">${num(r.style_events)} 件から</span>` : '<span class="uid">判定できない</span>' },
-    { label: "勢い", num: true, value: (r) => r.momentum, html: (r) => momentumHtml(r.momentum) },
+    { label: "勢い", num: true, value: (r) => r.momentum, html: (r) => momentumHtml(r.momentum, r.momentum_label) },
     { label: "直近の順位", num: true, value: (r) => r.recent_place == null ? null : -r.recent_place, html: (r) => placeText(r.recent_place) },
     { label: "前の順位", num: true, value: (r) => r.prev_place == null ? null : -r.prev_place, html: (r) => placeText(r.prev_place) },
     { label: "層の厚さ", num: true, value: (r) => r.depth_rel, html: (r) => r.depth_pt == null ? "—" : `${r.depth ? `<span class="tag ${r.depth === "厚い" ? "ok" : r.depth === "薄い" ? "warn" : ""}">${esc(r.depth)}</span> ` : ""}<span class="uid">100 位 ${num(Math.round(r.depth_pt))} pt</span>` },
@@ -2117,9 +2122,9 @@ function roomAnalysisHtml(d) {
     ${tile("100 位より下の分", m && m.below_share != null ? pctText(m.below_share, 1) : "—", m && m.below_share != null
       ? `イベントのポイントのうち、貢献ランキング (上位 100 人) に入らない人たちの分。${shortNum(m.below_pt)} pt (100 人に届いた ${num(m.below_events)} イベントの真ん中の値)`
       : m ? "貢献ランキングが 100 人に届いたイベントがありません (101 位より下の人がいない)" : "")}
-    ${tile("勢い", mo.value == null ? '<small>判定できない</small>' : esc(mo.label), mo.value == null
+    ${tile("勢い", mo.value == null ? '<small>判定できない</small>' : mo.label ? esc(mo.label) : `${mo.value > 0 ? "+" : ""}${Math.round(mo.value * 100)} <small>参考</small>`, mo.value == null
       ? `直近 ${mo.days} 日とその前に、イベントが 2 件ずつ要ります (今 ${num(mo.recent_events)} 件・${num(mo.prev_events)} 件)`
-      : `順位の位置 ${placeText(mo.prev_place)} → ${placeText(mo.recent_place)}`, mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}
+      : `順位の位置 ${placeText(mo.prev_place)} → ${placeText(mo.recent_place)} (${num(mo.prev_events)} 件 → ${num(mo.recent_events)} 件)${mo.label_why ? `。${esc(mo.label_why)}` : mo.label === "変わらない" && Math.abs(mo.value) >= 0.1 ? "。差はあるが、イベントごとのばらつきの範囲" : ""}`, mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}
     ${tile("戦術", st.style ? esc(st.style) : '<small>判定できない</small>', st.style ? `${num(st.events)} イベントから (${esc(styleCounts)})`
       : `走り方を見たイベント (推移の分かったもの) が 3 件より少ない (今 ${num(st.events)} 件)`)}
     ${tile("新しく来た人", a.new_share.value == null ? "—" : pctText(a.new_share.value), a.new_share.value == null ? "イベントが 2 件より少ない"

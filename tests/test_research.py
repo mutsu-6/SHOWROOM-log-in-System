@@ -797,3 +797,28 @@ def test_sweep_stops_when_disk_is_almost_full(tmp_path, monkeypatch):
     Usage.free = 10 << 30
     sw._disk_checked = 0
     assert sw.step() is True and sw.state()["disk_low"] is None  # 空きが戻ったら再開する
+
+
+def test_falling_ignores_people_who_only_dropped_below_rank_100(tmp_path):
+    with Store(tmp_path) as s:
+        _monthly_events(s, 26, {
+            1: lambda b: 20000 if b > 12 else 1000,  # 本当に減った
+            2: lambda b: 20000 if b > 12 else 0,  # 最近は載っていない (101 位より下かもしれない)
+        }, NOW)
+        # 最近の期間のイベントは 100 人に届いていて、100 位は 12000 pt だった → 2 は 12000 pt 近く送っていたかもしれない
+        s.conn.execute("""UPDATE room_events SET c_count=100, c_p100=12000 WHERE event_id IN
+                          (SELECT event_id FROM events WHERE event_id < 1013)""")
+    t = research.analyze(tmp_path, [], max_age=0)["trend"]
+    assert [u["user_id"] for u in t["falling"]] == [1]
+    assert [u["user_id"] for u in t["hidden"]] == [2] and t["hidden"][0]["recent_upper"] == 12 * 12000
+    assert t["falling"][0]["reason"] == "本人が減った" and t["falling"][0]["name"] == "u1"
+
+
+def test_falling_reason_when_main_room_stopped(tmp_path):
+    with Store(tmp_path) as s:
+        _monthly_events(s, 26, {1: lambda b: 20000 if b > 12 else 0}, NOW)
+        # 最近の期間は、いちばん送っていたルームがイベントに出ていない (推しのルームが休んだ)
+        s.conn.execute("DELETE FROM room_events WHERE event_id < 1013")
+    t = research.analyze(tmp_path, [], max_age=0)["trend"]
+    assert [u["user_id"] for u in t["falling"]] == [1] and t["falling"][0]["reason"] == "推しのルームが休んだ・消えた"
+    assert t["falling_reasons"] == {"推しのルームが休んだ・消えた": 1}

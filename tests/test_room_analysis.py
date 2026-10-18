@@ -66,17 +66,18 @@ def test_event_styles_and_room_style(tmp_path):
     with Store(tmp_path) as s:
         start, end = NOW - 10 * DAY, NOW - 3 * DAY
         s.upsert_events([{"event_id": 5, "start": start, "end": end}])
-        # ルーム 1 は最初から 1 位 (逃げ)、ルーム 4 は最終日に大きく伸ばす (追い込み)
-        for i, f in enumerate((0.05, 0.25, 0.5, 0.75, 0.9, 1.0)):
+        # ルーム 1 は最初から 1 位 (逃げ)、ルーム 4 は最終日に大きく伸ばす (追い込み)。終わる 24 時間前 (6/7) の回もある
+        for i, f in enumerate((0.05, 0.25, 0.5, 0.75, 6 / 7, 1.0)):
             at = start + f * (end - start)
             s.add_progress(5, [{"room_id": 1, "point": 1000 * (i + 1)}, {"room_id": 2, "point": 500 * (i + 1)},
-                               {"room_id": 3, "point": 400 * (i + 1)}, {"room_id": 4, "point": 10 if i < 4 else 100 if i == 4 else 4000}], at)
+                               {"room_id": 3, "point": 400 * (i + 1)}, {"room_id": 4, "point": 10 if i < 4 else 100 if i == 4 else 4000},
+                               {"room_id": 5, "point": 300 * (i + 1)}], at)
         rows = {r[1]: r for r in ra.event_styles(s, 5)}
         assert rows[1][2] == "逃げ" and rows[4][2] == "追い込み"
         assert rows[4][7] > 0.9  # 最終日のポイントの割合
         s.conn.execute("UPDATE events SET rooms_at=? WHERE event_id=5", (end + 60,))
         assert ra.step(s, NOW) is True  # 走り方を作る
-        assert s.scalar("SELECT COUNT(*) FROM room_event_style WHERE event_id=5") == 4
+        assert s.scalar("SELECT COUNT(*) FROM room_event_style WHERE event_id=5") == 5
         assert s.one("SELECT style_at FROM events WHERE event_id=5")[0] == NOW
         assert ra.room_style(s, 1) == {"style": None, "events": 1, "counts": {"逃げ": 1}}  # 3 件より少ない
         # 推移が足りないイベントは走り方を出さない
@@ -99,13 +100,28 @@ def test_room_style_majority(tmp_path):
 
 def test_momentum(tmp_path):
     with Store(tmp_path) as s:
-        # 前の期間は 10 ルーム中 8 位、直近は 2 位
+        # 前の期間は 10 ルーム中 8 位前後、直近は 2 位前後 (5 件ずつ)
+        plan = [(e, 100 - e * 5, (8, 7, 8, 9, 8)[e - 1]) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, (2, 3, 2, 1, 2)[e - 6]) for e in range(6, 11)]
+        for eid, days, rank in plan:
+            _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r if r != rank else 1, []) for r in range(2, 11)}})
+        m = ra.momentum(s, 1, NOW)
+        assert m["label"] == "上り調子" and m["value"] == 0.67 and m["noise"] < 0.2  # (8-1)/9 - (2-1)/9
+        assert ra.momentum(s, 1, NOW - 50 * DAY)["label"] is None  # 直近のイベントが足りない
+
+
+def test_momentum_needs_five_events_and_a_clear_difference(tmp_path):
+    with Store(tmp_path) as s:
+        # 2 件ずつ: 数字は出すが、上り調子とは言わない (偶然の差でもよく出るため)
         for eid, days, rank in ((1, 100, 8), (2, 90, 8), (3, 20, 2), (4, 10, 2)):
             _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r, []) for r in range(2, 11)}})
         m = ra.momentum(s, 1, NOW)
-        assert m["label"] == "上り調子" and m["value"] == 0.67  # (8-1)/9 - (2-1)/9
-        assert ra.momentum(s, 2, NOW)["label"] == "変わらない"
-        assert ra.momentum(s, 1, NOW - 50 * DAY)["label"] is None  # 直近のイベントが足りない
+        assert m["value"] == 0.67 and m["label"] is None and "5 件" in m["label_why"]
+    with Store(tmp_path / "b") as s:
+        # 5 件ずつでも、ばらつきが大きく差がはっきりしない時は「変わらない」
+        plan = [(e, 100 - e * 5, (1, 10, 1, 10, 1)[e - 1]) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, (10, 1, 10, 1, 5)[e - 6]) for e in range(6, 11)]
+        for eid, days, rank in plan:
+            _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r if r != rank else 1, []) for r in range(2, 11)}})
+        assert ra.momentum(s, 1, NOW)["label"] == "変わらない"
 
 
 def test_profile_rebuild_and_list(tmp_path):
@@ -254,7 +270,7 @@ def test_room_style_counts_events_without_style(tmp_path):
 def test_momentum_is_not_dragged_by_small_events(tmp_path):
     with Store(tmp_path) as s:
         # 前は 500 ルームのイベントで 1 位、直近は 5 ルームのイベントで 1 位: 同じ成績なので「変わらない」
-        for eid, days, n in ((1, 100, 500), (2, 90, 500), (3, 20, 5), (4, 10, 5)):
+        for eid, days, n in [(e, 100 - e * 5, 500) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, 5) for e in range(6, 11)]:
             _event(s, eid, NOW - days * DAY, {1: (1000, 1, []), **{r: (10, r, []) for r in range(2, n + 1)}})
         m = ra.momentum(s, 1, NOW)
         assert m["value"] == 0 and m["label"] == "変わらない" and m["recent_place"] == 0
@@ -330,3 +346,22 @@ def test_depth_needs_enough_rooms_to_compare():
     assert ra.depth_label(m, {"1": {"depth_n": 3, "depth_p25": 0.1, "depth_p75": 1}}) is None
     assert ra.depth_label({**m, "depth_pt": 0, "depth_rel": 0}, None) == "薄い"  # 100 人に届かないのは、くらべなくても薄い
     assert ra.depth_label(None, None) is None
+
+
+def test_styles_need_enough_rooms_and_nearby_snapshots(tmp_path):
+    with Store(tmp_path) as s:
+        start, end = NOW - 10 * DAY, NOW - 7 * DAY  # 3 日のイベント
+        s.upsert_events([{"event_id": 1, "start": start, "end": end}, {"event_id": 2, "start": start, "end": end}])
+        hours = [start + h * 3600 for h in range(0, 73, 3)]
+        for at in hours:
+            k = (at - start) / (end - start)
+            # 毎日同じペースで伸びるルームたち (最後の 24 時間で 33% になる): 追い込みではない
+            s.add_progress(1, [{"room_id": r, "point": int(1000 * r * k) + 1} for r in range(1, 7)], at)
+            s.add_progress(2, [{"room_id": r, "point": int(1000 * r * k) + 1} for r in range(1, 4)], at)  # 3 ルームだけ
+        rows = ra.event_styles(s, 1)
+        assert rows and not any(r[2] == "追い込み" for r in rows)
+        assert all(abs(r[7] - 1 / 3) < 0.05 for r in rows if r[1] > 1)  # 最後の 24 時間の割合は約 3 分の 1
+        assert ra.event_styles(s, 2) == []  # 参加ルームが少ないイベントは、走り方を出さない
+        # 中盤の回が無い (推移が途切れた) 時は、離れた回で代わりに測らない
+        s.conn.execute("DELETE FROM event_progress WHERE event_id=1 AND at BETWEEN ? AND ?", (start + 0.6 * 86400, start + 2.4 * 86400))
+        assert all(r[4] is None and r[5] is None for r in ra.event_styles(s, 1))
