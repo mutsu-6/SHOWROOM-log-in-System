@@ -33,7 +33,7 @@ log = logging.getLogger("web")
 PAGE = Path(__file__).with_name("admin.html")
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # 変えると視聴とギフト記録をやり直す設定 (応援ルーム・調べるルームは情報収集だけに使うので含めない)
-WATCH_KEYS = ("rooms", "record_rooms", "events", "enter_rooms")
+WATCH_KEYS = ("rooms", "record_rooms", "events", "enter_rooms", "no_visit_rooms")
 STATUS_TTL = 15  # 配信状況 (SHOWROOM への問い合わせ) を使い回す秒数
 STORE_STATUS_TTL = 600  # 全ルームの収集の件数を使い回す秒数 (大きな表を数えるので、画面を開いているだけで何度も数えない)
 _store_status: dict[str, Any] = {"at": 0.0, "data": None}
@@ -317,7 +317,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _settings(self) -> dict[str, list[str]]:
         cfg = self.keeper.cfg
         return {key: list(getattr(cfg, key, []) or [])
-                for key in ("rooms", "record_rooms", "events", "enter_rooms", "support_rooms", "research_rooms")}
+                for key in SETTINGS_KEYS}
 
     def _body(self) -> dict[str, Any] | None:
         if self.headers.get(CSRF_HEADER) != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):

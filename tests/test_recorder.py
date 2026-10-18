@@ -257,3 +257,20 @@ async def test_save_stage_ranks(monkeypatch, tmp_path):
     r = rec.GiftRecorder(Config(state_file=tmp_path / "s.json"))
     await r._save_stage("room", 5, 77)
     assert stage_ranks.last_per_live(tmp_path, "room")[77]["ranks"] == [[1, 9]]
+
+
+async def test_no_cookie_for_rooms_not_to_visit(monkeypatch, tmp_path):
+    sent = {}
+
+    async def fake_aget(path, cookie=None):
+        sent[path] = cookie
+        return {"is_live": False, "room_id": 1}
+
+    monkeypatch.setattr(rec, "aget", fake_aget)
+    monkeypatch.setattr(rec, "session_cookie", lambda path, now=None: "sr=1")
+    cfg = Config(record_rooms=["secret", "open"], no_visit_rooms=["secret"], record_glitter=False, state_file=tmp_path / "s.json")
+    r = rec.GiftRecorder(cfg)
+    await r._targets()
+    assert sent["/api/room/status?room_url_key=secret"] is None
+    assert sent["/api/room/status?room_url_key=open"] == "sr=1"
+    assert r._cookie("secret") is None and r._cookie("open") == "sr=1"

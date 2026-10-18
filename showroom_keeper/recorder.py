@@ -234,8 +234,14 @@ class GiftRecorder:
         async with self._fetch_slots:
             return await aget(path, cookie)
 
-    def _cookie(self) -> str | None:
+    def _cookie(self, key: str | None = None) -> str | None:
+        """ログインの Cookie。ログインして訪問しないルーム (no_visit_rooms) には付けない。"""
+        if key is not None and key in set(self.cfg.no_visit_rooms or []):
+            return None
         return session_cookie(Path(self.cfg.state_file))
+
+    def _skip_cookie(self, key: str, cookie: str | None) -> str | None:
+        return None if key in set(self.cfg.no_visit_rooms or []) else cookie
 
     async def _room_status(self, key: str, cookie: str | None) -> Any:
         try:
@@ -259,7 +265,7 @@ class GiftRecorder:
         self._incomplete = False
 
         keys = [key for key in self.cfg.record_rooms if key not in watched]
-        statuses = await asyncio.gather(*[self._room_status(key, cookie) for key in keys])
+        statuses = await asyncio.gather(*[self._room_status(key, self._skip_cookie(key, cookie)) for key in keys])
         for key, st in zip(keys, statuses):
             room_id = st.get("room_id") if st else None
             if room_id and st.get("is_live"):
@@ -315,7 +321,8 @@ class GiftRecorder:
         # イベント由来のルームは live_id が分からないため、記録中のものだけ個別に確認する
         cookie = self._cookie()
         unknown = [key for key in running & set(targets) if targets[key].get("live_id") is None]
-        for key, st in zip(unknown, await asyncio.gather(*[self._room_status(key, cookie) for key in unknown])):
+        for key, st in zip(unknown, await asyncio.gather(*[self._room_status(key, self._skip_cookie(key, cookie))
+                                                           for key in unknown])):
             if st and st.get("live_id"):
                 targets[key]["live_id"] = st["live_id"]
 
@@ -350,7 +357,7 @@ class GiftRecorder:
         import websockets  # 記録機能を使う時だけ必要
 
         try:
-            cookie = self._cookie()
+            cookie = self._cookie(key)
             info = await self._fetch(f"/api/live/live_info?room_id={room_id}", cookie)
             if not isinstance(info, dict) or info.get("live_status") != 2 or not info.get("bcsvr_key"):
                 return
@@ -416,7 +423,7 @@ class GiftRecorder:
 
     async def _save_stage(self, key: str, room_id: int, live_id: Any) -> None:
         """配信の順位 (ステージの上位 100 人) を、ルームの live_ranks に 1 行足す。"""
-        data = await self._fetch(f"/api/live/stage_user_list?room_id={room_id}", self._cookie())
+        data = await self._fetch(f"/api/live/stage_user_list?room_id={room_id}", self._cookie(key))
         rows = [(int(x.get("rank") or x.get("order_no") or 0), (x.get("user") or {}).get("user_id"))
                 for x in (data or {}).get("stage_user_list") or [] if isinstance(x, dict)]
         rows = [[r, u] for r, u in rows if u]
