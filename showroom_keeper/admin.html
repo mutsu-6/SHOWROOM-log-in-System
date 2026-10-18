@@ -271,6 +271,24 @@ section[data-page].active { display: block; }
 .dash-tile .v { font-size: 26px; font-weight: 700; margin-top: 4px; }
 .dash-tile .v small { font-size: 12px; font-weight: 500; }
 .dash-tile .ch { font-size: 11px; opacity: .85; }
+.dr-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; position: relative; }
+.dr-btn { min-width: 0; text-align: left; }
+.dr-btn small { display: block; font-size: 10px; color: var(--muted); font-weight: 400; }
+.dr-pop { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.18); display: grid; grid-template-columns: 190px 1fr; width: min(520px, calc(100vw - 32px)); overflow: hidden; }
+.dr-pop .presets { border-right: 1px solid var(--line); max-height: 420px; overflow: auto; padding: 4px 0; }
+.dr-pop .presets button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 8px 14px; font-size: 13px; color: var(--text); cursor: pointer; }
+.dr-pop .presets button:hover { background: var(--hover, rgba(127,127,127,.12)); }
+.dr-pop .presets button.on { background: rgba(59,108,246,.14); font-weight: 600; }
+.dr-pop .custom { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.dr-pop .custom label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
+.dr-pop .custom input[type=date], .dr-pop .custom input[type=number] { font-size: 14px; padding: 6px 8px; }
+.dr-pop .nrow { display: flex; align-items: center; gap: 6px; }
+.dr-pop .nrow input { width: 64px; }
+.dr-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.dr-seg button { border: 0; background: var(--panel); padding: 5px 10px; font-size: 12px; cursor: pointer; color: var(--text); }
+.dr-seg button.on { background: #3b6cf6; color: #fff; }
+@media (max-width: 560px) { .dr-pop { grid-template-columns: 1fr; } .dr-pop .presets { border-right: 0; border-bottom: 1px solid var(--line); max-height: 220px; } }
 #offline { background: var(--warn-soft); color: var(--warn); font-weight: 600; text-align: center; padding: 6px 12px; font-size: 13px; }
 .page-head { display: flex; align-items: flex-start; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 14px; }
 .page-head .grow { flex: 1 1 300px; min-width: 0; }
@@ -2365,9 +2383,82 @@ const DASH_METRICS = {
   level_ups: { label: "ファンレベルが上がった", unit: "人", agg: "sum", rec: true, zero: true },
 };
 const DASH_COLORS = ["#3b6cf6", "#e5484d", "#18794e", "#f1a10d"];
-const dash = { data: null, period: 30, picks: ["hours", "paid_points", "followers", "comments"], hidden: [] };
-try { Object.assign(dash, JSON.parse(localStorage.getItem("roomDash") || "{}"), { data: null }); } catch (e) { /* 使えない時は決まった形 */ }
-function saveDash() { try { localStorage.setItem("roomDash", JSON.stringify({ period: dash.period, picks: dash.picks, hidden: dash.hidden })); } catch (e) { /* 残せなくてもよい */ } }
+// 期間: range = { preset } (過去 30 日間など、今日から数える) か { from, to } (日付を決めたもの)。unit: グラフの 1 点 (日・週・月)。compare: 前の期間の線も出す
+const dash = { data: null, range: { preset: "last30" }, unit: "day", compare: false, open: false,
+  picks: ["hours", "paid_points", "followers", "comments"], hidden: [] };
+try {
+  const saved = JSON.parse(localStorage.getItem("roomDash") || "{}");
+  if (saved.period && !saved.range) saved.range = { preset: saved.period === "all" ? "all" : `today:${saved.period}` };  // 前の形 (7・30・90 日・全部)
+  delete saved.period;
+  Object.assign(dash, saved, { data: null, open: false });
+} catch (e) { /* 使えない時は決まった形 */ }
+function saveDash() {
+  try { localStorage.setItem("roomDash", JSON.stringify({ range: dash.range, unit: dash.unit, compare: dash.compare, picks: dash.picks, hidden: dash.hidden })); } catch (e) { /* 残せなくてもよい */ }
+}
+// 日付 ("2026-09-01"、日本時間) の計算
+const D = {
+  today: () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10),
+  add: (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10),
+  dow: (d) => new Date(`${d}T00:00:00Z`).getUTCDay(),  // 0 = 日曜
+  sunday: (d) => D.add(d, -D.dow(d)),
+  monthStart: (d) => `${d.slice(0, 7)}-01`,
+  addMonths: (d, n) => { const y = +d.slice(0, 4), m = +d.slice(5, 7) - 1 + n; const t = new Date(Date.UTC(y, m, 1)); return t.toISOString().slice(0, 10); },
+  monthEnd: (d) => D.add(D.addMonths(D.monthStart(d), 1), -1),
+  span: (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000) + 1,
+  months: (a, b) => (+b.slice(0, 4) - +a.slice(0, 4)) * 12 + (+b.slice(5, 7) - +a.slice(5, 7)) + 1,
+  jp: (d) => `${+d.slice(0, 4)}年${+d.slice(5, 7)}月${+d.slice(8, 10)}日`,
+};
+const DASH_PRESETS = [
+  ["today", "今日"], ["yesterday", "昨日"], ["thisWeek", "今週 (日〜今日)"], ["last7", "過去 7 日間"], ["lastWeek", "先週 (日〜土)"],
+  ["last14", "過去 14 日間"], ["thisMonth", "今月"], ["last30", "過去 30 日間"], ["lastMonth", "先月"], ["last90", "過去 90 日間"], ["all", "全期間"],
+];
+function dashFirstDay() { const d = dash.data; return d && d.days.length ? d.days[0].day : null; }
+// 期間の最初と最後の日 ([from, to])
+function dashResolve(r) {
+  const t = D.today(), y = D.add(t, -1);
+  if (r.from && r.to) return [r.from, r.to];
+  const p = r.preset || "last30";
+  const m = /^(today|yest):(\d+)$/.exec(p);
+  if (m) { const n = Math.max(1, Math.min(2000, +m[2])), end = m[1] === "today" ? t : y; return [D.add(end, 1 - n), end]; }
+  const last = (n) => [D.add(y, 1 - n), y];  // Google 広告と同じく、過去 N 日間は昨日まで
+  return ({
+    today: [t, t], yesterday: [y, y], thisWeek: [D.sunday(t), t], last7: last(7), lastWeek: [D.add(D.sunday(t), -7), D.add(D.sunday(t), -1)],
+    last14: last(14), thisMonth: [D.monthStart(t), t], last30: last(30), lastMonth: [D.addMonths(D.monthStart(t), -1), D.add(D.monthStart(t), -1)],
+    last90: last(90), all: [dashFirstDay() && dashFirstDay() < t ? dashFirstDay() : D.add(t, -29), t],
+  })[p] || last(30);
+}
+function dashLabel(r) {
+  if (r.preset) {
+    const m = /^(today|yest):(\d+)$/.exec(r.preset);
+    if (m) return `${m[2]} 日間 (${m[1] === "today" ? "今日" : "昨日"}まで)`;
+    return (DASH_PRESETS.find(([k]) => k === r.preset) || [, "過去 30 日間"])[1];
+  }
+  return "カスタム";
+}
+function dashRangeText([a, b]) {
+  if (a === b) return D.jp(a);
+  if (a.slice(0, 7) === b.slice(0, 7)) return `${D.jp(a)}〜${+b.slice(8, 10)}日`;
+  if (a.slice(0, 4) === b.slice(0, 4)) return `${D.jp(a)}〜${+b.slice(5, 7)}月${+b.slice(8, 10)}日`;
+  return `${D.jp(a)}〜${D.jp(b)}`;
+}
+// 前後に移す: 月の区切り (今月・先月など) は月ごと、今週は週ごと、それ以外は同じ日数だけ
+function dashShift([a, b], dir) {
+  const t = D.today();
+  let na, nb;
+  if (a === D.monthStart(a) && (b === D.monthEnd(b) || (b === t && a !== b))) {
+    const n = D.months(a, b);
+    na = D.addMonths(a, dir * n); nb = D.monthEnd(D.addMonths(na, n - 1));
+  } else if (D.dow(a) === 0 && b === t && a !== b && D.span(a, b) < 7) {  // 今週 (日曜〜今日) は、1 週ずつ
+    na = D.add(a, dir * 7); nb = D.add(na, 6);
+  } else {
+    const n = D.span(a, b);
+    na = D.add(a, dir * n); nb = D.add(b, dir * n);
+  }
+  if (nb > t) nb = t;
+  return na > t ? [a, b] : [na, nb];
+}
+function dashBucket(d, unit) { return unit === "month" ? D.monthStart(d) : unit === "week" ? D.sunday(d) : d; }
+function dashDaysOf([a, b]) { const out = []; for (let x = a; x <= b; x = D.add(x, 1)) out.push(x); return out; }
 async function loadRoomDash(key) {
   const box = $("#rp-dash");
   if (!box) return;
@@ -2375,16 +2466,12 @@ async function loadRoomDash(key) {
   if (!$("#rp-dash")) return;
   renderRoomDash();
 }
-function dashDays(n, offset = 0) {  // 今日から n 日前までの日付 (古い順)。offset 日だけ前にずらす
-  const out = [], base = Date.now() + 9 * 3600000 - offset * 86400000;
-  for (let i = n - 1; i >= 0; i--) out.push(new Date(base - i * 86400000).toISOString().slice(0, 10));
-  return out;
-}
 // 記録の無い日: 配信しなかった日などは 0。記録しているルームだけの数字は、記録を始める前の日・記録していないルームでは「無し」
 function dashCell(m, x, byDay) {
   const meta = DASH_METRICS[m], d = dash.data;
   if (byDay[x] && byDay[x][m] != null) return byDay[x][m];
   if (meta.rec && (!d.recorded || !d.rec_from || x < d.rec_from)) return null;
+  if (!d.days.length || x < d.days[0].day) return null;  // 記録を始める前の日は「無し」 (0 ではない)
   return meta.zero ? 0 : null;
 }
 function dashValue(m, days, byDay) {
@@ -2400,10 +2487,9 @@ function renderRoomDash() {
   const box = $("#rp-dash"), d = dash.data;
   if (!box || !d || !d.found) return;
   const byDay = Object.fromEntries(d.days.map((x) => [x.day, x]));
-  const first = d.days.length ? d.days[0].day : null;
-  const all = first ? Math.max(1, Math.round((Date.now() + 9 * 3600000 - new Date(`${first}T00:00:00Z`).getTime()) / 86400000) + 1) : 1;
-  const n = dash.period === "all" ? all : dash.period;
-  const days = dashDays(n), before = dashDays(n, n);
+  // くらべる前の期間は、Google 広告と同じく、すぐ前の同じ日数
+  const range = dashResolve(dash.range), span = D.span(range[0], range[1]), prevRange = [D.add(range[0], -span), D.add(range[0], -1)];
+  const days = dashDaysOf(range), before = dashDaysOf(prevRange);
   const fmt = (m, v) => v == null ? "—" : `${DASH_METRICS[m].d ? (Math.round(v * 10) / 10).toLocaleString() : shortNum(Math.round(v))}`;
   const tiles = dash.picks.map((m, i) => {
     const meta = DASH_METRICS[m], v = dashValue(m, days, byDay), pv = dashValue(m, before, byDay);
@@ -2412,35 +2498,72 @@ function renderRoomDash() {
     return `<div class="dash-tile ${off ? "off" : ""}" data-dash-tile="${i}" style="--c:${DASH_COLORS[i]}">
       <select data-dash-pick="${i}" aria-label="指標を選ぶ">${Object.entries(DASH_METRICS).map(([k, x]) => `<option value="${k}" ${k === m ? "selected" : ""}>${esc(x.label)}${x.rec ? " *" : ""}</option>`).join("")}</select>
       <div class="v">${fmt(m, v)} <small>${esc(meta.unit)}</small></div>
-      <div class="ch">${meta.rec && !d.recorded ? "このルームは記録していません" : ch == null ? "前の期間とくらべられません" : `${ch >= 0 ? "▲" : "▼"} ${Math.abs(ch * 100).toFixed(0)}% (前の ${n} 日から)`}</div></div>`;
+      <div class="ch">${meta.rec && !d.recorded ? "このルームは記録していません" : ch == null ? "前の期間とくらべられません" : `${ch >= 0 ? "▲" : "▼"} ${Math.abs(ch * 100).toFixed(0)}% (前の期間から)`}</div></div>`;
   }).join("");
-  const times = days.map((x) => new Date(`${x}T12:00:00+09:00`).getTime() / 1000);
+  // グラフの点: 日・週 (日曜はじまり)・月ごとに、それぞれの数字のまとめ方でまとめる
+  const groups = (list) => { const g = new Map(); list.forEach((x) => { const k = dashBucket(x, dash.unit); if (!g.has(k)) g.set(k, []); g.get(k).push(x); }); return [...g.entries()]; };
+  const cur = groups(days), prev = groups(before);
+  const times = cur.map(([k]) => new Date(`${k}T12:00:00+09:00`).getTime() / 1000);
+  const labels = cur.map(([k, list]) => dash.unit === "month" ? `${+k.slice(0, 4)}/${+k.slice(5, 7)}`
+    : dash.unit === "week" ? `${+list[0].slice(5, 7)}/${+list[0].slice(8, 10)}〜` : `${+k.slice(5, 7)}/${+k.slice(8, 10)}`);
+  const tips = cur.map(([k, list]) => list.length > 1 ? `${list[0].slice(5).replace("-", "/")}〜${list[list.length - 1].slice(5).replace("-", "/")}` : k.slice(5).replace("-", "/"));
   const series = dash.picks.map((m, i) => ({ m, i, color: DASH_COLORS[i], meta: DASH_METRICS[m],
-    values: days.map((x) => dashCell(m, x, byDay)) }))
+    values: cur.map(([, list]) => dashValue(m, list, byDay)),
+    prev: dash.compare ? cur.map((_, j) => prev[j] ? dashValue(m, prev[j][1], byDay) : null) : null }))
     .filter((s) => !dash.hidden.includes(s.i));
   const width = Math.max(260, (box.clientWidth || 720) - 30);
-  box.innerHTML = `<div class="chart-card wide dash"><div class="chart-head"><div><b>日ごとの数字</b>
+  const units = [["day", "日"], ["week", "週"], ["month", "月"]];
+  const r = dash.range, [ra, rb] = range, t = D.today();
+  const nRow = (kind, label) => {
+    const m = /^(today|yest):(\d+)$/.exec(r.preset || "");
+    const v = m && m[1] === kind ? m[2] : 30;
+    return `<div class="nrow"><input type="number" min="1" max="2000" value="${v}" data-dr-n="${kind}" aria-label="日数"> 日間 (${label}まで) <button class="btn small" data-dr-napply="${kind}">使う</button></div>`;
+  };
+  const pop = dash.open ? `<div class="dr-pop" data-dr-pop>
+      <div class="presets">${DASH_PRESETS.map(([k, l]) => `<button data-dr-preset="${k}" class="${r.preset === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <div class="custom">
+        <div class="row" style="gap:8px;flex-wrap:wrap"><label>開始日<input type="date" data-dr-from value="${ra}" max="${t}"></label>
+          <label>終了日<input type="date" data-dr-to value="${rb}" max="${t}"></label></div>
+        <div><button class="btn small primary" data-dr-apply>この期間にする</button></div>
+        ${nRow("today", "今日")}${nRow("yest", "昨日")}
+        <label class="row" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input type="checkbox" data-dr-compare ${dash.compare ? "checked" : ""}> 前の期間とくらべる (点線)</label>
+        <div class="uid">前の期間: ${esc(dashRangeText(prevRange))}</div>
+      </div></div>` : "";
+  box.innerHTML = `<div class="chart-card wide dash"><div class="chart-head" style="flex-wrap:wrap;gap:8px"><div class="grow"><b>日ごとの数字</b>
       <div class="chart-sub">上の 4 つは押すと線を消せて、▼ で別の数字に替えられます。線はそれぞれの最大を高さいっぱいにして重ねています (数はカーソルを合わせると出ます)。* は記録しているルームだけ${d.recorded ? "" : " (このルームは記録していません)"}</div></div>
-      <div class="row" style="gap:6px">${[[7, "7 日"], [30, "30 日"], [90, "90 日"], ["all", "全部"]].map(([p, l]) => `<button class="btn small ${dash.period === p ? "primary" : ""}" data-dash-period="${p}">${l}</button>`).join("")}</div></div>
-    <div class="dash-tiles">${tiles}</div>${multiChart(times, series, width)}</div>`;
+      <div class="dr-bar">
+        <div class="dr-seg" role="group" aria-label="グラフの 1 点">${units.map(([u, l]) => `<button data-dr-unit="${u}" class="${dash.unit === u ? "on" : ""}">${l}</button>`).join("")}</div>
+        <span style="display:inline-flex;gap:6px;align-items:center;white-space:nowrap"><button class="btn small" data-dr-move="-1" aria-label="前の期間">‹</button>
+        <button class="btn small dr-btn" data-dr-toggle aria-expanded="${dash.open}"><small>${esc(dashLabel(r))}</small>${esc(dashRangeText(range))} ▾</button>
+        <button class="btn small" data-dr-move="1" aria-label="次の期間" ${rb >= t ? "disabled" : ""}>›</button></span>
+        ${pop}
+      </div></div>
+    <div class="dash-tiles">${tiles}</div>${multiChart(times, series, width, 240, { labels, tips })}
+    ${dash.compare ? `<div class="hint" style="margin-top:0">点線は前の期間 (${esc(dashRangeText(prevRange))})</div>` : ""}</div>`;
 }
-function multiChart(times, series, width, height = 240) {
+function multiChart(times, series, width, height = 240, { labels: names = null, tips = null } = {}) {
   const W = Math.round(width), left = 12, right = 12, top = 12, bottom = 24, plot = height - top - bottom, plotW = W - left - right;
   const xOf = (i) => left + (times.length > 1 ? (i / (times.length - 1)) * plotW : plotW / 2);
   const grid = [0, 0.5, 1].map((f) => `<line class="${f ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${(top + plot - f * plot).toFixed(1)}" y2="${(top + plot - f * plot).toFixed(1)}"></line>`).join("");
   const nLabels = Math.max(2, Math.min(times.length, Math.floor(plotW / 80)));
   const idx = [...new Set(Array.from({ length: nLabels }, (_, i) => Math.round((i * (times.length - 1)) / Math.max(nLabels - 1, 1))))];
-  const labels = idx.map((i, k) => `<text x="${xOf(i).toFixed(1)}" y="${top + plot + 16}" text-anchor="${k === 0 ? "start" : k === idx.length - 1 ? "end" : "middle"}">${esc(day(times[i]).slice(0, 5))}</text>`).join("");
+  const nameOf = (i) => names ? names[i] : day(times[i]).slice(0, 5);
+  const labels = idx.map((i, k) => `<text x="${xOf(i).toFixed(1)}" y="${top + plot + 16}" text-anchor="${k === 0 ? "start" : k === idx.length - 1 ? "end" : "middle"}">${esc(nameOf(i))}</text>`).join("");
   const lines = series.map((s) => {
-    const vals = s.values.filter((v) => v != null);
+    const vals = [...s.values, ...(s.prev || [])].filter((v) => v != null);
     const lo = s.meta.agg === "last" && vals.length ? Math.min(...vals) : Math.min(0, ...vals), hi = Math.max(lo + 1e-9, ...vals);
     const yOf = (v) => top + plot - ((v - lo) / (hi - lo || 1)) * plot;
-    let dpath = "", pen = false;
-    s.values.forEach((v, i) => { if (v == null) { pen = false; return; } dpath += `${pen ? "L" : "M"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`; pen = true; });
-    return `<path d="${dpath}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round"></path>`;
+    const path = (list) => {
+      let dpath = "", pen = false;
+      list.forEach((v, i) => { if (v == null) { pen = false; return; } dpath += `${pen ? "L" : "M"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`; pen = true; });
+      return dpath;
+    };
+    return (s.prev ? `<path d="${path(s.prev)}" fill="none" stroke="${s.color}" stroke-width="1.6" stroke-dasharray="4 4" opacity=".7"></path>` : "")
+      + `<path d="${path(s.values)}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round"></path>`;
   }).join("");
   const slot = plotW / Math.max(times.length, 1);
-  const hits = times.map((t, i) => `<rect class="hit" data-tip="${esc(`${day(t).slice(0, 5)}\n${series.map((s) => `${s.meta.label}: ${s.values[i] == null ? "—" : `${(Math.round(s.values[i] * 10) / 10).toLocaleString()} ${s.meta.unit}`}`).join("\n")}`)}"
+  const val = (v, s) => v == null ? "—" : `${(Math.round(v * 10) / 10).toLocaleString()} ${s.meta.unit}`;
+  const hits = times.map((t, i) => `<rect class="hit" data-tip="${esc(`${tips ? tips[i] : day(t).slice(0, 5)}\n${series.map((s) => `${s.meta.label}: ${val(s.values[i], s)}${s.prev ? ` (前の期間 ${val(s.prev[i], s)})` : ""}`).join("\n")}`)}"
       x="${(xOf(i) - slot / 2).toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plot}"></rect>`).join("");
   return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img">${grid}${labels}${lines}<g class="col">${hits}</g></svg>`;
 }
@@ -2451,8 +2574,26 @@ document.addEventListener("change", (ev) => {
   saveDash(); renderRoomDash();
 });
 document.addEventListener("click", (ev) => {
-  const p = ev.target.closest("[data-dash-period]");
-  if (p) { dash.period = p.dataset.dashPeriod === "all" ? "all" : Number(p.dataset.dashPeriod); saveDash(); renderRoomDash(); return; }
+  if ($("#rp-dash") && dash.data) {
+    const q = (sel) => ev.target.closest(sel);
+    const set = (patch) => { Object.assign(dash, patch); saveDash(); renderRoomDash(); };
+    if (q("[data-dr-toggle]")) { set({ open: !dash.open }); return; }
+    if (q("[data-dr-preset]")) { set({ range: { preset: q("[data-dr-preset]").dataset.drPreset }, open: false }); return; }
+    if (q("[data-dr-move]")) { const [a, b] = dashShift(dashResolve(dash.range), Number(q("[data-dr-move]").dataset.drMove)); set({ range: { from: a, to: b } }); return; }
+    if (q("[data-dr-unit]")) { set({ unit: q("[data-dr-unit]").dataset.drUnit }); return; }
+    if (q("[data-dr-apply]")) {
+      let a = ($("[data-dr-from]") || {}).value, b = ($("[data-dr-to]") || {}).value;
+      if (!a || !b) { toast("開始日と終了日を入れてください"); return; }
+      if (a > b) [a, b] = [b, a];
+      set({ range: { from: a, to: b > D.today() ? D.today() : b }, open: false }); return;
+    }
+    if (q("[data-dr-napply]")) {
+      const kind = q("[data-dr-napply]").dataset.drNapply, n = Math.max(1, Math.min(2000, Number(($(`[data-dr-n="${kind}"]`) || {}).value) || 30));
+      set({ range: { preset: `${kind}:${n}` }, open: false }); return;
+    }
+    if (q("[data-dr-compare]")) { set({ compare: q("[data-dr-compare]").checked }); return; }
+    if (dash.open && !q("[data-dr-pop]")) { set({ open: false }); }
+  }
   const t = ev.target.closest("[data-dash-tile]");
   if (t && !ev.target.closest("select")) {
     const i = Number(t.dataset.dashTile);
