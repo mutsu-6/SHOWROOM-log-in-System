@@ -214,7 +214,7 @@ class Sweeper:
         lives = [x for g in data.get("onlives") or [] for x in g.get("lives") or [] if isinstance(x, dict)]
         rooms = [{"room_id": x.get("room_id"), "key": x.get("room_url_key"), "name": x.get("main_name"),
                   "followers": x.get("follower_num"), "live_at": now, "viewers": x.get("view_num"),
-                  "started_at": x.get("started_at"), "live_id": x.get("live_id")} for x in lives]
+                  "started_at": x.get("started_at"), "live_id": x.get("live_id"), "genre": x.get("genre_name")} for x in lives]
         new = self.store.upsert_rooms(rooms, "live", now)
         # 同じルームが「人気」などのまとめ枠にも出るので、1 ルーム 1 回にする
         once = list({r["room_id"]: r for r in rooms if r["room_id"]}.values())

@@ -216,6 +216,17 @@ def _find_room(s: Store, key: Any) -> Any:
     return row
 
 
+def _room_congestion(s: Store, rid: int, now: float) -> dict[str, Any] | None:
+    """時間帯の混み具合 (全ルームと、このルームと同じリーグ)。"""
+    c = room_analysis.congestion(s, now)
+    if c is None:
+        return None
+    info = s.one("SELECT league_id FROM room_info WHERE room_id=?", (rid,))
+    lg = info["league_id"] if info is not None else None
+    return {"days": c["days"], "all": c["all"], "league": c["leagues"].get(str(lg)) if lg is not None else None,
+            "league_name": event_analysis.LEAGUES.get(lg) if lg is not None else None}
+
+
 def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
     """1 つのルームの、集めた情報 (累計ランキング・ギフター・イベントの成績・重なるルーム)。"""
     now = time.time()
@@ -265,7 +276,8 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                 "balance": room_analysis.balance(state_dir, row["key"], now) if row["key"] else None,
                 "lure": room_analysis.lure_throws(state_dir, row["key"], now, store=s, room_id=rid) if row["key"] else None,
                 "stage": room_analysis.stage_regulars(state_dir, row["key"], now, store=s) if row["key"] else None,
-                "live_habits": room_analysis.live_habits(s, rid, now)}
+                "live_habits": room_analysis.live_habits(s, rid, now),
+                "congestion": _room_congestion(s, rid, now), "effort": room_analysis.event_effort(s, rid, now)}
 
 
 def _room_event_stats(s: Store, rid: int) -> dict[str, Any]:

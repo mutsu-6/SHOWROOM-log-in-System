@@ -20,7 +20,7 @@ DAY = 86400
 # 大きくなる表 (ルーム × イベント・ギフター × なにか で増えるもの)。room_profile は 1 ルーム 1 行で小さく、
 # ルームの一覧で絞り込み・並べ替えのために全部読むので入れない
 BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "room_events", "user_month", "cumulative",
-       "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms"}
+       "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives"}
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
@@ -53,6 +53,7 @@ def traced(tmp_path, monkeypatch):
             for k in range(7):
                 s.add_progress(e, [{"room_id": r, "point": r * (k + 1)} for r in range(1, 6)], NOW - (e * 10 + 7 - k) * DAY)
         s.add_room_daily([{"room_id": 1, "followers": 10}], NOW)
+        s.add_room_lives([{"room_id": r, "started_at": int(NOW - 3600 * r), "followers": 5} for r in range(1, 6)], NOW)
     seen.clear()
     return tmp_path, seen
 

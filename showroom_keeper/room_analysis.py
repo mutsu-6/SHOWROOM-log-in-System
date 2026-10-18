@@ -16,7 +16,7 @@ research.db を読んで作るだけで、SHOWROOM には問い合わせない�
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 import time
 from typing import Any
@@ -957,6 +957,7 @@ def stage_regulars(state_dir: Any, room_key: str, now: float | None = None, days
 
 # ------------------------------------------------------------------ 配信の時間・時間帯 (全ルーム。配信中の一覧から)
 LIVE_DAYS = 30  # 配信の時間を見る日数
+LIVE_RECENT = 10  # ルームのページに出す、最近の配信の数
 LIVE_SEEN_GAP = 300  # 配信中の一覧を見る間隔 (秒)。最後に見た時刻から、おおよそこの半分は配信が続いていたとみる
 WEEKDAYS = "月火水木金土日"
 
@@ -967,7 +968,7 @@ def live_habits(s: Store, room_id: int, now: float | None = None, days: int = LI
     配信中のルームの一覧 (5 分ごと) から作るので、長さは 5 分くらいずれる。5 分より短い配信は見落とすことがある。
     """
     now = time.time() if now is None else now
-    rows = s.all("""SELECT started_at, last_seen, view_max, followers_start, followers_end FROM room_lives
+    rows = s.all("""SELECT started_at, last_seen, view_max, followers_start, followers_end, genre FROM room_lives
                     WHERE room_id=? AND started_at > ? ORDER BY started_at""", (int(room_id), now - days * 86400))
     if not rows:
         return None
@@ -988,4 +989,114 @@ def live_habits(s: Store, room_id: int, now: float | None = None, days: int = LI
             "minutes": median(mins), "total_hours": sum(mins) / 60, "hours": hours, "week": week,
             "slot": {"from": top, "to": (top + 3) % 24, "share": blocks[top] / len(rows)},
             "weekday": [sum(w) for w in week], "view_max": median(views) if views else None,
-            "follower_gain": sum(gain) / len(gain) if gain else None, "last": rows[-1]["started_at"]}
+            "follower_gain": sum(gain) / len(gain) if gain else None, "last": rows[-1]["started_at"],
+            "coverage": coverage(rows),
+            "recent": [{"start": r["started_at"], "minutes": m, "view_max": r["view_max"], "genre": r["genre"],
+                        "followers": r["followers_end"],
+                        "gain": None if r["followers_end"] is None or r["followers_start"] is None else r["followers_end"] - r["followers_start"]}
+                       for r, m in list(zip(rows, mins))[-LIVE_RECENT:][::-1]],
+            "followers_by_month": followers_by_month(s, room_id, now)}
+
+
+def _live_end(r: Any) -> float:
+    return r["last_seen"] + LIVE_SEEN_GAP / 2
+
+
+def coverage(rows: list[Any]) -> list[float]:
+    """配信していた分数を、日本時間の 1 時間ごとに足したもの (24 個)。"""
+    out = [0.0] * 24
+    for r in rows:
+        t, end = float(r["started_at"]), _live_end(r)
+        while t < end:
+            dt = datetime.fromtimestamp(t, JST)
+            nxt = dt.replace(minute=0, second=0, microsecond=0).timestamp() + 3600
+            out[dt.hour] += (min(nxt, end) - t) / 60
+            t = nxt
+    return out
+
+
+def followers_by_month(s: Store, room_id: int, now: float, months: int = 3) -> list[dict[str, Any]]:
+    """月末 (その月の最後に見た日) のフォロワーの数と、前の月からの増減。今の月は、いちばん新しい値。"""
+    start = datetime.fromtimestamp(now, JST).replace(day=1)
+    for _ in range(months):
+        start = (start - timedelta(days=1)).replace(day=1)
+    rows = s.all("SELECT day, followers FROM room_daily WHERE room_id=? AND day >= ? AND followers IS NOT NULL ORDER BY day",
+                 (int(room_id), start.strftime("%Y-%m-%d")))
+    last: dict[str, int] = {}
+    for r in rows:
+        last[r["day"][:7]] = r["followers"]
+    out, prev = [], None
+    for m in sorted(last):
+        out.append({"month": m, "followers": last[m], "gain": None if prev is None else last[m] - prev})
+        prev = last[m]
+    return out
+
+
+CONGESTION_DAYS = 14  # 時間帯の混み具合を見る日数
+CONGESTION_TTL = 3600
+_congestion: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def congestion(s: Store, now: float | None = None) -> dict[str, Any] | None:
+    """時間帯の混み具合: 日本時間の 1 時間ごとに、平均で何ルームが配信しているか (全ルームと、リーグごと)。"""
+    now = time.time() if now is None else now
+    hit = _congestion.get(str(s.state_dir))
+    if hit and now - hit[0] < CONGESTION_TTL:
+        return hit[1]
+    since = now - CONGESTION_DAYS * 86400
+    first = s.scalar("SELECT MIN(started_at) FROM room_lives WHERE started_at > ?", (since,))
+    if first is None:
+        return None
+    span_days = max(1.0, (now - max(first, since)) / 86400)
+    leagues = {r[0]: r[1] for r in s.all("SELECT room_id, league_id FROM room_info WHERE league_id IS NOT NULL")}
+    total = [0.0] * 24
+    by: dict[Any, list[float]] = {}
+    for r in s.all("SELECT room_id, started_at, last_seen FROM room_lives WHERE started_at > ?", (since,)):
+        cov = coverage([r])
+        lg = leagues.get(r["room_id"])
+        acc = by.setdefault(lg, [0.0] * 24) if lg is not None else None
+        for h in range(24):
+            total[h] += cov[h]
+            if acc is not None:
+                acc[h] += cov[h]
+    per = 60 * span_days  # 1 時間の枠が、見た日数ぶんある
+    out = {"days": round(span_days, 1), "all": [x / per for x in total], "leagues": {str(k): [x / per for x in v] for k, v in by.items()}}
+    _congestion[str(s.state_dir)] = (now, out)
+    return out
+
+
+EFFORT_EVENTS = 6  # イベント中の配信の増え方を見るイベントの数
+EFFORT_BEFORE = 14  # くらべる、イベントの前の日数
+
+
+def event_effort(s: Store, room_id: int, now: float | None = None) -> list[dict[str, Any]]:
+    """イベント中に、ふだん (イベントの前 EFFORT_BEFORE 日) より 1 日あたり何時間多く配信したか。配信の記録がある期間だけ。"""
+    now = time.time() if now is None else now
+    first = s.scalar("SELECT MIN(started_at) FROM room_lives WHERE room_id=?", (int(room_id),))
+    if first is None:
+        return []
+    out = []
+    for e in s.all("""SELECT e.event_id, e.name, e.start, e.end FROM room_events re JOIN events e USING(event_id)
+                      WHERE re.room_id=? AND e.start IS NOT NULL AND e.end IS NOT NULL AND e.end > ? AND e.start < ?
+                      ORDER BY e.end DESC LIMIT ?""", (int(room_id), first, now, EFFORT_EVENTS)):
+        end = min(e["end"], now)
+        lives = s.all("SELECT started_at, last_seen FROM room_lives WHERE room_id=? AND started_at >= ? AND started_at < ?",
+                      (int(room_id), e["start"] - EFFORT_BEFORE * 86400 - 86400, end))
+
+        def hours(a: float, b: float) -> float:
+            tot = 0.0
+            for r in lives:
+                lo, hi = max(a, float(r["started_at"])), min(b, _live_end(r))
+                tot += max(0.0, hi - lo)
+            return tot / 3600
+
+        days_in = max(1 / 24, (end - e["start"]) / 86400)
+        # 記録を始めた日は、その日の 0 時から (途中から数えると、1 日あたりが多めに出るため)
+        day0 = datetime.fromtimestamp(first, JST).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        b0 = max(day0, e["start"] - EFFORT_BEFORE * 86400)
+        days_before = (e["start"] - b0) / 86400
+        during = hours(e["start"], end) / days_in
+        before = hours(b0, e["start"]) / days_before if days_before >= 3 else None  # 前が 3 日より短ければ、くらべない
+        out.append({"event_id": e["event_id"], "name": e["name"], "start": e["start"], "end": e["end"], "during": during,
+                    "before": before, "ratio": during / before if before else None, "ongoing": e["end"] > now})
+    return out

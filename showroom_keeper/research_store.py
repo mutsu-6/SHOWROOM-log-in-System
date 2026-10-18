@@ -195,7 +195,7 @@ class Store:
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
                                    ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
-                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"),
+                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"), ("room_lives", "genre TEXT"),
                                    ("user_rooms", "room_key TEXT")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
@@ -490,12 +490,13 @@ class Store:
 
     def add_room_lives(self, lives: list[dict[str, Any]], now: float) -> None:
         """配信中のルームの一覧 (5 分ごと) から、配信ごとの記録を足す (同じ配信は、最後に見た時刻・最大・フォロワーを更新)。"""
-        rows = [(int(x["room_id"]), int(x["started_at"]), x.get("live_id"), now, x.get("viewers"), x.get("followers"))
+        rows = [(int(x["room_id"]), int(x["started_at"]), x.get("live_id"), now, x.get("viewers"), x.get("followers"), x.get("genre"))
                 for x in lives if x.get("room_id") and x.get("started_at")]
         with self.tx() as c:
-            c.executemany("""INSERT INTO room_lives(room_id, started_at, live_id, last_seen, view_max, followers_start, followers_end)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            c.executemany("""INSERT INTO room_lives(room_id, started_at, live_id, last_seen, view_max, followers_start, followers_end, genre)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
                              ON CONFLICT(room_id, started_at) DO UPDATE SET last_seen=MAX(last_seen, excluded.last_seen),
+                               genre=COALESCE(genre, excluded.genre),
                                view_max=MAX(COALESCE(view_max, 0), COALESCE(excluded.view_max, 0)),
                                followers_end=COALESCE(excluded.followers_end, followers_end)""", rows)
 

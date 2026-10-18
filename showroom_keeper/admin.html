@@ -2025,6 +2025,14 @@ async function showGifter(uid) {
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
   if (d.found && d.states) html += gifterStates(d.states);
+  if (d.found && d.overlap && d.overlap.length) {
+    html += `<h3>時間帯の重なり <small class="muted">よく送る時間帯 (記録したギフト) と、ルームが配信している時間帯 (直近 30 日) の重なり</small></h3>` + dataTable("gp-overlap", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}`, cls: "name" },
+      { label: "重なり", num: true, value: (r) => r.overlap, html: (r) => `<b>${pctText(r.overlap)}</b>` },
+      { label: "ルームのよく始める時間帯", value: (r) => r.slot.from, html: (r) => `${r.slot.from}時〜${r.slot.to}時` },
+      { label: "配信の回数", num: true, value: (r) => r.per_week, html: (r) => `${r.per_week.toFixed(1)} <small>回/週</small>` },
+    ], d.overlap, { sort: 1, limit: 10, csvName: `ギフター_${uid}_時間帯の重なり`, note: "重なりは 0〜100%。100% に近いほど、この人がよく送る時間帯に、そのルームが配信している" });
+  }
   if (d.found) {
     html += `<h3>ルーム別${d.room_total > d.rooms.length ? ` <small class="muted">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</small>` : ""}</h3>` + dataTable("gp-rooms", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ? ' <span class="tag live">応援ルーム</span>' : ""}`, cls: "name" },
@@ -2298,7 +2306,41 @@ function liveHabitsHtml(h) {
       ${tile("よく始める時間帯", `${hh(h.slot.from)}〜${hh(h.slot.to)}`, `配信の ${pctText(h.slot.share)} がこの 3 時間に始まる`)}
       ${tile("盛り上がり度", h.view_max == null ? "—" : `${num(Math.round(h.view_max))}`, "1 回の配信の最大 (真ん中の値)")}
       ${tile("1 回のフォロワーの増減", h.follower_gain == null ? "—" : `${h.follower_gain >= 0 ? "+" : ""}${h.follower_gain.toFixed(1)} <small>人</small>`, "始まった時と最後に見た時の差 (平均)")}
-    </div>${grid}<div class="hint">色の濃さは、その曜日・時間に始まった配信の回数。長さは 5 分くらいずれます。</div>`;
+    </div>${followerMonths(h.followers_by_month)}${grid}<div class="hint">色の濃さは、その曜日・時間に始まった配信の回数。長さは 5 分くらいずれます。</div>`
+    + `<h3>最近の配信 <small class="muted">新しい順</small></h3>` + dataTable("rp-lives", [
+      { label: "始まり", num: true, value: (x) => x.start, html: (x) => tm(x.start, true) },
+      { label: "ジャンル", value: (x) => x.genre || "", html: (x) => esc(x.genre || "-") },
+      { label: "長さ", num: true, value: (x) => x.minutes, html: (x) => `約 ${num(Math.round(x.minutes))} 分` },
+      { label: "盛り上がり度の最大", num: true, value: (x) => x.view_max, html: (x) => x.view_max ? num(x.view_max) : "-" },
+      { label: "フォロワー", num: true, value: (x) => x.followers, html: (x) => x.followers == null ? "-"
+        : `${num(x.followers)} <span style="color:${x.gain > 0 ? "var(--ok)" : x.gain < 0 ? "var(--accent)" : "var(--muted)"}">(${x.gain > 0 ? "+" : x.gain < 0 ? "" : "±"}${num(x.gain || 0)})</span>` },
+    ], h.recent, { sort: 0, limit: 10, csvName: "最近の配信" });
+}
+function followerMonths(ms) {
+  if (!ms || !ms.length) return "";
+  return `<div class="tiles">${ms.map((m, i) => tile(i === ms.length - 1 ? `${Number(m.month.slice(5))}月 (いま)` : `${Number(m.month.slice(5))}月末`, `${num(m.followers)} <small>人</small>`,
+    m.gain == null ? "フォロワーの数 (その月の最後に見た値)" : `<span style="color:${m.gain > 0 ? "var(--ok)" : m.gain < 0 ? "var(--accent)" : "var(--muted)"}">${m.gain > 0 ? "+" : ""}${num(m.gain)}</span> (前の月から)`)).join("")}</div>`;
+}
+function congestionHtml(c, h) {
+  if (!c) return "";
+  const rows = [["全ルーム", c.all], ...(c.league ? [[`${c.league_name} リーグ`, c.league]] : [])];
+  const mine = h ? h.coverage : null;
+  const bar = (vals, color) => { const mx = Math.max(1e-9, ...vals); return vals.map((v, hr) => `<td title="${hr}時台: 平均 ${v.toFixed(1)}" style="vertical-align:bottom;height:44px"><div style="height:${Math.round(40 * v / mx)}px;background:${color};border-radius:2px"></div></td>`).join(""); };
+  return `<h3>時間帯の混み具合 <small class="muted">直近 ${c.days} 日。1 時間ごとに、平均で何ルームが配信しているか</small></h3>
+    <div style="overflow-x:auto"><table class="heat" style="border-collapse:separate;border-spacing:2px;font-size:10px">
+      <tr><td></td>${[...Array(24).keys()].map((x) => `<td style="text-align:center;color:var(--muted)">${x % 3 === 0 ? x : ""}</td>`).join("")}</tr>
+      ${rows.map(([label, vals]) => `<tr><td style="color:var(--muted);padding-right:6px;white-space:nowrap">${esc(label)}</td>${bar(vals, "rgba(120,120,140,.55)")}</tr>`).join("")}
+      ${mine ? `<tr><td style="color:var(--muted);padding-right:6px;white-space:nowrap">このルーム</td>${bar(mine, "rgba(229,72,77,.8)")}</tr>` : ""}
+    </table></div><div class="hint">いちばん混む時間帯: 全ルームは ${c.all.indexOf(Math.max(...c.all))} 時台 (平均 ${Math.round(Math.max(...c.all))} ルーム)${c.league ? `・${esc(c.league_name)} リーグは ${c.league.indexOf(Math.max(...c.league))} 時台` : ""}。棒の上にマウスを置くと数が出ます。</div>`;
+}
+function effortHtml(rows) {
+  if (!rows || !rows.length) return "";
+  return `<h3>イベント中の配信の増え方 <small class="muted">イベント中の 1 日あたりの配信の時間 ÷ その前 14 日の 1 日あたり</small></h3>` + dataTable("rp-effort", [
+    { label: "イベント", value: (e) => e.name, html: (e) => `${eventLink(e.event_id, e.name)}${e.ongoing ? ' <span class="tag live">開催中</span>' : ""}`, cls: "name" },
+    { label: "イベント中", num: true, value: (e) => e.during, html: (e) => `${e.during.toFixed(1)} <small>時間/日</small>` },
+    { label: "その前", num: true, value: (e) => e.before, html: (e) => e.before == null ? '<span class="uid">記録が足りない</span>' : `${e.before.toFixed(1)} <small>時間/日</small>` },
+    { label: "増え方", num: true, value: (e) => e.ratio, html: (e) => e.ratio == null ? "-" : `<b>${e.ratio.toFixed(1)}</b> 倍` },
+  ], rows, { sort: 0, limit: 6, csvName: "イベント中の配信" });
 }
 function roomProfileTiles(p) {
   if (!p) return tile("SHOWランク", "—", "ルームのプロフィールは、最近配信したルームから 1 週間ごとに読みます");
@@ -2334,7 +2376,7 @@ async function showRoom(key) {
       ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
       ${roomProfileTiles(d.profile)}
     </div>${SCOPE_NOTE}
-    <div id="rp-chart"></div>${liveHabitsHtml(d.live_habits)}${roomAnalysisHtml(d)}`;
+    <div id="rp-chart"></div>${liveHabitsHtml(d.live_habits)}${congestionHtml(d.congestion, d.live_habits)}${effortHtml(d.effort)}${roomAnalysisHtml(d)}`;
   html += `<div class="cols">
     <div><h3>累計ランキング <small class="muted">上位 30 人</small></h3>${dataTable("rp-cum", [
       { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)}` : "-" },

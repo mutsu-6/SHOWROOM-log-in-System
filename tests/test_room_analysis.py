@@ -572,3 +572,32 @@ def test_live_habits(tmp_path):
     assert h["lives"] == 4 and round(h["minutes"]) == 122 and h["slot"]["from"] == 21 and h["slot"]["share"] == 1
     assert h["hours"][21] == 4 and h["view_max"] == 220 and h["follower_gain"] == 2
     assert ra.live_habits(Store(tmp_path), 9) is None
+
+
+def test_coverage_congestion_effort_and_followers(tmp_path):
+    from showroom_keeper.status import JST
+
+    now = datetime(2026, 10, 30, 12, tzinfo=JST).timestamp()
+    with Store(tmp_path) as s:
+        # 21:30 から 1 時間 (21 時台 30 分・22 時台 30 分)
+        start = datetime(2026, 10, 29, 21, 30, tzinfo=JST).timestamp()
+        cov = ra.coverage([{"started_at": start, "last_seen": start + 3600 - ra.LIVE_SEEN_GAP / 2}])
+        assert round(cov[21]) == 30 and round(cov[22]) == 30 and sum(cov) == 60
+        # 10/10〜10/29 は毎日 1 時間、10/20〜10/26 のイベント中は毎日 3 時間
+        s.upsert_events([{"event_id": 1, "name": "大会", "start": datetime(2026, 10, 20, tzinfo=JST).timestamp(),
+                          "end": datetime(2026, 10, 27, tzinfo=JST).timestamp()}])
+        s.set_event_rooms(1, [{"room_id": 1, "point": 10, "rank": 1}], now)
+        for d in range(10, 30):
+            st = datetime(2026, 10, d, 20, tzinfo=JST).timestamp()
+            hours = 3 if 20 <= d <= 26 else 1
+            s.add_room_lives([{"room_id": 1, "started_at": int(st), "followers": 100 + d}], st)
+            s.add_room_lives([{"room_id": 1, "started_at": int(st), "followers": 100 + d}], st + hours * 3600 - ra.LIVE_SEEN_GAP / 2)
+        eff = ra.event_effort(s, 1, now)[0]
+        assert round(eff["during"], 1) == 3.0 and round(eff["before"], 1) == 1.0 and round(eff["ratio"], 1) == 3.0
+        c = ra.congestion(s, now)
+        assert c["all"][20] > 0 and c["all"][3] == 0
+        s.add_room_daily([{"room_id": 1, "followers": 90}], datetime(2026, 8, 31, 12, tzinfo=JST).timestamp())
+        s.add_room_daily([{"room_id": 1, "followers": 95}], datetime(2026, 9, 30, 12, tzinfo=JST).timestamp())
+        s.add_room_daily([{"room_id": 1, "followers": 120}], now)
+        fm = ra.followers_by_month(s, 1, now)
+    assert [(m["month"], m["followers"], m["gain"]) for m in fm] == [("2026-08", 90, None), ("2026-09", 95, 5), ("2026-10", 120, 25)]

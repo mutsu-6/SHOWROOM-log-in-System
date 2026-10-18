@@ -1061,7 +1061,34 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid),
+                "overlap": _time_overlap(s, rooms, habits(gifts), [r["key"] for r in room_list[:OVERLAP_ROOMS]], support),
                 "states": _states(s, rooms, uid)}
+
+
+OVERLAP_ROOMS = 5  # 時間帯の重なりを見る、このギフターがよく送るルームの数 (応援ルームも足す)
+
+
+def _time_overlap(s: Store, rooms: "_Rooms", hab: dict[str, Any] | None, keys: list[str], support: list[str]) -> list[dict[str, Any]]:
+    """ギフターがよく送る時間帯 (記録したギフト) と、ルームが配信している時間帯 (直近 30 日の配信の記録) の重なり。
+
+    重なり = 2 つの時間帯の分け方 (それぞれ合計を 1 にしたもの) の、時間ごとの小さい方の合計 (0〜1)。
+    記録したギフトが無い人は出さない。
+    """
+    from . import room_analysis
+
+    if not hab or not sum(hab["hour"]):
+        return []
+    g = [x / sum(hab["hour"]) for x in hab["hour"]]
+    out = []
+    for key in dict.fromkeys([*support, *keys]):
+        rid = rooms.id(key)
+        h = room_analysis.live_habits(s, rid) if rid else None
+        if not h or not sum(h["coverage"]):
+            continue
+        r = [x / sum(h["coverage"]) for x in h["coverage"]]
+        out.append({"key": key, "name": rooms.label(rid)[1], "support": key in support,
+                    "overlap": sum(min(a, b) for a, b in zip(g, r)), "slot": h["slot"], "per_week": h["per_week"]})
+    return sorted(out, key=lambda x: -x["overlap"])
 
 
 def _states(s: Store, rooms: "_Rooms", uid: int) -> dict[str, Any]:
