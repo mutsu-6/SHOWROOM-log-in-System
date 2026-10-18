@@ -247,6 +247,7 @@ def event_list(state_dir: Path, state: str = "ongoing", limit: int = EVENT_LIST)
                                   WHERE re.event_id=e.event_id AND re.rank=1 LIMIT 1) AS leader
                          FROM events e WHERE {where} ORDER BY {order} LIMIT ?""", (now, now, int(limit)))
         return {"state": state, "total": total, "now": now,
+                "api_lag": event_analysis.api_lag(state_dir, now) if state == "ongoing" else None,
                 "events": [{**_event_row(r, now), "rooms": r["rooms"], "rankings": r["rankings"], "snapshots": r["snapshots"],
                             "leader": r["leader"], "type": r["type"]} for r in rows]}
 

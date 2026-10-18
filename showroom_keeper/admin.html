@@ -2428,7 +2428,10 @@ async function showEvents(sub) {
     ...(sub === "ended" ? [{ label: "貢献ランキング", num: true, value: (e) => e.rankings, html: (e) => `${num(e.rankings)} / ${num(e.rooms)}` }]
       : [{ label: "推移を残した回数", num: true, value: (e) => e.snapshots, html: (e) => e.snapshots ? `${num(e.snapshots)} 回` : "-" }]),
   ];
-  box.innerHTML = (sub === "ongoing" ? `<div class="hint" style="margin-top:0">開催中のイベントは、参加ルームのポイントと順位を 1 時間ごとに残しています。</div>` : "")
+  const lag = d.api_lag;
+  box.innerHTML = (sub === "ongoing" ? `<div class="hint" style="margin-top:0">開催中のイベントは、参加ルームのポイントと順位を 1 時間ごとに残しています。${lag
+      ? ` イベントの API の遅れ: リアルタイムのポイントより遅れていた割合 ${pctText(lag.behind)}・遅れの真ん中 ${num(Math.round(lag.median_pt))} pt${lag.median_s != null ? `・およそ ${num(Math.round(lag.median_s))} 秒 (${num(lag.timed)} 回)` : ""} (直近 7 日・${num(lag.samples)} 回測った)`
+      : " イベントの API の遅れは、記録しているルームがイベントに出ている時に 10 分ごとに測ります。"}</div>` : "")
     + dataTable(`events-${sub}`, cols, d.events, { sort: 2, desc: sub === "ended", limit: 50, total: d.total, csvName: `イベント_${sub}`,
       rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"`, empty: "当てはまるイベントはありません" });
 }

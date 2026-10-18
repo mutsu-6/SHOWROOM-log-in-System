@@ -69,3 +69,15 @@ def test_league_decides_if_the_room_can_enter(tmp_path):
     assert by[1]["can_enter"] is True and by[1]["league"] == "B"
     assert by[2]["can_enter"] is False and by[2]["league"] == "A"
     assert st["leagues"] == ["B", "C"]
+
+
+def test_api_lag(tmp_path):
+    from showroom_keeper import live_events
+
+    t = NOW - 1000
+    for k in range(5):  # 1 秒に 10 pt ずつ伸びている
+        live_events.append(tmp_path, "r", {"at": t + k * 100, "live_id": 1, "kind": "p5", "p": 10000 + k * 1000})
+    live_events.append(tmp_path, "r", {"at": t + 201, "live_id": 1, "kind": "lag", "ws_at": t + 200, "ws": 12000, "api": 11400})
+    live_events.append(tmp_path, "r", {"at": t + 301, "live_id": 1, "kind": "lag", "ws_at": t + 300, "ws": 13000, "api": 13000})
+    lag = ea.api_lag(tmp_path, NOW)
+    assert lag["samples"] == 2 and lag["behind"] == 0.5 and lag["median_s"] == 60 and lag["timed"] == 1

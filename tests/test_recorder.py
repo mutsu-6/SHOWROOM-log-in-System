@@ -274,3 +274,23 @@ async def test_no_cookie_for_rooms_not_to_visit(monkeypatch, tmp_path):
     assert sent["/api/room/status?room_url_key=secret"] is None
     assert sent["/api/room/status?room_url_key=open"] == "sr=1"
     assert r._cookie("secret") is None and r._cookie("open") == "sr=1"
+
+
+async def test_watched_rooms_get_stage_ranks(monkeypatch, tmp_path):
+    from showroom_keeper import stage_ranks
+
+    calls = []
+
+    async def fake_aget(path, cookie=None):
+        calls.append(path)
+        return {"stage_user_list": [{"rank": 1, "user": {"user_id": 9}}]}
+
+    monkeypatch.setattr(rec, "aget", fake_aget)
+    r = rec.GiftRecorder(Config(rooms=["mine"], state_file=tmp_path / "s.json"))
+    r._seen_watched = {"mine": (5, 70)}
+    await r._watched_stage(1000)
+    await r._watched_stage(1100)  # STAGE_EVERY より早いので読まない
+    r._seen_watched = {}  # 配信が終わった
+    await r._watched_stage(1200)
+    assert calls == ["/api/live/stage_user_list?room_id=5"] * 2  # 配信中に 1 回・終わりに 1 回
+    assert stage_ranks.last_per_live(tmp_path, "mine")[70]["ranks"] == [[1, 9]]

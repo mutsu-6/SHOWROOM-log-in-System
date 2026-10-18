@@ -61,12 +61,15 @@ def record(state_dir: Path, room: str, live_id: Any, data: dict[str, Any]) -> bo
     ev = parse(data) if isinstance(data, dict) else None
     if ev is None:
         return False
-    ev = {"at": int(data.get("created_at") or time.time()), "live_id": live_id, **ev}
+    append(state_dir, room, {"at": int(data.get("created_at") or time.time()), "live_id": live_id, **ev})
+    return True
+
+
+def append(state_dir: Path, room: str, ev: dict[str, Any]) -> None:
     path = event_dir(state_dir) / f"{room}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-    return True
 
 
 def load(state_dir: Path, room: str, since: float | None = None) -> list[dict[str, Any]]:

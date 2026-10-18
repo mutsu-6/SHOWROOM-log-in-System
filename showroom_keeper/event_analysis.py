@@ -234,3 +234,49 @@ def event_choice(s: Store, focus: list[int], now: float | None = None) -> dict[s
     result = {"now": now, "events": out}
     _choice[key] = (now, result)
     return result
+
+
+# ------------------------------------------------------------------ イベントの API の遅れ
+LAG_DAYS = 7  # 遅れを測った記録を見る日数
+LAG_RATE_WINDOW = 600  # 伸びの速さを見る、前後のリアルタイム通信のポイントの幅 (秒)
+LAG_TTL = 3600
+_lag: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def api_lag(state_dir: Any, now: float | None = None) -> dict[str, Any] | None:
+    """イベントの API (event_and_support) が、リアルタイム通信のイベントのポイント (t=5) よりどれだけ遅れているか。
+
+    記録しているルームで、t=5 を受けた直後に API を読んだ記録 (live_events の kind=lag) から。
+    遅れの秒数 = (t=5 のポイント - API のポイント) ÷ その前後の t=5 から出した 1 秒あたりの伸び。
+    """
+    from pathlib import Path
+
+    from . import live_events
+
+    now = time.time() if now is None else now
+    hit = _lag.get(str(state_dir))
+    if hit and now - hit[0] < LAG_TTL:
+        return hit[1]
+    folder = live_events.event_dir(Path(state_dir))
+    pts, secs, behind, n = [], [], 0, 0
+    for path in folder.glob("*.jsonl") if folder.is_dir() else []:
+        evs = live_events.load(Path(state_dir), path.stem, now - LAG_DAYS * 86400)
+        p5: dict[Any, list[tuple[float, float]]] = {}
+        for e in evs:
+            if e.get("kind") == "p5" and e.get("p") is not None:
+                p5.setdefault(e.get("live_id"), []).append((e["at"], float(e["p"])))
+        for e in evs:
+            if e.get("kind") != "lag" or e.get("ws") is None or e.get("api") is None:
+                continue
+            n += 1
+            diff = float(e["ws"]) - float(e["api"])
+            behind += diff > 0
+            pts.append(diff)
+            t = e.get("ws_at") or e["at"]
+            near = sorted(x for x in p5.get(e.get("live_id"), []) if abs(x[0] - t) <= LAG_RATE_WINDOW)
+            if diff > 0 and len(near) >= 2 and near[-1][0] > near[0][0] and near[-1][1] > near[0][1]:
+                secs.append(diff / ((near[-1][1] - near[0][1]) / (near[-1][0] - near[0][0])))
+    out = {"samples": n, "behind": behind / n if n else None, "median_pt": median(pts) if pts else None,
+           "median_s": median(secs) if secs else None, "timed": len(secs)} if n else None
+    _lag[str(state_dir)] = (now, out)
+    return out

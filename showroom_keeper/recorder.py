@@ -37,6 +37,7 @@ EVENT_GRACE = 600  # イベント終了後もこの秒数は記録を続ける (
 FETCH_CONCURRENCY = 8
 CONNECT_CONCURRENCY = 8
 STAGE_EVERY = 900  # 配信の順位 (ステージの上位 100 人。ポイントは出ない) を読む間隔 (秒)。配信の終わりにも 1 回読む
+LAG_EVERY = 600  # イベントの API の遅れを測る間隔 (1 ルームにつき。秒)
 GLITTER_KEEP = 7 * 86400  # グリッターを取ったルームを、この秒数のあいだ配信のたびに記録する
 GLITTER_FILE = "glitter_rooms.json"  # {room_url_key: 最後にグリッターのバッジを見た時刻} (起動し直しても続けるため)
 
@@ -167,6 +168,10 @@ class GiftRecorder:
         self._connect_slots: asyncio.Semaphore | None = None
         self._glitter: dict[str, float] = self._load_glitter()
         self._glitter_saved = 0.0
+        self._seen_watched: dict[str, tuple[int, Any]] | None = None  # 最後に読んだ配信中の一覧で、視聴しているルーム
+        self._watched_live: dict[str, tuple[int, Any]] = {}  # 視聴しているルームで、配信中のもの {key: (room_id, live_id)}
+        self._stage_at: dict[tuple[str, Any], float] = {}
+        self._lag_at: dict[str, float] = {}
 
     def _load_glitter(self) -> dict[str, float]:
         try:
@@ -190,6 +195,7 @@ class GiftRecorder:
             raise RuntimeError("配信中のルームの一覧の形式が不正です")
         lives = {x["room_url_key"]: x for g in data.get("onlives") or [] if isinstance(g, dict)
                  for x in g.get("lives") or [] if isinstance(x, dict) and x.get("room_url_key") and x.get("room_id")}
+        self._seen_watched = {k: (int(x["room_id"]), x.get("live_id")) for k, x in lives.items() if k in watched}
         new = [k for k, x in lives.items() if glitter_badge(x) and k not in self._glitter]
         for key, x in lives.items():
             if glitter_badge(x):
@@ -340,6 +346,25 @@ class GiftRecorder:
         for key in [k for k, task in self._tasks.items() if task.done()]:
             del self._tasks[key]
             self._live_ids.pop(key, None)
+        with suppress(Exception):
+            await self._watched_stage(time.time())
+
+    async def _watched_stage(self, now: float) -> None:
+        """視聴しているルーム (ブラウザで記録している) の配信の順位を、配信中に STAGE_EVERY ごとと、配信の終わりに読む。
+        配信中かどうかは、グリッターのルームを探す時に読んだ配信中の一覧から分かる。"""
+        seen = self._seen_watched
+        if seen is None:
+            return
+        for key, (rid, lid) in list(self._watched_live.items()):
+            if seen.get(key, (None, None))[1] != lid:  # 配信が終わった (か替わった): 最後の順位を読む
+                await self._save_stage(key, rid, lid)
+                del self._watched_live[key]
+                self._stage_at.pop((key, lid), None)
+        for key, (rid, lid) in seen.items():
+            self._watched_live[key] = (rid, lid)
+            if now - self._stage_at.get((key, lid), 0) >= STAGE_EVERY:
+                self._stage_at[(key, lid)] = now
+                await self._save_stage(key, rid, lid)
 
     def active(self) -> list[dict[str, Any]]:
         """記録中のルーム (管理画面用)。"""
@@ -400,6 +425,9 @@ class GiftRecorder:
                         elif data.get("t") in (5, 18, 1001):  # 来場・ファンレベルなどの知らせ
                             with suppress(Exception):
                                 live_events.record(self.state_dir, key, live_id, data)
+                            if data.get("t") == 5 and time.time() - self._lag_at.get(key, 0) >= LAG_EVERY:
+                                self._lag_at[key] = time.time()
+                                asyncio.ensure_future(self._sample_lag(key, room_id, live_id, data))
                         elif data.get("t") == 101:  # 配信終了
                             break
                 finally:
@@ -417,6 +445,15 @@ class GiftRecorder:
             raise
         except Exception as e:  # noqa: BLE001 - 次の確認で配信中なら再接続する
             log.debug("%s の記録が中断しました: %s", key, e)
+
+    async def _sample_lag(self, key: str, room_id: int, live_id: Any, data: dict[str, Any]) -> None:
+        """イベントの API の遅れを測る: リアルタイム通信のイベントのポイント (t=5) を受けた直後に、API のポイントを読んで残す。"""
+        with suppress(Exception):
+            got = await self._fetch(f"/api/room/event_and_support?room_id={room_id}", self._cookie())
+            rk = ((got or {}).get("event") or {}).get("ranking") or {}
+            if rk.get("point") is not None:
+                live_events.append(self.state_dir, key, {"at": int(time.time()), "live_id": live_id, "kind": "lag",
+                                                          "ws_at": data.get("created_at"), "ws": data.get("p"), "api": rk.get("point")})
 
     async def _stage_loop(self, key: str, room_id: int, live_id: Any) -> None:
         while True:
