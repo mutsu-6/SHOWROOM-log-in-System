@@ -146,6 +146,30 @@ def room_strength(s: Store, rid: int, now: float, cache: dict[int, Any] | None =
     return out
 
 
+# リーグの番号 (ルームのプロフィールの league_id と、イベントの「出られるリーグ」league_ids は同じ番号。2026-10-18 に確かめた)
+LEAGUES = {9: "SS", 10: "S", 20: "A", 30: "B", 40: "C", 0: "ランク外"}
+
+
+def room_league(s: Store, rid: int, start: float | None, now: float) -> int | None:
+    """そのイベントの時のルームのリーグ。次の月から始まるイベントは、次の月のリーグ (月末のランクで決まる)。"""
+    from datetime import datetime
+
+    from .status import JST
+
+    r = s.one("SELECT league_id, next_league_id FROM room_info WHERE room_id=?", (int(rid),))
+    if r is None:
+        return None
+    later = start is not None and datetime.fromtimestamp(start, JST).strftime("%Y%m") > datetime.fromtimestamp(now, JST).strftime("%Y%m")
+    return r["next_league_id"] if later and r["next_league_id"] is not None else r["league_id"]
+
+
+def event_leagues(s: Store, eid: int) -> list[int] | None:
+    import json
+
+    r = s.one("SELECT leagues FROM event_info WHERE event_id=?", (int(eid),))
+    return json.loads(r[0]) if r is not None and r[0] else None
+
+
 def _place(value: float, others: list[float]) -> int:
     return 1 + sum(1 for v in others if v > value)
 
@@ -161,18 +185,28 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
     vals = {rid: st["per_day"] for rid, st in known.items()}
     order = sorted(vals, key=lambda r: -vals[r])
     out_rooms = [{"room_id": rid, **known[rid], "place": i + 1} for i, rid in enumerate(order)]
+    ev = s.one("SELECT start FROM events WHERE event_id=?", (int(eid),))
+    start = ev["start"] if ev is not None else None
+    leagues = event_leagues(s, eid)
+    for r in out_rooms:
+        lg = room_league(s, r["room_id"], start, now)
+        r["league"] = LEAGUES.get(lg) if lg is not None else None
     focus_out = []
     for rid in focus or []:
         st = room_strength(s, rid, now, cache)
+        lg = room_league(s, rid, start, now)
+        # 出られるか: イベントの「出られるリーグ」に、ルームのリーグが入っているか (どちらかが分からなければ None)
+        can = None if lg is None or not leagues else lg in leagues
+        base = {"room_id": rid, "joined": rid in rooms, "league": LEAGUES.get(lg) if lg is not None else None, "can_enter": can}
         if st:
             others = [v for r, v in vals.items() if r != rid]
-            focus_out.append({"room_id": rid, **st, "place": _place(st["per_day"], others), "of": len(others) + 1,
-                              "joined": rid in rooms})
+            focus_out.append({**base, **st, "place": _place(st["per_day"], others), "of": len(others) + 1})
         else:
-            focus_out.append({"room_id": rid, "per_day": None, "place": None, "of": len(vals) + 1, "joined": rid in rooms})
+            focus_out.append({**base, "per_day": None, "place": None, "of": len(vals) + 1})
     info = s.one("SELECT reward_rank FROM event_info WHERE event_id=?", (int(eid),))
     return {"rooms": out_rooms, "unknown": len(rooms) - len(known), "total": len(rooms), "focus": focus_out,
-            "reward_rank": info["reward_rank"] if info is not None else None}
+            "reward_rank": info["reward_rank"] if info is not None else None,
+            "leagues": [LEAGUES.get(x, str(x)) for x in leagues] if leagues else None}
 
 
 def event_choice(s: Store, focus: list[int], now: float | None = None) -> dict[str, Any]:
@@ -194,6 +228,7 @@ def event_choice(s: Store, focus: list[int], now: float | None = None) -> dict[s
     for e in events:
         st = event_strength(s, e["event_id"], now, focus, cache)
         out.append({"event_id": e["event_id"], "name": e["name"], "start": e["start"], "end": e["end"], "rooms": st["total"],
+                    "leagues": st["leagues"],
                     "unknown": st["unknown"], "reward_rank": st["reward_rank"], "focus": st["focus"],
                     "top": st["rooms"][0]["per_day"] if st["rooms"] else None})
     result = {"now": now, "events": out}

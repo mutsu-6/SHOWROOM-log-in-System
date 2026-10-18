@@ -2258,6 +2258,14 @@ function roomAnalysisHtml(d) {
 }
 
 /* ------------------------------------------------------------ ルームのページ */
+function roomProfileTiles(p) {
+  if (!p) return tile("SHOWランク", "—", "ルームのプロフィールは、最近配信したルームから 1 週間ごとに読みます");
+  const style = p.style === 1 ? "Classic" : p.style === 2 ? "Salon" : p.style == null ? "" : `スタイル ${p.style}`;
+  const hist = (p.ranks || []).slice().reverse().map((r) => `${r.ym.slice(2, 4)}/${r.ym.slice(4)} ${r.show_rank || "-"}`).join(" → ");
+  return tile("SHOWランク", esc(p.show_rank || "—"), `${p.prev_show_rank ? `先月 ${esc(p.prev_show_rank)}・` : ""}リーグ ${esc(p.league_id || "-")}${p.next_league_id && p.next_league_id !== p.league_id ? ` (来月 ${esc(p.next_league_id)})` : ""}${hist && (p.ranks || []).length > 1 ? `<br>${esc(hist)}` : ""}`)
+    + tile("SHOWグレード", esc(p.grade || "—"), [style, p.official ? "公式" : "フリー", p.group_type && p.group_type !== "Not set" ? esc(p.group_type) : ""].filter(Boolean).join("・"))
+    + tile("まいにち配信", p.continuous_days == null ? "—" : `${num(p.continuous_days)} <small>日</small>`, p.prev_score != null ? `前の週のスコア ${num(p.prev_score)}` : "");
+}
 async function showRoom(key) {
   const box = $("#rp");
   box.innerHTML = loadingHtml();
@@ -2282,6 +2290,7 @@ async function showRoom(key) {
       ${tile("分かったギフター", `${num(d.gifter_total)} <small>人</small>`)}
       ${tile("参加したイベント", `${num(d.event_total)} <small>件</small>`, st.n ? `1 位 ${num(st.wins)} 回 ・ 3 位以内 ${num(st.top3)} 回` : "")}
       ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
+      ${roomProfileTiles(d.profile)}
     </div>${SCOPE_NOTE}
     <div id="rp-chart"></div>${roomAnalysisHtml(d)}`;
   html += `<div class="cols">
@@ -2347,6 +2356,9 @@ async function showEventChoice(box) {
       { label: "イベント", value: (r) => r.name, html: (r) => eventLink(r.event_id, r.name), cls: "name" },
       { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
       { label: "応援ルーム", value: (r) => r.f.name, html: (r) => `${roomLink(r.f.key, r.f.name)}${r.f.joined ? ' <span class="tag live">参加中</span>' : ""}` },
+      { label: "出られるか", value: (r) => r.f.can_enter === false ? 0 : r.f.can_enter ? 2 : 1, html: (r) => r.f.can_enter === false
+        ? `<span class="tag warn">リーグ外</span> <span class="uid">${esc(r.f.league || "")} / ${esc((r.leagues || []).join("・"))}</span>`
+        : r.f.can_enter ? `<span class="uid">${esc(r.f.league || "")} で出られる</span>` : '<span class="uid">分からない</span>' },
       { label: "見込みの順位", num: true, value: (r) => r.f.place, html: (r) => guessPlace(r.f) },
       { label: "特典", num: true, value: (r) => r.reward_rank, html: (r) => r.reward_rank ? `${num(r.reward_rank)} 位まで${r.f.place && r.f.place <= r.reward_rank ? ' <span class="tag live">入れそう</span>' : ""}` : "-" },
       { label: "参加ルーム", num: true, value: (r) => r.rooms, html: (r) => `${num(r.rooms)}${r.unknown ? ` <span class="uid">(強さ不明 ${num(r.unknown)})</span>` : ""}` },
@@ -2359,12 +2371,14 @@ function eventStrength(st) {
   let h = `<h3>参加ルームの強さ <small class="muted">${num(st.rooms.length)} / ${num(st.total)} ルームの強さが分かりました</small></h3><div class="hint" style="margin-top:0">${STRENGTH_NOTE}</div>`;
   if (st.focus.length) {
     h += `<div class="tiles">${st.focus.map((f) => tile(`${esc(f.name)}${f.joined ? "" : " (出たら)"}`, guessPlace(f),
-      f.per_day ? `強さ ${shortNum(f.per_day)} pt/日 (${num(f.events)} イベント)${st.reward_rank ? ` ・ 特典は ${num(st.reward_rank)} 位まで` : ""}` : "終わったイベントの結果がまだありません",
+      (f.can_enter === false ? `<b style="color:var(--warn)">リーグ外 (${esc(f.league || "")}。出られるのは ${esc((st.leagues || []).join("・"))})</b><br>` : "")
+        + (f.per_day ? `強さ ${shortNum(f.per_day)} pt/日 (${num(f.events)} イベント)${st.reward_rank ? ` ・ 特典は ${num(st.reward_rank)} 位まで` : ""}` : "終わったイベントの結果がまだありません"),
       f.place && st.reward_rank && f.place <= st.reward_rank ? "ok" : "")).join("")}</div>`;
   }
   h += dataTable("ep-strength", [
     { label: "見込み", num: true, value: (r) => r.place, html: (r) => num(r.place) },
     { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+    { label: "リーグ", value: (r) => r.league || "", html: (r) => esc(r.league || "-") },
     { label: "強さ (pt/日)", num: true, value: (r) => r.per_day, html: (r) => `<b>${num(Math.round(r.per_day))}</b>` },
     { label: "いちばん良かった回", num: true, value: (r) => r.best, html: (r) => num(Math.round(r.best)) },
     { label: "見たイベント", num: true, value: (r) => r.events, html: (r) => num(r.events) },

@@ -54,3 +54,18 @@ def test_strength_and_event_choice(tmp_path):
         ch = ea.event_choice(s, [4], NOW)
     assert [e["event_id"] for e in ch["events"]] == [9] and ch["events"][0]["focus"][0]["place"] == 1
     assert ch["events"][0]["reward_rank"] == 1
+
+
+def test_league_decides_if_the_room_can_enter(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2)], "event", NOW)
+        s.upsert_events([{"event_id": 9, "name": "B と C だけ", "start": NOW + DAY, "end": NOW + 2 * DAY}])
+        s.set_event_rooms(9, [{"room_id": 1, "point": 0, "rank": None}], NOW)
+        s.upsert_event_info([{"event_id": 9, "league_ids": [30, 40]}], NOW)
+        s.set_room_info(1, {"show_rank_subdivided": "B-3", "league_id": 30, "next_league_id": 30}, NOW, "203701")
+        s.set_room_info(2, {"show_rank_subdivided": "A-1", "league_id": 20, "next_league_id": 20}, NOW, "203701")
+        st = ea.event_strength(s, 9, NOW, [1, 2])
+    by = {f["room_id"]: f for f in st["focus"]}
+    assert by[1]["can_enter"] is True and by[1]["league"] == "B"
+    assert by[2]["can_enter"] is False and by[2]["league"] == "A"
+    assert st["leagues"] == ["B", "C"]

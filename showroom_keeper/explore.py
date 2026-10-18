@@ -178,7 +178,16 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                            "below": max(0, (r["point"] or 0) - r["c_sum"]) if r["final"] and (r["c_count"] or 0) >= 100
                            and r["c_sum"] is not None and r["end"] and (r["rooms_at"] or 0) >= r["end"] else None})
         overlap = _overlap(s, rid)
-        return {"key": row["key"], "room_id": rid, "found": True, "name": row["name"] or row["key"] or str(rid),
+        info = s.one("SELECT * FROM room_info WHERE room_id=?", (rid,))
+        profile = None
+        if info is not None:
+            profile = {k: info[k] for k in ("at", "show_rank", "prev_show_rank", "grade", "continuous_days", "prev_score", "style",
+                                            "group_type", "official")}
+            profile.update({k: event_analysis.LEAGUES.get(info[k]) if info[k] is not None else None
+                            for k in ("league_id", "next_league_id", "prev_league_id")})
+            profile["ranks"] = [dict(r) for r in s.all("SELECT ym, show_rank, grade FROM room_rank_month WHERE room_id=? ORDER BY ym DESC LIMIT 12",
+                                                       (rid,))]
+        return {"key": row["key"], "room_id": rid, "found": True, "profile": profile, "name": row["name"] or row["key"] or str(rid),
                 "followers": row["followers"], "live_at": row["live_at"], "collected_at": row["collected_at"],
                 "found_at": row["found_at"], "cumulative": cumulative, "gifters": gifters, "gifter_total": gifter_total,
                 "events": events, "event_total": event_total, "overlap": overlap,

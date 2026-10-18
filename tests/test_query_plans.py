@@ -87,6 +87,9 @@ def check(traced, fn):
 
 def test_room_and_event_pages_do_not_read_whole_tables(traced):
     check(traced, lambda d: explore.room_detail(d, "k2"))
+    with Store(traced[0]) as s:
+        s.set_room_info(2, {"show_rank_subdivided": "B-1", "league_id": 30}, NOW, "202610")
+    check(traced, lambda d: explore.room_detail(d, "k2"))
     check(traced, lambda d: explore.event_detail(d, "1", ["k2"]))
     check(traced, lambda d: explore.event_choice(d, ["k2"]))
     check(traced, lambda d: explore.room_profiles(d))
@@ -129,6 +132,7 @@ def test_sweep_jobs_do_not_read_whole_tables(traced):
         sw._next_owner(NOW)
         sw._next_event_page(NOW)
         sw._next_fans_history(NOW)
+        sw._next_room_profile(NOW)
         c.close()
     check(traced, run)
 

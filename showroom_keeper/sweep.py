@@ -63,6 +63,7 @@ FANS_FIRST = "202202"  # SHOWROOM に残っている、いちばん古いアク�
 FANS_EMPTY_STOP = 3  # 前の月を読み足して、この月数続けて 0 人ならやめる (ルームができる前)
 OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っているルーム) を読み直す間隔 (秒)
 CONFIRM_DAYS = 14  # 終わってからこの日数のうちのイベントは、正式な結果が出たあとに参加ルームを読み直す
+PROFILE_EVERY = 7 * 86400  # ルームのプロフィール (SHOWランク・リーグなど) を読み直す間隔 (秒)
 PAGE_RETRY = 86400  # イベントのページが読めなかった時に、読み直すまでの時間 (秒)
 NOTICES_EVERY = 86400  # お知らせを読む間隔 (秒)
 NOTICE_PAGES = 50  # お知らせの一覧を読むページの上限 (最初の回に、古い分までさかのぼる)
@@ -87,6 +88,7 @@ class Sweeper:
         self._fan_rooms: list[Any] = []
         self._owners: list[Any] = []
         self._fan_history: list[Any] = []
+        self._profiles: list[Any] = []
         self._pages: list[Any] = []
         self._history_failures = 0
         self._aggregated = False
@@ -192,7 +194,8 @@ class Sweeper:
             return True
         # 貢献ランキングはギフター分析にいちばん効くので、ほかの仕事 1 つごとに 1 回回す (問い合わせのおよそ半分を使う)
         others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
-                  self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history]
+                  self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history,
+                  self._next_room_profile]
         if self.scan:
             others.append(self._next_scan)
         jobs = [j for job in others for j in (job, self._next_ranking)]
@@ -588,6 +591,27 @@ class Sweeper:
             self.store.set_meta("notices_error", None)
         except Exception as err:  # noqa: BLE001
             self.store.set_meta("notices_error", str(err).splitlines()[0][:200] if str(err) else type(err).__name__)
+        return True
+
+    def _next_room_profile(self, now: float) -> bool:
+        """ルームのプロフィール (SHOWランク・リーグ・グレード・まいにち配信の日数・配信スタイルなど) を、
+        最近配信したルームから PROFILE_EVERY ごとに読む。月の初めにランクが変わるので、月が替わったら読み直す。"""
+        month_start = datetime.fromtimestamp(now, JST).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        r = self._take(self._profiles, """SELECT room_id, name, key FROM rooms
+               WHERE live_at > ? AND (profile_at IS NULL OR profile_at < ? OR profile_at < ?)
+               ORDER BY profile_at IS NOT NULL, COALESCE(followers, 0) DESC""",
+                       (now - ACTIVE_DAYS * 86400, now - PROFILE_EVERY, month_start))
+        if r is None:
+            return False
+        self.doing = f"ルームのプロフィール ({r['name'] or r['key'] or r['room_id']})"
+        try:
+            p = self.c.get(f"/api/room/profile?room_id={r['room_id']}") or {}
+        except Exception as err:  # noqa: BLE001
+            if not is_missing(err):
+                raise
+            self.store.conn.execute("UPDATE rooms SET profile_at=? WHERE room_id=?", (now, r["room_id"]))
+            return True
+        self.store.set_room_info(r["room_id"], p, now, datetime.fromtimestamp(now, JST).strftime("%Y%m"))
         return True
 
     def _next_fans_history(self, now: float) -> bool:

@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS event_info (
 CREATE INDEX IF NOT EXISTS event_info_parent ON event_info(parent_id) WHERE parent_id > 0;
 -- イベントのページ (ルール・特典・応募条件) の文章。status は 200 (読めた)・404 (無い)・0 (失敗、あとで読み直す)
 CREATE TABLE IF NOT EXISTS event_pages (event_id INTEGER PRIMARY KEY, at REAL, status INTEGER, text TEXT);
+-- ルームのプロフィール (SHOWランク・リーグ・グレード・まいにち配信の日数など)。data はプロフィールの 1 件 (画像・長い一覧を除く)
+CREATE TABLE IF NOT EXISTS room_info (
+    room_id INTEGER PRIMARY KEY, at REAL, show_rank TEXT, prev_show_rank TEXT, league_id INTEGER, prev_league_id INTEGER,
+    next_league_id INTEGER, grade TEXT, continuous_days INTEGER, prev_score INTEGER, style INTEGER, group_type TEXT,
+    official INTEGER, data TEXT);
+CREATE INDEX IF NOT EXISTS room_info_league ON room_info(league_id);
+-- 月ごとの SHOWランク・リーグ (その月に読んだ最後の値。ランクの上がり下がりを見るため)
+CREATE TABLE IF NOT EXISTS room_rank_month (
+    room_id INTEGER, ym TEXT, show_rank TEXT, league_id INTEGER, grade TEXT, at REAL, PRIMARY KEY (room_id, ym)) WITHOUT ROWID;
 -- SHOWROOM のお知らせ (ログインが要る)
 CREATE TABLE IF NOT EXISTS notices (notice_id INTEGER PRIMARY KEY, label TEXT, title TEXT, created_at REAL, contents TEXT, at REAL);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
@@ -181,7 +190,7 @@ class Store:
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
                                    ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
-                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"),
+                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"),
                                    ("user_rooms", "room_key TEXT")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
@@ -286,6 +295,22 @@ class Store:
         with self.tx() as c:
             c.executemany("""INSERT OR REPLACE INTO event_info(event_id, at, parent_id, reward_rank, block, leagues, required_level,
                              box, official, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+
+    def set_room_info(self, room_id: int, p: dict[str, Any], now: float, ym: str) -> None:
+        """ルームのプロフィールを残す (月ごとのランクも)。"""
+        rid = int(room_id)
+        keep = {k: v for k, v in p.items() if not isinstance(v, (list, dict)) and "image" not in str(k) and "url" not in str(k)}
+        row = (rid, now, p.get("show_rank_subdivided"), p.get("prev_show_rank_subdivided"), p.get("league_id"),
+               p.get("prev_league_id"), p.get("next_league_id"), p.get("room_grade_after_aggregation") or p.get("room_grade_name"),
+               p.get("live_continuous_days"), p.get("prev_score"), p.get("broadcast_style"), p.get("room_group_config_type"),
+               None if p.get("is_official") is None else int(bool(p["is_official"])), json.dumps(keep, ensure_ascii=False))
+        with self.tx() as c:
+            c.execute("""INSERT OR REPLACE INTO room_info(room_id, at, show_rank, prev_show_rank, league_id, prev_league_id,
+                         next_league_id, grade, continuous_days, prev_score, style, group_type, official, data)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", row)
+            c.execute("""INSERT OR REPLACE INTO room_rank_month(room_id, ym, show_rank, league_id, grade, at) VALUES (?, ?, ?, ?, ?, ?)""",
+                      (rid, ym, row[2], row[4], row[7], now))
+            c.execute("UPDATE rooms SET profile_at=?, followers=COALESCE(?, followers) WHERE room_id=?", (now, p.get("follower_num"), rid))
 
     def set_event_page(self, event_id: int, status: int, text: str | None, now: float) -> None:
         self.conn.execute("""INSERT INTO event_pages(event_id, at, status, text) VALUES (?, ?, ?, ?)

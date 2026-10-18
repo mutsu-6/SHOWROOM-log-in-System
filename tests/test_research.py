@@ -982,3 +982,24 @@ def test_fans_history_reads_past_months_backwards(tmp_path):
         assert s.one("SELECT fans_back FROM rooms WHERE room_id=1")[0] == "done"
         assert s.scalar("SELECT COUNT(*) FROM active_fans WHERE room_id=1") == 4  # 10・9・8・7 月
         assert s.one("SELECT fans_at FROM rooms WHERE room_id=1")[0] == now - 100  # 前の月を読んでも、読み直す時期は変えない
+
+
+def test_room_profile_is_read_weekly_and_each_month(tmp_path):
+    now = datetime(2026, 10, 18, 12, tzinfo=JST).timestamp()
+    prof = {"show_rank_subdivided": "B-5", "prev_show_rank_subdivided": "B-4", "league_id": 30, "next_league_id": 20,
+            "room_grade_after_aggregation": "Gold", "live_continuous_days": 908, "broadcast_style": 1, "is_official": False,
+            "follower_num": 1143, "image": "x.png", "banner_list": []}
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: prof, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "a", "name": "A", "followers": 10, "live_at": now}], "live", now)
+    assert sw._next_room_profile(now)
+    sw._profiles.clear()
+    assert not sw._next_room_profile(now + 86400)  # 1 週間は読み直さない
+    sw._profiles.clear()
+    assert sw._next_room_profile(datetime(2026, 11, 1, 1, tzinfo=JST).timestamp())  # 月が替わったら読み直す
+    with Store(tmp_path) as s:
+        r = s.one("SELECT * FROM room_info WHERE room_id=1")
+        assert r["show_rank"] == "B-5" and r["league_id"] == 30 and r["next_league_id"] == 20 and r["continuous_days"] == 908
+        assert "image" not in json.loads(r["data"])
+        assert [x[0] for x in s.all("SELECT ym FROM room_rank_month WHERE room_id=1 ORDER BY ym")] == ["202610", "202611"]
+        assert s.one("SELECT followers FROM rooms WHERE room_id=1")[0] == 1143
