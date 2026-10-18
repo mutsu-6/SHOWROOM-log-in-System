@@ -124,6 +124,10 @@ def db_path(state_dir: Path) -> Path:
     return Path(state_dir) / DB_NAME
 
 
+PROGRESS_THIN_GAP = 6 * 3600  # 終わったイベントの推移は、最後の 24 時間を除いてこの間隔に 1 回だけ残す (秒)
+PROGRESS_THIN_AFTER = 7 * 86400  # 終わってこれだけたち、走り方を作り終えたイベントの推移を間引く (秒)
+
+
 class Store:
     """research.db への接続 1 本。スレッドごとに作って使う (with 文で閉じる)。"""
 
@@ -149,7 +153,7 @@ class Store:
                                    ("room_events", "c_p100 INTEGER"), ("room_profile", "depth_pt REAL"),
                                    ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT"),
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
-                                   ("room_profile", "momentum_label TEXT")):
+                                   ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -428,6 +432,40 @@ class Store:
             c.executemany("INSERT OR REPLACE INTO event_progress(event_id, room_id, at, point, rank) VALUES (?, ?, ?, ?, ?)", keep)
             c.execute("UPDATE events SET progress_at=? WHERE event_id=?", (now, event_id))
         return len(keep)
+
+    def thin_progress(self, event_id: int, now: float) -> int:
+        """終わったイベントの推移を間引く (戻り値は消した行の数)。event_progress は 1 年に数 GB 増えるため。
+
+        残すのは: 最後の 24 時間 (最終日の伸び・終盤の分析に使う)、最初の回、期間の 4 分の 1・半分・4 分の 3 の前後の回
+        (走り方を作り直す時に使う)、それ以外は 6 時間に 1 回。
+        """
+        eid = int(event_id)
+        e = self.one("SELECT start, end FROM events WHERE event_id=?", (eid,))
+        ats = [r[0] for r in self.all("SELECT DISTINCT at FROM event_progress WHERE event_id=? ORDER BY at", (eid,))]
+        if e is None or not e["start"] or not e["end"] or not ats:
+            self.conn.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
+            return 0
+        start, end = e["start"], e["end"]
+        keep = {ats[0], ats[-1]}
+        targets = [start + f * (end - start) for f in (0.25, 0.5, 0.75)] + [end - 86400]
+        for t in targets:
+            before = [a for a in ats if a <= t]
+            after = [a for a in ats if a > t]
+            keep.update(x for x in (before[-1] if before else None, after[0] if after else None) if x is not None)
+        buckets: set[int] = set()
+        for a in ats:
+            if a >= end - 86400 - PROGRESS_THIN_GAP:
+                keep.add(a)
+            elif int((a - start) // PROGRESS_THIN_GAP) not in buckets:
+                buckets.add(int((a - start) // PROGRESS_THIN_GAP))
+                keep.add(a)
+        drop = [a for a in ats if a not in keep]
+        removed = 0
+        with self.tx() as c:
+            for a in drop:
+                removed += c.execute("DELETE FROM event_progress WHERE event_id=? AND at=?", (eid, a)).rowcount
+            c.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
+        return removed
 
     def ranking_failed(self, event_id: int, room_id: int) -> None:
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, failures) VALUES (?, ?, 1)

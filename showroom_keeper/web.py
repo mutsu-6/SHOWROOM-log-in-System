@@ -35,7 +35,7 @@ LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # 変えると視聴とギフト記録をやり直す設定 (応援ルーム・調べるルームは情報収集だけに使うので含めない)
 WATCH_KEYS = ("rooms", "record_rooms", "events", "enter_rooms")
 STATUS_TTL = 15  # 配信状況 (SHOWROOM への問い合わせ) を使い回す秒数
-STORE_STATUS_TTL = 30  # 全ルームの収集の件数を使い回す秒数
+STORE_STATUS_TTL = 600  # 全ルームの収集の件数を使い回す秒数 (大きな表を数えるので、画面を開いているだけで何度も数えない)
 _store_status: dict[str, Any] = {"at": 0.0, "data": None}
 COMMENT_TIMEOUT = 80.0  # 投稿処理 (入力・送信・反映の確認) の上限に余裕を持たせる
 CSRF_HEADER = "X-Showroom-Keeper"  # 変更を伴う要求に必須。他のサイトから送らせることはできない

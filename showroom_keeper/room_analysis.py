@@ -20,7 +20,7 @@ import math
 import time
 from typing import Any
 
-from .research_store import Store, median
+from .research_store import PROGRESS_THIN_AFTER, Store, median
 
 PROFILE_EVENTS = 10  # タイプ分けに使う、直近の終わったイベントの数
 MIN_EVENTS = 3  # これより少なければ「判定できない」
@@ -437,6 +437,12 @@ def step(s: Store, now: float) -> bool:
             c.executemany("""INSERT INTO room_event_style(event_id, room_id, style, early, mid, late, final, last_day_share, climb,
                              lead_share) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
             c.execute("UPDATE events SET style_at=? WHERE event_id=?", (now, e["event_id"]))
+        return True
+    # 走り方を作り終えて日がたったイベントの推移を間引く (残すのは、作り直しと終盤の分析に使う回)
+    e = s.one("""SELECT event_id FROM events WHERE style_at IS NOT NULL AND thinned_at IS NULL AND end < ?
+                 ORDER BY end LIMIT 1""", (now - PROGRESS_THIN_AFTER,))
+    if e is not None:
+        s.thin_progress(e["event_id"], now)
         return True
     if s.meta("room_stats_upto", 0) is not True:
         return False  # 貢献ランキングの数字を作り終えてから

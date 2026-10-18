@@ -402,8 +402,9 @@ def store_status(state_dir: Path) -> dict[str, Any]:
             "event_max": s.scalar("SELECT MAX(event_id) FROM events"),
             "oldest_ranking": s.scalar("""SELECT MIN(e.end) FROM room_events re JOIN events e USING(event_id)
                                          WHERE re.ranking_at IS NOT NULL AND e.end IS NOT NULL""", default=None),
-            "progress_rows": s.scalar("SELECT COUNT(*) FROM event_progress"),
-            "progress_events": s.scalar("SELECT COUNT(DISTINCT event_id) FROM event_progress"),
+            # 推移の表は数百万行になるので、行の数は数えずに番号の最大 (おおよその数) を使う
+            "progress_rows": s.scalar("SELECT MAX(rowid) FROM event_progress", default=0),
+            "progress_events": s.scalar("SELECT COUNT(*) FROM events WHERE progress_at IS NOT NULL"),
             "db_mb": round(size / 1e6, 1),
         }
 
