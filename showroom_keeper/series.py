@@ -24,7 +24,12 @@ from typing import Any
 
 from .research_store import Store
 
+SERIES_VERSION = 3  # まとめ方を変えた時に上げる (自動でまとめた分を、作り直す)
 SERIES_GAP = 200 * 86400  # 前の段階が終わってから、次の段階が始まるまでの日数の上限 (大きな大会は半年ほど続く)
+SERIES_MAX = 365 * 86400  # 大会の最初の段階の始まりから、最後の段階の終わりまでの上限 (くり返し開かれるイベントをまとめないため)
+FINAL_SHARE = 0.8  # 名前がちがっても、ファイナル審査などで、ルームのこれだけが同じ大会の前の段階にいればつなぐ
+FINAL_MIN_ROOMS = 5  # その時の参加ルームの下限
+ENTRANCE_DAYS = 7  # 年・第何回の同じ、別の入口 (【SR枠】など) は、大会の期間からこの日数のずれまで入れる
 SERIES_OVERLAP = 0.5  # 次の段階のルームのうち、同じ大会の前の段階にもいたルームの割合の下限
 SERIES_NAME = 0.55  # 段階の言葉を除いた名前の似ている度合い (0〜1) の下限
 SERIES_MIN_ROOMS = 3  # これより参加ルームの少ないイベントは、ルームの重なりでまとめない
@@ -44,8 +49,16 @@ _BRACKET = re.compile(r"[【\[（(]([^】\])）]*)[】\])）]")
 _PUNCT = re.compile(r"[\s\W_‐-]+")
 
 
+# 大会の名前の言いかえ (英語の正式名 → 名前の頭の【】の短い名前)
+_ALIASES = ((re.compile(r"miss\s*circle\s*contest|ミスサークル", re.IGNORECASE), "ミスサー"),
+            (re.compile(r"fresh\s*campus\s*contest|フレッシュキャンパス(?:コンテスト)?", re.IGNORECASE), "フレキャン"))
+
+
 def _fold(name: str | None) -> str:
-    return unicodedata.normalize("NFKC", name or "").lower()
+    s = unicodedata.normalize("NFKC", name or "").lower()
+    for rx, to in _ALIASES:
+        s = rx.sub(to, s)
+    return s
 
 
 def _bare(text: str) -> str:
@@ -54,9 +67,12 @@ def _bare(text: str) -> str:
 
 
 def brand(name: str | None) -> str | None:
-    """【】の印から取った大会の名前 (【フレキャン2025 枠A】→ フレキャン2025、【ミスサークル枠】→ ミスサークル)。
-    道すじ・段階の言葉だけの印 (【SR枠】【aw本選権#1】【予選】) なら None。"""
+    """【】の印から取った大会の名前 (【フレキャン2025 枠A】→ フレキャン2025、【FRESH CAMPUS CONTEST 2025】→ フレキャン2025)。
+    道すじ・段階の言葉だけの印 (【SR枠】【aw本選権#1】【予選】) なら None。枠の印 (【TGCスクール枠】【ミスサー枠】) は、
+    ほかのオーディションの中の枠のことが多いので、年か第何回が入っている時だけ使う。"""
     for m in _BRACKET.finditer(_fold(name)):
+        if "枠" in m.group(1) and not _has_num(m.group(1)):
+            continue
         b = _bare(m.group(1))
         if len(b) >= 2 and not (b.isascii() and len(b) <= 3):
             return b
@@ -75,6 +91,8 @@ def route_label(name: str | None) -> str | None:
     m = re.search(r"本選権\s*#?\s*([0-9]+)", s)
     if m:
         return f"本選権#{m.group(1)}"
+    if "本選権" in s:
+        return "本選権 (共通)"  # 番号の無い本選権 (アピールタイムなど、本選権の道すじに共通)
     m = re.search(r"ラストチャンス|敗者復活", s)
     if m:
         return m.group(0)
@@ -89,10 +107,11 @@ def entrance(name: str | None) -> str | None:
 
 
 def stage_label(name: str | None) -> str | None:
-    """名前の中の段階の言葉 (表に出す)。"""
+    """名前の中の段階の言葉 (表に出す。これがあると、大会の段階かもしれないとみる)。
+    「イベント」「審査」「スタートダッシュ」のような、どこにでも出る言葉は入れない。"""
     s = unicodedata.normalize("NFKC", name or "")
     words = [w for w in re.findall(r"予選|準々決勝|準決勝|決勝[・ ]?(?:前半|後半)?|セミファイナル|ファイナル(?:審査)?|本選(?!権)|本戦|最終審査|"
-                                    r"[一二三四五六七八九十]+次審査|敗者復活|ラストチャンス|スタートダッシュ|スタダ|アピールタイム|"
+                                    r"[一二三四五六七八九十]+次審査|敗者復活|ラストチャンス|アピールタイム|"
                                     r"1st|2nd|3rd|[0-9]+th|Last|Final", s, re.IGNORECASE)]
     return "・".join(dict.fromkeys(words)) or None
 
@@ -105,11 +124,24 @@ def similar(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-_NUMS = (re.compile(r"(20[0-9]{2})"), re.compile(r"第\s*([0-9]+)\s*回"), re.compile(r"([0-9]{1,2})\s*月"))
+# くり返しの回 (年・第何回・何月・vol.・第何弾)。どちらにも書いてあってちがえば、別の回
+_NUMS = (re.compile(r"(20[0-9]{2})"), re.compile(r"第\s*([0-9]+)\s*回"), re.compile(r"([0-9]{1,2})\s*月"),
+         re.compile(r"vol\s*\.?\s*([0-9]+)", re.IGNORECASE), re.compile(r"第\s*([0-9]+)\s*弾"))
+_FINAL = re.compile(r"ファイナル|最終審査|最終選考|決勝|グランプリ|final", re.IGNORECASE)
+
+
+def _has_num(name: str | None) -> bool:
+    """年か第何回が書いてある (大会らしい名前)。"""
+    f = _fold(name)
+    return bool(_NUMS[0].search(f) or _NUMS[1].search(f))
+
+
+def _final(name: str | None) -> bool:
+    return bool(_FINAL.search(_fold(name)))
 
 
 def conflict(a: str | None, b: str | None) -> bool:
-    """年・第何回・何月が、どちらにも書いてあって、ちがう (別の回の大会)。"""
+    """年・第何回・何月・vol.・第何弾が、どちらにも書いてあって、ちがう (別の回)。"""
     fa, fb = _fold(a), _fold(b)
     for rx in _NUMS:
         x, y = set(rx.findall(fa)), set(rx.findall(fb))
@@ -123,7 +155,9 @@ def same_name(e_name: str | None, p_name: str | None) -> bool:
     if conflict(e_name, p_name):
         return False
     b = brand(e_name)
-    if b and b == brand(p_name):
+    if b and b == brand(p_name) and ((_has_num(e_name) and _has_num(p_name)) or stage_label(e_name)):
+        # 【】の大会の名前が同じで、年 (第何回) か段階の言葉もある (段階ごとの名前がまったくちがう大会のため。
+        # 年も段階の言葉も無い、くり返しのイベントは除く)
         return True
     if not (stage_label(e_name) or route_label(e_name)):
         return False  # 段階の言葉の無い、毎月ある同じ名前のイベントを、大会とまちがえないため
@@ -153,14 +187,24 @@ def _place(s: Store, eid: int, name: str | None, series_id: int | None, stage_no
                    (eid, series_id, stage_no, stage_label(name), how, now, ",".join(map(str, parents)) or None, route, brand(name)))
 
 
+def _series_span(s: Store, sid: Any) -> tuple[float, float, list[str]]:
+    """大会の始まり・終わりと、入っているイベントの名前 (第何回などがちがうものを混ぜないため)。"""
+    rows = s.all("""SELECT e.start, e.end, e.name FROM event_series es JOIN events e USING(event_id)
+                    WHERE es.series_id=? AND es.series_id IS NOT NULL""", (sid,))
+    if not rows:
+        return 0.0, 0.0, []
+    return (min(r["start"] or 0 for r in rows), max(r["end"] or 0 for r in rows), [r["name"] for r in rows])
+
+
 def link_event(s: Store, e: Any, now: float) -> int | None:
     """1 つのイベントを、前の段階のイベントの大会につなぐ (つないだら大会の番号)。e は events の行。"""
-    eid, start, name = int(e["event_id"]), e["start"], e["name"]
+    eid, start, end, name = int(e["event_id"]), e["start"], e["end"] or e["start"], e["name"]
     manual = s.one("SELECT series_id FROM event_series_manual WHERE event_id=?", (eid,))
     if manual is not None:
         return manual["series_id"]  # 手で決めたもの (外したものは None) は自動で変えない
     route = route_label(name)
-    rooms = _rooms(s, eid) if _eligible(name) else set()
+    final = _final(name)
+    rooms = _rooms(s, eid) if (_eligible(name) or final) else set()
     members: list[tuple[dict[str, Any], set[int]]] = []
     sid: int | None = None
     if len(rooms) >= SERIES_MIN_ROOMS and start:
@@ -171,41 +215,59 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
                               WHERE re.room_id=? AND re.event_id != ? AND o.end IS NOT NULL AND o.end <= ? + 86400 AND o.end >= ?""",
                            (rid, eid, start, start - SERIES_GAP)):
                 shared.setdefault(r[0], set()).add(rid)
-        # 同じ大会の前の段階から来たルームを、大会ごと (まだ大会でなければイベントごと) にまとめて数える
+        # 同じ大会の前の段階から来たルームを、大会ごと (まだ大会でなければイベントごと) にまとめて数える。
+        # ファイナル審査などは、名前がちがっても、もう大会になっているイベントから来たルームを別に数える (loose)
         groups: dict[Any, dict[str, Any]] = {}
         for pid, got in shared.items():
             p = s.one("""SELECT e.event_id, e.name, e.start, e.end, es.series_id, es.stage_no, es.route FROM events e
                          LEFT JOIN event_series es USING(event_id) WHERE e.event_id=?""", (pid,))
-            if p is None or not same_name(name, p["name"]):
+            if p is None or conflict(name, p["name"]):
+                continue
+            ok = same_name(name, p["name"])
+            if not ok and not (final and p["series_id"] is not None):
                 continue
             key = p["series_id"] if p["series_id"] is not None else ("event", pid)
-            g = groups.setdefault(key, {"key": key, "rooms": set(), "members": []})
-            g["rooms"] |= got
+            g = groups.setdefault(key, {"key": key, "rooms": set(), "loose": set(), "members": []})
+            (g["rooms"] if ok else g["loose"]).update(got)
             g["members"].append((dict(p), got))
+        # 大会の期間 (1 年まで) と、第何回などが、ほかの段階と合うものだけ
+        for key, g in list(groups.items()):
+            if isinstance(key, tuple):
+                first, names = g["members"][0][0]["start"] or start, [g["members"][0][0]["name"]]
+            else:
+                first, _, names = _series_span(s, key)
+            g["first"] = first
+            if end - first > SERIES_MAX or any(conflict(name, n) for n in names):
+                del groups[key]
         need = max(2, PARENT_SHARE * len(rooms))
         use = [g for g in groups.values() if len(g["rooms"]) >= need]
         came = set().union(*(g["rooms"] for g in use)) if use else set()
+        if not (use and len(came) / len(rooms) >= SERIES_OVERLAP) and final and len(rooms) >= FINAL_MIN_ROOMS:
+            # 名前のちがうファイナル審査: ルームのほとんどが、1 つの大会の前の段階にいた
+            loose = [g for g in groups.values() if not isinstance(g["key"], tuple)
+                     and len(g["rooms"] | g["loose"]) >= FINAL_SHARE * len(rooms)]
+            use = sorted(loose, key=lambda g: -len(g["rooms"] | g["loose"]))[:1]
+            came = set(rooms) if use else set()
         # 道すじが合流する段階 (本選権#1〜#3 の決勝から本選 1st へ) は、道すじごとの大会を合わせて数える
         if use and len(came) / len(rooms) >= SERIES_OVERLAP:
-            def first(g: dict[str, Any]) -> tuple[int, float]:
+            def order(g: dict[str, Any]) -> tuple[int, float]:
                 if isinstance(g["key"], tuple):
-                    return (2, g["members"][0][0]["start"] or 0)
+                    return (2, g["first"])
                 manual = s.one("SELECT 1 FROM event_series WHERE series_id=? AND how='manual' LIMIT 1", (g["key"],))
-                return (0 if manual else 1, s.scalar("SELECT start FROM events WHERE event_id=?", (g["key"],)))
-            use.sort(key=first)
+                return (0 if manual else 1, g["first"])
+            use.sort(key=order)
             target = use[0]
-            if isinstance(target["key"], tuple):  # 前の段階は、まだ大会になっていなかった: いちばん早く始まった前の段階から大会を始める
-                sid = int(target["members"][0][0]["event_id"])
-            else:
-                sid = int(target["key"])
+            sid = int(target["members"][0][0]["event_id"]) if isinstance(target["key"], tuple) else int(target["key"])
             for g in use:
+                if g is not target and (end - min(g["first"], target["first"]) > SERIES_MAX):
+                    continue  # 合わせると 1 年を超える
                 if isinstance(g["key"], tuple):
                     p, got = g["members"][0]
                     _place(s, int(p["event_id"]), p["name"], sid, 1, [], route_label(p["name"]), "auto", now)
                     members.append(({**p, "series_id": sid, "stage_no": 1, "route": route_label(p["name"])}, got))
                 elif g is target:
                     members += g["members"]
-                elif first(g)[0] == 1:  # ほかの道すじの大会を、この大会に合わせる (手で直した大会は変えない)
+                elif order(g)[0] == 1:  # ほかの道すじの大会を、この大会に合わせる (手で直した大会は変えない)
                     s.conn.execute("UPDATE event_series SET series_id=? WHERE series_id=?", (sid, g["key"]))
                     members += [({**p, "series_id": sid}, got) for p, got in g["members"]]
     if members:
@@ -218,21 +280,35 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
             last[k][1].update(got)
         need = max(2, PARENT_SHARE * len(rooms))
         cands = [(p, got) for p, got in last.values() if len(got) >= need] or [max(last.values(), key=lambda x: len(x[1]))]
-        # ルームの多くが、もっとあとに終わった候補にも出ていれば、そちらが前の段階 (合流したあとの段階につなぐ)
-        parents = [p for p, got in cands if not any((q["end"] or 0) > (p["end"] or 0) and len(got & qgot) * 2 >= len(got)
-                                                   for q, qgot in cands)]
+        same = [(p, got) for p, got in cands if route and p["route"] == route]
+        if same:  # 同じ道すじの前の段階があれば、そこにつなぐ (共通のアピールタイムなどを、前の段階にしない)
+            parents = [same[0][0]]
+        else:
+            # ルームの多くが、もっとあとに終わった候補にも出ていれば、そちらが前の段階 (合流したあとの段階につなぐ)
+            parents = [p for p, got in cands if not any((q["end"] or 0) > (p["end"] or 0) and len(got & qgot) * 2 >= len(got)
+                                                       for q, qgot in cands)]
         no = max(p["stage_no"] or 1 for p in parents) + 1
         own = route or (parents[0]["route"] if len({p["route"] for p in parents}) == 1 else None)
         _place(s, eid, name, sid, no, sorted(int(p["event_id"]) for p in parents), own, "auto", now)
         return sid
     if start and _eligible(name):
-        # 同じ時期・同じ大会の名前の、入口のちがう枠 (ルームは重ならない): 同じ大会の同じ段階
-        for r in s.all("""SELECT o.event_id, o.name, es.series_id, es.stage_no, es.parents FROM events o JOIN event_series es USING(event_id)
+        # 同じ時期・同じ大会の名前の、入口のちがう枠 (ルームは重ならない): 同じ大会の同じ段階。
+        # 年か第何回が書いてあれば、大会の期間から ENTRANCE_DAYS 日ずれていても入れる (段階の言葉の無い【SR枠】など)
+        wide = _has_num(name) and route is not None  # 広く探すのは、入口 (枠) の名前のあるものだけ (調べる量を増やしすぎないため)
+        days = ENTRANCE_DAYS if wide else PARALLEL_DAYS
+        lo = start - (SERIES_MAX if wide else PARALLEL_DAYS * 86400)
+        for r in s.all("""SELECT o.event_id, o.name, o.start, es.series_id, es.stage_no, es.parents FROM events o JOIN event_series es USING(event_id)
                           WHERE o.start BETWEEN ? AND ? AND o.event_id != ? AND es.series_id IS NOT NULL ORDER BY ABS(o.start - ?)""",
-                       (start - PARALLEL_DAYS * 86400, start + PARALLEL_DAYS * 86400, eid, start)):
-            if same_name(name, r["name"]):
-                _place(s, eid, name, r["series_id"], r["stage_no"], _parents(r["parents"]), route, "auto", now)
-                return r["series_id"]
+                       (lo, start + days * 86400, eid, start)):
+            if not same_name(name, r["name"]) or (wide and not _has_num(r["name"])):
+                continue
+            first, last_end, names = _series_span(s, r["series_id"])
+            if any(conflict(name, n) for n in names) or end - first > SERIES_MAX:
+                continue
+            if abs((r["start"] or 0) - start) > PARALLEL_DAYS * 86400 and start > last_end + days * 86400:
+                continue  # 大会の期間の外
+            _place(s, eid, name, r["series_id"], r["stage_no"], _parents(r["parents"]), route, "auto", now)
+            return r["series_id"]
     old = s.one("SELECT series_id, stage_no, parents, route FROM event_series WHERE event_id=?", (eid,))
     if old is not None and old["series_id"] is not None:
         # 前に大会に入れたもの (大会の最初の段階など) は、前の段階が見つからなくても外さない
@@ -245,6 +321,10 @@ def link_event(s: Store, e: Any, now: float) -> int | None:
 def step(s: Store, now: float | None = None) -> bool:
     """まだ調べていないイベント (参加ルームを読み直したものも) を、始まりの順に SERIES_STEP 件まとめる。することが無ければ False。"""
     now = time.time() if now is None else now
+    if s.meta("series_version") != SERIES_VERSION:  # まとめ方を変えた: 自動でまとめた分を作り直す (手で直した分は残す)
+        with s.tx():
+            s.conn.execute("DELETE FROM event_series WHERE how='auto' OR how IS NULL")
+        s.set_meta("series_version", SERIES_VERSION)
     rows = s.all("""SELECT e.event_id, e.name, e.start, e.end, e.rooms_at FROM events e LEFT JOIN event_series es USING(event_id)
                     WHERE e.start IS NOT NULL AND e.rooms_at IS NOT NULL AND (es.event_id IS NULL OR es.at < e.rooms_at)
                     ORDER BY e.start LIMIT ?""", (SERIES_STEP,))

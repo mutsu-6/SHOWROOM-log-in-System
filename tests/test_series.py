@@ -140,7 +140,11 @@ def test_core_name_routes_and_brand():
     assert series.route_label("【SR枠】ハワイアンウェディング2026") == "SR枠"
     assert series.route_label("【aw枠】KIMONO girl 第3回 ラストチャンス") == "ラストチャンス"
     assert series.brand("【フレキャン2025 枠A】CanCam賞") == series.brand("【フレキャン2025】モデルプレス賞") == "フレキャン2025"
-    assert series.brand("【ミスサークル枠】超十代 2025") == "ミスサークル"
+    assert series.brand("【ミスサークル枠】超十代 2025") is None  # 枠の印は、年か第何回が無ければ大会の名前に使わない
+    assert series.brand("【FRESH CAMPUS CONTEST 2025】ファイナル審査") == series.brand("【フレキャン2025】CanCam賞")  # 言いかえ
+    assert series.conflict("【男性枠】カラオケ歌合戦 vol.9", "【女性枠】カラオケ歌合戦 vol.10")
+    assert series.stage_label("【スタートダッシュ】なにかのイベント 審査") is None  # どこにでも出る言葉は段階にしない
+    assert series.route_label("【aw本選権】KIMONO girl 第3回 アピールタイム") == "本選権 (共通)"
     assert series.brand("【SR枠】ハワイアンウェディング2026") is None
     assert series.stage_label("【aw本選権#1】ハワイアンウェディング2026 予選") == "予選"
     assert series.same_name("【フレキャン2025 枠A】CanCam賞", "【フレキャン2025】モデルプレス賞")
@@ -198,3 +202,74 @@ def test_brand_marks_link_stages_with_different_names(tmp_path):
     assert rows[2]["route"] == "枠B" and rows[2]["stage_no"] == 1
     assert rows[3]["parents"] == "1,2" and rows[4]["parents"] == "3" and rows[4]["stage_no"] == 3
     assert rows[5]["series_id"] is None  # 前の年の大会とはつなげない
+
+
+def _run_all(s, now=NOW):
+    while series.step(s, now):
+        pass
+    return {r["event_id"]: dict(r) for r in s.all("SELECT * FROM event_series")}
+
+
+def test_repeated_events_are_not_series(tmp_path):
+    """くり返し開かれるふつうのイベント (vol. の付くもの・段階の言葉の無いもの) は、ルームが重なってもまとめない。1 年は超えない。"""
+    t0 = NOW - 800 * DAY
+    with Store(tmp_path) as s:
+        for i in range(20):
+            _stage(s, 100 + i, f"【エンジョイカラオケ】vol.{i + 1}", t0 + i * 30 * DAY, 7, [(r, 100) for r in range(1, 9)])
+            _stage(s, 200 + i, "【まったり3日間】イベント", t0 + i * 30 * DAY + 10 * DAY, 3, [(r, 100) for r in range(1, 9)])
+            _stage(s, 300 + i, f"【男性枠】カラオケ歌合戦 vol.{i + 1} 予選", t0 + i * 30 * DAY + 15 * DAY, 3, [(r, 100) for r in range(11, 19)])
+            _stage(s, 400 + i, f"【女性枠】カラオケ歌合戦 vol.{i + 1} 決勝", t0 + i * 30 * DAY + 20 * DAY, 3, [(r, 100) for r in range(11, 15)])
+        rows = _run_all(s)
+        spans = s.all("""SELECT es.series_id, MAX(e.end) - MIN(e.start) AS span, COUNT(*) AS n FROM event_series es JOIN events e USING(event_id)
+                         WHERE es.series_id IS NOT NULL GROUP BY es.series_id""")
+    assert all(rows[100 + i]["series_id"] is None and rows[200 + i]["series_id"] is None for i in range(20))
+    assert all(r["span"] <= series.SERIES_MAX and r["n"] == 2 for r in spans)  # vol. ごとの 予選 → 決勝 だけ
+
+
+def test_different_editions_are_not_mixed(tmp_path):
+    """第 3 回と第 4 回は、あいだに番号の無い段階があっても混ぜない。"""
+    t0 = NOW - 400 * DAY
+    with Store(tmp_path) as s:
+        _stage(s, 1, "Popteen専属モデルオーディション 第3回 予選", t0, 7, [(r, 100) for r in range(1, 11)])
+        _stage(s, 2, "Popteen専属モデルオーディション 二次審査", t0 + 10 * DAY, 7, [(r, 300) for r in range(1, 7)])
+        _stage(s, 3, "Popteen専属モデルオーディション 第4回 予選", t0 + 150 * DAY, 7, [(r, 100) for r in range(1, 9)])
+        _stage(s, 4, "Popteen専属モデルオーディション 第4回 決勝", t0 + 160 * DAY, 7, [(r, 100) for r in range(1, 5)])
+        rows = _run_all(s)
+    assert rows[2]["series_id"] == rows[1]["series_id"] == 1
+    assert rows[3]["series_id"] != 1 and rows[4]["series_id"] == rows[3]["series_id"] == 3
+
+
+def test_final_with_other_name_and_late_entrances(tmp_path):
+    """名前のちがうファイナル審査 (ルームが全部、前の段階にいた) と、1 週間ずれた別の入口の【SR枠】を入れる。
+    番号の無い本選権のアピールタイムは、決勝の前の段階にしない。"""
+    t0 = NOW - 200 * DAY
+    kg = "KIMONO girl 第3回"
+    with Store(tmp_path) as s:
+        _stage(s, 1, "【ミスサー二次審査】超十代賞", t0, 7, [(r, 100) for r in range(1, 21)])
+        _stage(s, 2, "【ミスサー二次審査】CanCam賞", t0 + 10 * DAY, 7, [(r, 300) for r in range(1, 13)])
+        _stage(s, 3, "【MISS CIRCLE CONTEST 2025】ファイナル審査", t0 + 30 * DAY, 3, [(r, 900) for r in range(1, 13)])
+        _stage(s, 11, f"【aw本選権＃1】{kg} 予選", t0, 7, [(r, 100) for r in range(31, 41)])
+        _stage(s, 12, f"【aw本選権＃1】{kg} 準決勝", t0 + 10 * DAY, 7, [(r, 100) for r in range(31, 37)])
+        _stage(s, 13, f"【aw本選権】{kg} アピールタイム", t0 + 18 * DAY, 3, [(r, 100) for r in range(31, 37)])
+        _stage(s, 14, f"【aw本選権＃1】{kg} 決勝", t0 + 22 * DAY, 7, [(r, 100) for r in range(31, 35)])
+        _stage(s, 15, f"【aw枠】{kg} 本選ファイナル", t0 + 40 * DAY, 7, [(r, 100) for r in range(31, 34)])
+        _stage(s, 16, f"【SR枠】{kg}", t0 + 47 * DAY, 7, [(r, 100) for r in range(51, 56)])
+        _stage(s, 17, f"【既存aw枠】{kg}", t0 + 47 * DAY, 7, [(r, 100) for r in range(61, 66)])
+        _stage(s, 18, f"【SR枠】KIMONO girl 第2回", t0 + 47 * DAY, 7, [(r, 100) for r in range(71, 76)])
+        rows = _run_all(s)
+    assert rows[2]["series_id"] == rows[1]["series_id"] == 1 and rows[3]["series_id"] == 1 and rows[3]["parents"] == "2"
+    assert all(rows[e]["series_id"] == 11 for e in (12, 13, 14, 15, 16, 17))
+    assert rows[13]["route"] == "本選権 (共通)" and rows[14]["parents"] == "12"
+    assert rows[16]["route"] == "SR枠" and rows[17]["route"] == "既存aw枠"
+    assert rows[18]["series_id"] is None  # 第 2 回は別の大会
+
+
+def test_version_change_rebuilds_auto_but_keeps_manual(db):
+    _run(db)
+    explore.series_link(db, "301", "101")
+    with Store(db) as s:
+        s.set_meta("series_version", 1)
+        series.step(s, NOW)
+        assert s.one("SELECT how FROM event_series WHERE event_id=301")["how"] == "manual"
+        _run_all(s)
+        assert series.series_of(s, 103)["series_id"] == 101
