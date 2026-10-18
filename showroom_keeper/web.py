@@ -404,7 +404,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 state_dir = self._state_dir()
                 if url.path == "/api/search":
-                    self._json(explore.search(state_dir, q.get("q", "")))
+                    self._json(explore.search(state_dir, q.get("q", ""), showroom=True))
                 elif url.path == "/api/room_profiles":
                     self._json(explore.room_profiles(state_dir, q.get("type"), q.get("style"), q.get("order", "momentum"),
                                                     q.get("depth")))

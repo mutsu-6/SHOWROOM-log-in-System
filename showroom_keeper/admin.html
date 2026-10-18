@@ -259,6 +259,10 @@ section[data-page].active { display: block; }
 .gresults a .s { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
 .gresults a .via { display: block; color: var(--muted); font-size: 11px; }
 .gresults .none { color: var(--muted); padding: 10px 8px; font-size: 13px; }
+.gresults .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 4px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.gresults .chips button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.gresults .chips button.on { background: var(--accent, #3b6cf6); border-color: var(--accent, #3b6cf6); color: #fff; }
+.gresults .grp .n { font-weight: 400; margin-left: 4px; }
 #offline { background: var(--warn-soft); color: var(--warn); font-weight: 600; text-align: center; padding: 6px 12px; font-size: 13px; }
 .page-head { display: flex; align-items: flex-start; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 14px; }
 .page-head .grow { flex: 1 1 300px; min-width: 0; }
@@ -319,7 +323,7 @@ td a.name-link, td a { word-break: break-word; }
   <div class="bar">
     <div class="brand"><span class="dot"></span>SHOWROOM keeper</div>
     <div class="gsearch" id="gsearch">
-      <input type="search" id="q" placeholder="ギフター・ルーム・イベントを探す (名前・ID)" autocomplete="off" aria-label="探す">
+      <input type="search" id="q" placeholder="ルーム・ギフター・イベントを探す (名前・URL・ID)" autocomplete="off" aria-label="探す">
       <div class="gresults" id="q-results" hidden></div>
     </div>
     <div class="badges" id="badges"><span class="pill">読み込み中…</span></div>
@@ -2621,7 +2625,9 @@ async function showHome() {
 }
 
 /* ------------------------------------------------------------ 上の検索欄 */
-const qs = { seq: 0, timer: null, items: [], hl: -1 };
+const qs = { seq: 0, timer: null, items: [], hl: -1, kind: "all", last: null };
+try { qs.kind = localStorage.getItem("searchKind") || "all"; } catch (e) { /* 使えない時は「すべて」 */ }
+const SEARCH_GROUPS = ["ルーム", "ギフター", "イベント"];
 function closeSearch() { $("#q-results").hidden = true; qs.hl = -1; }
 async function runSearch() {
   const q = $("#q").value.trim(), seq = ++qs.seq, box = $("#q-results");
@@ -2631,6 +2637,13 @@ async function runSearch() {
   let r;
   try { r = await api(`/api/search?q=${encodeURIComponent(q)}`); } catch (e) { if (seq === qs.seq) box.innerHTML = `<div class="none">探せませんでした: ${esc(e.message)}</div>`; return; }
   if (seq !== qs.seq) return;
+  qs.last = { q, r };
+  renderSearch();
+}
+function renderSearch() {
+  const box = $("#q-results");
+  if (!qs.last) return;
+  const { q, r } = qs.last;
   const items = [];
   if (/^\d{1,12}$/.test(q) && !r.gifters.some((g) => String(g.user_id) === q)) items.push({ grp: "ギフター", href: `#gifter/${q}`, t: `ユーザー ID ${q} のページを開く`, s: "" });
   // どの名前・どの記録で見つかったかを添える (前の名前、記録したギフトにだけ出ている人、設定・記録だけのルーム、名前の分からないイベント)
@@ -2639,14 +2652,35 @@ async function runSearch() {
   r.gifters.forEach((g) => items.push({ grp: "ギフター", href: `#gifter/${g.user_id}`, t: g.name || "(名前なし)",
     s: `ID ${g.user_id}${g.points ? ` ・ ${shortNum(g.points)} pt` : ""}`, note: via(g) }));
   r.rooms.forEach((x) => items.push({ grp: "ルーム", href: `#room/${encodeURIComponent(x.key || x.room_id)}`, t: x.name || x.key,
-    s: x.followers != null ? `フォロワー ${shortNum(x.followers)}` : "", note: x.source === "known" ? "視聴・記録の設定か記録したギフトにあるルーム (まだ情報を集めていません)" : "" }));
+    s: `${x.is_live ? "配信中 ・ " : ""}${x.followers != null ? `フォロワー ${shortNum(x.followers)}` : ""}`,
+    t2: x.key && x.key !== x.name ? x.key : "",
+    note: x.source === "known" ? "視聴・記録の設定か記録したギフトにあるルーム (まだ情報を集めていません)"
+      : x.source === "showroom" ? "SHOWROOM のルーム検索で見つかりました (これから情報を集めます)"
+      : !x.collected_at ? "まだ情報を集めていません (これから集めます)" : "" }));
   r.events.forEach((e) => items.push({ grp: "イベント", href: `#event/${e.event_id}`, t: e.name, s: e.state === "ongoing" ? "開催中" : e.end ? ymd(e.end) : "",
     note: e.named === false ? "名前はまだ分かっていません (参加ルームを集めると分かります)" : "" }));
-  qs.items = items; qs.hl = items.length ? 0 : -1;
+  // ルーム → ギフター → イベントの順に並べ、上のボタンで種類を絞る
+  const count = Object.fromEntries(SEARCH_GROUPS.map((g) => [g, items.filter((it) => it.grp === g && !it.t.startsWith("ユーザー ID")).length]));
+  const shown = items.filter((it) => qs.kind === "all" || it.grp === qs.kind)
+    .sort((a, b) => SEARCH_GROUPS.indexOf(a.grp) - SEARCH_GROUPS.indexOf(b.grp));
+  qs.items = shown; qs.hl = shown.length ? 0 : -1;
+  const chips = `<div class="chips">${[["all", "すべて", items.length], ...SEARCH_GROUPS.map((g) => [g, g, count[g]])]
+    .map(([k, label, n]) => `<button type="button" data-kind="${k}" class="${qs.kind === k ? "on" : ""}">${label} ${num(n)}</button>`).join("")}</div>`;
   let grp = "";
-  box.innerHTML = items.length ? items.map((it, i) => `${it.grp !== grp ? `<div class="grp">${(grp = it.grp)}</div>` : ""}<a href="${esc(it.href)}" class="${i === qs.hl ? "hl" : ""}" data-i="${i}"><span>${esc(it.t)}${it.note ? `<small class="via">${esc(it.note)}</small>` : ""}</span><span class="s">${esc(it.s)}</span></a>`).join("")
-    : `<div class="none">集めた情報には見つかりません。視聴・記録の設定は「設定」で SHOWROOM 全体から探せます。</div>`;
+  const list = shown.map((it, i) => `${it.grp !== grp ? `<div class="grp">${(grp = it.grp)}<span class="n">${num(count[it.grp])} 件</span></div>` : ""}<a href="${esc(it.href)}" class="${i === qs.hl ? "hl" : ""}" data-i="${i}"><span>${esc(it.t)}${it.t2 ? ` <small class="uid">${esc(it.t2)}</small>` : ""}${it.note ? `<small class="via">${esc(it.note)}</small>` : ""}</span><span class="s">${esc(it.s)}</span></a>`).join("");
+  const missing = (qs.kind === "all" ? SEARCH_GROUPS : [qs.kind]).filter((g) => !count[g]);
+  box.innerHTML = chips + list + (missing.length && shown.length ? `<div class="none">${missing.join("・")}は見つかりません</div>` : "")
+    + (!shown.length ? `<div class="none">「${esc(q)}」に当てはまる${qs.kind === "all" ? "もの" : qs.kind}は見つかりません。名前の一部や、URL の名前・ID でも探せます (空白・全角半角・ひらがなカタカナのちがいは気にしません)。</div>` : "");
 }
+$("#q-results").addEventListener("mousedown", (ev) => {
+  const b = ev.target.closest("button[data-kind]");
+  if (!b) return;
+  ev.preventDefault();  // 入力欄から離れないように
+  ev.stopPropagation();  // 描き直してボタンが消えても、外を押したとみて閉じないように
+  qs.kind = b.dataset.kind;
+  try { localStorage.setItem("searchKind", qs.kind); } catch (e) { /* 残せなくてもよい */ }
+  renderSearch();
+});
 $("#q").addEventListener("input", () => { clearTimeout(qs.timer); qs.timer = setTimeout(runSearch, 300); });
 $("#q").addEventListener("focus", () => { if ($("#q").value.trim()) runSearch(); });
 $("#q").addEventListener("keydown", (ev) => {
@@ -2659,7 +2693,7 @@ $("#q").addEventListener("keydown", (ev) => {
   else if (ev.key === "Escape") closeSearch();
 });
 document.addEventListener("mousedown", (ev) => { if (!ev.target.closest("#gsearch")) closeSearch(); });
-$("#q-results").addEventListener("click", () => setTimeout(closeSearch, 0));
+$("#q-results").addEventListener("click", (ev) => { if (ev.target.closest("a")) setTimeout(closeSearch, 0); });
 
 /* ------------------------------------------------------------ 起動 */
 const PAGES = { home: showHome, gifters: showGifters, gifter: showGifter, rooms: showRooms, room: showRoom, events: showEvents, event: showEvent,

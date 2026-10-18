@@ -71,11 +71,53 @@ def _recorded(state_dir: Path) -> dict[int, dict[str, Any]]:
     return out
 
 
-def search(state_dir: Path, q: str) -> dict[str, Any]:
+def _fold(text: Any) -> str:
+    """探すためにそろえた形: 全角・半角をそろえ (NFKC)、小文字にし、空白を除き、カタカナをひらがなにする。"""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKC", str(text or "")).lower()
+    t = "".join(t.split())
+    return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in t)
+
+
+def _kana_variants(q: str) -> list[str]:
+    """SQL の LIKE で探す形 (空白を除いた形と、ひらがな・カタカナの両方)。"""
+    import unicodedata
+
+    t = "".join(unicodedata.normalize("NFKC", q).split())
+    hira = "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in t)
+    kata = "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in t)
+    return list(dict.fromkeys(x.replace("%", "").replace("_", "") for x in (t, hira, kata) if x))
+
+
+FOLDED_TTL = 600  # ルームの名前をそろえた形を使い回す時間 (秒)
+_folded_rooms: dict[str, tuple[float, list[tuple[str, int]]]] = {}
+
+
+def _rooms_by_folded(s: Store, folded: str, limit: int) -> list[dict[str, Any]]:
+    """ルームの名前を、そろえた形 (ひらがな・カタカナがまざった名前も) でくらべて探す。名前の一覧は FOLDED_TTL 使い回す。"""
+    key = str(s.state_dir)
+    hit = _folded_rooms.get(key)
+    if hit is None or time.time() - hit[0] > FOLDED_TTL:
+        # メモリを使いすぎないように、そろえた名前と room_id だけを持つ (フォロワーの多い順)
+        rows = [(_fold(r[1]), r[0]) for r in s.all("SELECT room_id, name FROM rooms WHERE name IS NOT NULL ORDER BY COALESCE(followers, 0) DESC")]
+        hit = _folded_rooms[key] = (time.time(), rows)
+    ids = [rid for name, rid in hit[1] if folded in name][:limit]
+    return [dict(r) for rid in ids for r in [s.one("SELECT room_id, key, name, followers, live_at, collected_at FROM rooms WHERE room_id=?",
+                                                   (rid,))] if r]
+
+
+# 名前から空白 (半角・全角) を除いた形 (「渡辺 みく」を「渡辺みく」で見つけるため)
+_NOSPACE = "REPLACE(REPLACE(LOWER({col}), ' ', ''), '　', '')"
+
+
+def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
     """上の検索欄: ギフター・ルーム・イベントを探す。
 
+    名前は、空白・全角半角・大文字小文字・ひらがなカタカナのちがいを気にせずに探す。
     - ギフター: ランキングに出た人 (users) の名前・ユーザー ID、前の名前 (user_names)、記録したギフトの送り主の名前
-    - ルーム: 見つけたルーム (rooms) の名前・URL キー・room_id と、視聴・記録の設定や記録したギフトにあるルーム
+    - ルーム: 見つけたルーム (rooms) の名前・URL キー・room_id と、視聴・記録の設定や記録したギフトにあるルーム。
+      showroom なら、見つかったルームが少ない時に SHOWROOM のルーム検索でも探し、見つけたルームは集める対象に足す
     - イベント: 見つけたイベントの名前・URL キー・番号 (名前のまだ分からないイベントは番号で)
     """
     from .listing import room_names
@@ -83,55 +125,83 @@ def search(state_dir: Path, q: str) -> dict[str, Any]:
     q = str(q or "").strip()[:100]
     if not q:
         return {"gifters": [], "rooms": [], "events": []}
-    like = f"%{q.replace('%', '').replace('_', '')}%"
-    low = q.lower()
+    variants = _kana_variants(q)
+    likes = [f"%{v.lower()}%" for v in variants]
+    folded = _fold(q)
     digits = q.isdigit()
     num = int(q) if digits else -1
     now = time.time()
+
+    def name_match(col: str) -> str:
+        return "(" + " OR ".join(f"{_NOSPACE.format(col=col)} LIKE ?" for _ in likes) + ")"
+
     with Store(state_dir) as s:
         points = "(SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id)"
         gifters = [{**dict(r), "match": None} for r in s.all(
-            f"""SELECT u.user_id, u.name, {points} AS points FROM users u WHERE u.user_id = ? OR u.name LIKE ?
-                ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""", (num, like, num, SEARCH_LIMIT))]
+            f"""SELECT u.user_id, u.name, {points} AS points FROM users u WHERE u.user_id = ? OR {name_match("u.name")}
+                ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""", (num, *likes, num, SEARCH_LIMIT))]
         seen = {g["user_id"] for g in gifters}
         # 前の名前で見つかった人 (今の名前と、どの名前で見つかったかを出す)
         for r in s.all(f"""SELECT n.user_id, n.name AS old, u.name, {points} AS points FROM user_names n
-                           LEFT JOIN users u USING(user_id) WHERE n.name LIKE ? ORDER BY points DESC LIMIT ?""",
-                       (like, SEARCH_LIMIT)):
+                           LEFT JOIN users u USING(user_id) WHERE {name_match("n.name")} ORDER BY points DESC LIMIT ?""",
+                       (*likes, SEARCH_LIMIT)):
             if r["user_id"] not in seen:
                 seen.add(r["user_id"])
                 gifters.append({"user_id": r["user_id"], "name": r["name"] or r["old"], "points": r["points"],
                                 "match": {"kind": "former", "name": r["old"]}})
         # 記録したギフトにしか出ていない人 (少額でランキングに出ない人など)
         rec = [(uid, u) for uid, u in _recorded(state_dir).items()
-               if uid not in seen and (uid == num or any(low in n.lower() for n in u["names"]))]
+               if uid not in seen and (uid == num or any(folded in _fold(n) for n in u["names"]))]
         rec.sort(key=lambda x: (x[0] != num, -x[1]["times"]))
         for uid, u in rec[:SEARCH_LIMIT]:
-            hit = u["name"] if low in u["name"].lower() else next((n for n in u["names"] if low in n.lower()), u["name"])
+            hit = u["name"] if folded in _fold(u["name"]) else next((n for n in u["names"] if folded in _fold(n)), u["name"])
             gifters.append({"user_id": uid, "name": u["name"] or hit, "points": None, "times": u["times"],
                             "match": {"kind": "recorded", "name": hit}})
 
         rooms = [{**dict(r), "source": "research"} for r in s.all(
-            """SELECT room_id, key, name, followers, live_at FROM rooms
-               WHERE room_id = ? OR key = ? OR name LIKE ? OR key LIKE ?
-               ORDER BY room_id = ? DESC, key = ? DESC, COALESCE(followers, 0) DESC LIMIT ?""",
-            (num, q, like, like, num, q, SEARCH_LIMIT))]
-        # 視聴・記録の設定や記録したギフトにあるルーム (全ルームの収集でまだ見つかっていないものも)
+            f"""SELECT room_id, key, name, followers, live_at, collected_at FROM rooms
+                WHERE room_id = ? OR key = ? OR {name_match("name")} OR {name_match("key")}
+                ORDER BY room_id = ? DESC, key = ? DESC, COALESCE(followers, 0) DESC LIMIT ?""",
+            (num, q, *likes, *likes, num, q, SEARCH_LIMIT))]
         known = {r["key"] for r in rooms if r["key"]} | {str(r["room_id"]) for r in rooms}
+        if len(rooms) < SEARCH_LIMIT and not digits:  # ひらがな・カタカナがまざった名前 (SQL ではそろえられない)
+            for r in _rooms_by_folded(s, folded, SEARCH_LIMIT):
+                if r["key"] not in known and str(r["room_id"]) not in known:
+                    known.add(r["key"])
+                    rooms.append({**r, "source": "research"})
+        # 視聴・記録の設定や記録したギフトにあるルーム (全ルームの収集でまだ見つかっていないものも)
         for key, info in room_names(state_dir).items():
             name = (info or {}).get("name") or key
             rid = (info or {}).get("room_id")
             if key in known or (rid is not None and str(rid) in known):
                 continue
-            if low in key.lower() or low in str(name).lower() or (digits and rid is not None and int(rid) == num):
+            if folded in _fold(key) or folded in _fold(name) or (digits and rid is not None and int(rid) == num):
+                known.add(key)
                 rooms.append({"room_id": rid, "key": key, "name": name, "followers": None, "live_at": None, "source": "known"})
                 if len(rooms) >= SEARCH_LIMIT * 2:
                     break
+        # SHOWROOM のルーム検索 (集めた情報で少ししか見つからない時。見つけたルームは集める対象に足す)
+        if showroom and len(rooms) < SEARCH_LIMIT and len(q) >= 2 and not digits:
+            from .listing import search_showroom_rooms
+
+            try:
+                hits = search_showroom_rooms(q)
+            except Exception:  # noqa: BLE001 - SHOWROOM に聞けなくても、集めた情報の分は返す
+                hits = []
+            new = [h for h in hits if h.get("key") and h["key"] not in known and h.get("room_id")]
+            if new:
+                s.upsert_rooms([{"room_id": h["room_id"], "key": h["key"], "name": h["name"], "followers": h.get("followers")}
+                                for h in new], "search", now)
+            for h in new[:SEARCH_LIMIT * 2 - len(rooms)]:
+                rooms.append({"room_id": h["room_id"], "key": h["key"], "name": h["name"], "followers": h.get("followers"),
+                              "live_at": now if h.get("is_live") else None, "source": "showroom", "is_live": h.get("is_live")})
+        # 名前がそのまま合うものを先に (そのあとはフォロワーの多い順のまま)
+        rooms.sort(key=lambda r: _fold(r["name"]) != folded)
 
         events = [{**_event_row(r, now), "named": bool(r["name"])} for r in s.all(
-            """SELECT * FROM events WHERE event_id = ? OR key = ? OR name LIKE ? OR key LIKE ?
-               ORDER BY event_id = ? DESC, COALESCE(end, 0) DESC LIMIT ?""",
-            (num, q, like, like, num, SEARCH_LIMIT))]
+            f"""SELECT * FROM events WHERE event_id = ? OR key = ? OR {name_match("name")} OR {name_match("key")}
+                ORDER BY event_id = ? DESC, COALESCE(end, 0) DESC LIMIT ?""",
+            (num, q, *likes, *likes, num, SEARCH_LIMIT))]
     return {"gifters": gifters, "rooms": rooms, "events": events}
 
 

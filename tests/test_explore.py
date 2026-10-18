@@ -109,3 +109,24 @@ def test_search_finds_former_names_recorded_gifters_and_known_rooms(db):
         s.set_event_rooms(77, [{"room_id": 1, "point": 1, "rank": 1}], NOW)
     ev = explore.search(db, "77")["events"]
     assert ev[0]["event_id"] == 77 and ev[0]["named"] is False and ev[0]["name"] == "イベント 77"
+
+
+def test_search_ignores_spaces_width_and_kana(tmp_path, monkeypatch):
+    from showroom_keeper import listing
+
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 5, "key": "wnb", "name": "渡辺 みく (WNB39)", "followers": 826},
+                        {"room_id": 6, "key": "kana", "name": "ミクのヘヤ", "followers": 10}], "live", NOW)
+        s.set_cumulative(5, [{"user_id": 70, "name": "★渡辺みく推し", "point": 100, "visits": 1, "rank": 1}], NOW)
+    r = explore.search(tmp_path, "渡辺みく")
+    assert [x["key"] for x in r["rooms"]] == ["wnb"] and r["gifters"][0]["user_id"] == 70
+    assert [x["key"] for x in explore.search(tmp_path, "みくのへや")["rooms"]] == ["kana"]  # ひらがなでカタカナの名前
+    assert [x["key"] for x in explore.search(tmp_path, "ＷＮＢ３９")["rooms"]] == ["wnb"]  # 全角
+    # 少ししか見つからない時は SHOWROOM のルーム検索でも探し、見つけたルームは集める対象に足す
+    monkeypatch.setattr(listing, "search_showroom_rooms",
+                        lambda q: [{"key": "new1", "name": "渡邉みく", "room_id": 99, "followers": 77, "is_live": True},
+                                   {"key": "wnb", "name": "渡辺 みく (WNB39)", "room_id": 5}])
+    r = explore.search(tmp_path, "渡辺みく", showroom=True)
+    assert [x["key"] for x in r["rooms"]] == ["wnb", "new1"] and r["rooms"][1]["source"] == "showroom"
+    with Store(tmp_path) as s:
+        assert s.one("SELECT found_via FROM rooms WHERE room_id=99")[0] == "search"
