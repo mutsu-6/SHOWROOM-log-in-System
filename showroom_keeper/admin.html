@@ -2139,8 +2139,13 @@ function roomAnalysisHtml(d) {
     ${tile("逆転の多さ", tc.swaps == null ? "—" : `${tc.swaps.toFixed(1)} <small>回</small>`, tc.swap_events
       ? `走り方を見た ${num(tc.swap_events)} イベントで、1 位になった・1 位から落ちた回数の平均。多いほど抜きつ抜かれつ (逆転圏を保つ戦い方)` : "推移の分かったイベントがまだありません")}
     ${tile("リス活", !a.rounds || a.rounds.avg_rooms == null ? "—" : `${a.rounds.avg_rooms.toFixed(1)} <small>ルーム</small>`, a.rounds && a.rounds.avg_rooms != null
-      ? `直近のイベントで、貢献上位 5 人が、競争相手以外のルームに送って回った数 (1 イベントの平均)。回った先から初めて来てくれた人 ${a.rounds.avg_returned.toFixed(1)} 人`
+      ? `直近のイベントで、コアな人 (${a.rounds.owner ? "配信者本人・" : ""}貢献上位 5 人・ファンレベルの高い常連) が、競争相手以外のルームに送って回った数 (1 イベントの平均)。回った先が最推しの人が来てくれた数 ${a.rounds.avg_returned.toFixed(1)} 人${a.rounds.owner ? "" : "。配信者本人のアカウントはまだ分かっていません"}`
       : "貢献ランキングの分かった、終わったイベントがまだありません")}
+    ${tile("推し・付き合い", a.rounds && a.rounds.events.length ? `${num(a.rounds.kinds["推し"])} <small>/ ${num(a.rounds.kinds["掛け持ち"])} / ${num(a.rounds.kinds["付き合い"])}</small>` : "—",
+      "直近のイベントの貢献者を、推し / 掛け持ち / 付き合い投げ に分けた人数 (のべ)。最推しのルームのガチイベで 1 回に送った量の 2 割より少なければ付き合い投げ")}
+    ${tile("常連 (アクティブファン)", a.regulars ? `${num(a.regulars.total)} <small>人</small>` : "—", a.regulars
+      ? `${a.regulars.ym.slice(0, 4)}/${a.regulars.ym.slice(4)} のファンレベルのある人。そのうち貢献ランキングに一度も出ていない常連 ${num(a.regulars.silent)} 人。ファンパワー ${num(a.regulars.fan_power)}`
+      : "最近配信したルームは、1 週間ごとに読みます")}
     ${tile("逃げの引き離し", tc.early_gap == null ? "—" : pctText(tc.early_gap), tc.early_leads
       ? `序盤に 1 位だった ${num(tc.early_leads)} イベントの、2 位との差の割合。${tc.rival_slow == null ? "" : `引き離された 2 位の伸びの速さは ${tc.rival_slow.toFixed(2)} 倍に${tc.rival_slow < 1 ? "鈍った" : "なった"}`}`
       : "序盤に 1 位だったイベントがまだありません")}
@@ -2167,11 +2172,13 @@ function roomAnalysisHtml(d) {
   }
   const lu = d.lure;
   if (lu) {
-    html += `<h3>誘い投げ <small class="muted">記録した直近 ${num(lu.days)} 日の有料ギフト ${num(lu.paid)} 回</small></h3><div class="tiles">
-      ${tile("常連の少額ギフト", lu.small_share == null ? "—" : pctText(lu.small_share), `有料ギフトの多い ${num(lu.core)} 人の有料ギフトのうち、1 回 1000 G 以下のものの割合 (${num(lu.small)} 回)`)}
-      ${tile("呼び水の強さ", lu.lift == null ? "—" : `${lu.lift.toFixed(1)} <small>倍</small>`, lu.lift == null ? (lu.small ? "常連以外の人の有料ギフトがまだないので、くらべられません" : "常連の少額ギフトがまだありません")
-        : `常連の少額ギフトのあと 1 分のうちに、ほかの人の有料ギフトが続いた割合 ${pctText(lu.follow_rate)} ÷ ふつうの 1 分 ${pctText(lu.base_rate)}。1 より大きいほど、ギフトが飛ぶ空気を作れている`, lu.lift >= 1.5 ? "ok" : "")}
-      ${tile("交互の少額ギフト", `${num(lu.alternations)} <small>回</small>`, "常連 2 人が 2 分のうちに交互に少額ギフトを送った回数 (A→B→A)")}
+    const rt = (x) => x == null ? "—" : `${x.toFixed(1)} <small>倍</small>`;
+    html += `<h3>誘い投げ <small class="muted">記録した直近 ${num(lu.days)} 日。コアな常連 ${num(lu.core)} 人 (有料ギフトの多い人と、ファンレベルの高い人) の 1000 円以下の有料ギフト ${num(lu.lures)} 回</small></h3><div class="tiles">
+      ${tile("送る人の増え方", rt(lu.people_ratio), `誘い投げの後の ${lu.window / 60} 分に、ほかの人でギフト (無料も) を送った人 ${num(lu.people_after)} 人 ÷ 前の ${lu.window / 60} 分の ${num(lu.people_before)} 人。同じ配信の中でくらべる`, lu.people_ratio >= 1.5 ? "ok" : "")}
+      ${tile("有料ポイントの増え方", rt(lu.points_ratio), lu.points_ratio == null ? "前の 3 分に、ほかの人の有料ギフトが無い回ばかりで、くらべられません" : "誘い投げの前後 3 分の、ほかの人の有料ギフトのポイントの比")}
+      ${tile("コメントの増え方", rt(lu.comments_ratio), lu.has_comments ? "誘い投げの前後 3 分の、コメントの数の比" : "1 分ごとのコメントの数は、2026-10-18 から残し始めました")}
+      ${tile("こまめさ", lu.per_hour == null ? "—" : `${lu.per_hour.toFixed(1)} <small>回/時</small>`, lu.gap == null ? "" : `誘い投げの間隔は ${num(Math.round(lu.gap / 60))} 分 (真ん中の値)`)}
+      ${tile("交互の誘い投げ", `${num(lu.alternations)} <small>回</small>`, "常連 2 人が 2 分のうちに交互に送った回数 (A→B→A)")}
     </div>`;
   }
   if (b) {

@@ -1,8 +1,10 @@
 import json
+from datetime import datetime
 import time
 
 from showroom_keeper import comment_counts, explore
 from showroom_keeper import room_analysis as ra
+from showroom_keeper.status import JST
 from showroom_keeper.research_store import Store, contribution_stats, median
 
 NOW = time.time()
@@ -425,7 +427,7 @@ def test_listener_rounds(tmp_path):
             s.upsert_events([{"event_id": eid, "start": NOW - 10 * DAY, "end": NOW - 3 * DAY}])
         s.upsert_events([{"event_id": 0, "start": NOW - 40 * DAY, "end": NOW - 30 * DAY}])  # 前のイベント
         s.set_event_rooms(0, [{"room_id": 3, "point": 100, "rank": 1}], NOW)
-        s.set_contributions(0, 3, [{"user_id": 50, "point": 10}], NOW, final=True)  # 50 はルーム 3 のファン
+        s.set_contributions(0, 3, [{"user_id": 50, "point": 500}], NOW, final=True)  # 50 はルーム 3 が最推し (ガチイベで 500)
         s.set_event_rooms(1, [{"room_id": 1, "point": 1000, "rank": 1}, {"room_id": 2, "point": 900, "rank": 2}], NOW)
         s.set_event_rooms(2, [{"room_id": 3, "point": 500, "rank": 1}, {"room_id": 2, "point": 1, "rank": 2}], NOW)
         s.set_contributions(1, 1, [{"user_id": 10, "point": 800}, {"user_id": 50, "point": 30}], NOW, final=True)
@@ -436,34 +438,55 @@ def test_listener_rounds(tmp_path):
         r = ra.listener_rounds(s, 1)
     e = next(x for x in r["events"] if x["event_id"] == 1)
     assert e["rooms"] == 1 and e["points"] == 50 and e["visitors"] == 1  # 競争相手のルーム 2 は数えない
-    assert e["returned"] == 1  # ルーム 3 のファン (50) が、初めてルーム 1 に来た
+    assert e["returned"] == 1  # ルーム 3 が最推しの 50 が、お返しにルーム 1 に来た (30 は最推しの 500 の 2 割より少ない → 付き合い投げ)
+    assert e["kinds"] == {"推し": 1, "掛け持ち": 0, "付き合い": 1}  # 10 はルーム 1 が最推し
+
+
+def test_listener_rounds_counts_fans_and_the_streamer(tmp_path):
+    with Store(tmp_path) as s:
+        for eid in (1, 2):
+            s.upsert_events([{"event_id": eid, "start": NOW - 10 * DAY, "end": NOW - 3 * DAY}])
+        s.set_event_rooms(1, [{"room_id": 1, "point": 1000, "rank": 1}], NOW)
+        s.set_event_rooms(2, [{"room_id": 3, "point": 500, "rank": 1}, {"room_id": 4, "point": 400, "rank": 2}], NOW)
+        s.set_contributions(1, 1, [{"user_id": 10, "point": 800}], NOW, final=True)
+        ym = datetime.fromtimestamp(NOW - 3 * DAY, JST).strftime("%Y%m")
+        s.set_active_fans(1, ym, 30, 2, [{"user_id": 60, "level": 9, "user_name": "常連"}], NOW)  # ポイントに出ない常連
+        s.set_user_room(70, 1, NOW)  # 70 はルーム 1 の配信者
+        s.set_contributions(2, 3, [{"user_id": 60, "point": 20}], NOW, final=True)  # 常連がルーム 3 に挨拶回り
+        s.set_contributions(2, 4, [{"user_id": 70, "point": 15}], NOW, final=True)  # 配信者がルーム 4 に挨拶回り
+        r = ra.listener_rounds(s, 1)
+        reg = ra.regulars(s, 1)
+    e = r["events"][0]
+    assert r["owner"] and e["rooms"] == 2 and e["owner_rooms"] == 1 and e["visitors"] == 2
+    assert reg["total"] == 2 and reg["silent"] == 1  # 貢献ランキングに出ていない常連が 1 人
 
 
 def test_lure_throws(tmp_path):
     (tmp_path / "gifts").mkdir()
     (tmp_path / "cache").mkdir()
     (tmp_path / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 100, "free": False},
-                                                                                  "2": {"point": 10000, "free": False}}}))
+                                                                                  "2": {"point": 10000, "free": False},
+                                                                                  "3": {"point": 1, "free": True}}}))
     lines = []
-    t0 = int(NOW) - 3600
-    for k in range(10):  # 常連 1 と 2 が交互に少額 (100 G) を送り、そのたびに 30 秒後にほかの人が続く
-        t = t0 + k * 300
-        lines += [{"at": t, "live_id": 1, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1},
-                  {"at": t + 30, "live_id": 1, "user_id": 90 + k, "gift_id": 1, "num": 1}]
-    lines.append({"at": t0 + 10, "live_id": 1, "user_id": 1, "gift_id": 2, "num": 10})  # 常連 1 の大きいギフト
+    t0 = int(NOW) - 7200
+    lines.append({"at": t0, "live_id": 1, "user_id": 1, "gift_id": 2, "num": 10})  # 常連 1 の大きいギフト
+    lines.append({"at": t0 + 1, "live_id": 1, "user_id": 2, "gift_id": 2, "num": 5})  # 常連 2 の大きいギフト
+    for k in range(4):  # 常連が 10 分おきに少額 (100 円) を送る (誘い投げ)。前の 3 分は 1 人、後の 3 分は 3 人がギフトを送る
+        t = t0 + 600 + k * 600
+        lines.append({"at": t, "live_id": 1, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1})
+        lines.append({"at": t - 60, "live_id": 1, "user_id": 100 + k, "gift_id": 3, "num": 10})
+        lines += [{"at": t + 30 + i, "live_id": 1, "user_id": 200 + k * 10 + i, "gift_id": 1 if i == 0 else 3, "num": 1} for i in range(3)]
     (tmp_path / "gifts" / "aaa.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
     ra.LURE_CORE, old = 2, ra.LURE_CORE
     try:
         r = ra.lure_throws(tmp_path, "aaa", NOW)
-    finally:
-        ra.LURE_CORE = old
-    assert r["core"] == 2 and r["small"] == 10 and r["follow_rate"] == 1.0
-    assert r["lift"] > 3 and r["alternations"] == 0  # 5 分おきなので「交互」ではない
-    # 2 人が 30 秒おきに交互に送る
-    quick = [{"at": t0 + k * 30, "live_id": 2, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1} for k in range(6)]
-    (tmp_path / "gifts" / "bbb.jsonl").write_text("".join(json.dumps(x) + "\n" for x in quick))
-    ra.LURE_CORE = 2
-    try:
+        assert r["core"] == 2 and r["lures"] == 4 and r["gap"] == 600
+        assert r["people_before"] == 4 and r["people_after"] == 12 and r["people_ratio"] == 3.0  # 誘い投げのあと、送る人が 3 倍
+        assert r["points_ratio"] is None  # 前の 3 分には有料ギフトが無い (くらべられない)
+        assert r["per_hour"] > 1
+        # 2 人が 30 秒おきに交互に送る
+        quick = [{"at": t0 + k * 30, "live_id": 2, "user_id": 1 if k % 2 == 0 else 2, "gift_id": 1, "num": 1} for k in range(6)]
+        (tmp_path / "gifts" / "bbb.jsonl").write_text("".join(json.dumps(x) + "\n" for x in quick))
         assert ra.lure_throws(tmp_path, "bbb", NOW)["alternations"] == 4
     finally:
         ra.LURE_CORE = old

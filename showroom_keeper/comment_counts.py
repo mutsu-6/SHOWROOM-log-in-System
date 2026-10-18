@@ -86,6 +86,10 @@ class CommentCounter:
             live["users"] = max(live["users"], len(users))
             live["first"] = live["first"] or int(now)
             live["last"] = int(now)
+            # 1 分ごとのコメントの数 (数だけ。誘い投げのあとにコメントが増えたかを見るため)
+            minutes = live.setdefault("minutes", {})
+            m = str(int(now // 60 * 60))
+            minutes[m] = minutes.get(m, 0) + 1
             self._dirty.add(room)
         if now - self._flushed.get(room, 0) >= FLUSH_EVERY:
             self.flush(room)

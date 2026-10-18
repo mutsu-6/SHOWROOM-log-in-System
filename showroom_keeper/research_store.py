@@ -76,6 +76,16 @@ CREATE TABLE IF NOT EXISTS archive_contributions (
     event_id INTEGER, room_id INTEGER, rank INTEGER, name TEXT, point INTEGER, user_id INTEGER, at REAL,
     PRIMARY KEY (event_id, room_id, rank, name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+-- ルームのアクティブファン (月ごとのファンレベル。見る・コメント・ギフトで上がるので、ポイントに出ない常連も分かる)
+CREATE TABLE IF NOT EXISTS active_fans (
+    room_id INTEGER, ym TEXT, user_id INTEGER, level INTEGER, title_id INTEGER, at REAL, PRIMARY KEY (room_id, ym, user_id))
+    WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS active_fans_user ON active_fans(user_id);
+CREATE TABLE IF NOT EXISTS room_fans (
+    room_id INTEGER, ym TEXT, fan_power INTEGER, total INTEGER, at REAL, PRIMARY KEY (room_id, ym)) WITHOUT ROWID;
+-- ユーザーが持っているルーム (プロフィールでルームを公開している配信者。room_id が NULL ならルームなし・非公開)
+CREATE TABLE IF NOT EXISTS user_rooms (user_id INTEGER PRIMARY KEY, room_id INTEGER, checked_at REAL);
+CREATE INDEX IF NOT EXISTS user_rooms_room ON user_rooms(room_id);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
 CREATE TABLE IF NOT EXISTS room_daily (
     room_id INTEGER, day TEXT, followers INTEGER, lives INTEGER DEFAULT 0, view_max INTEGER, view_sum INTEGER DEFAULT 0,
@@ -159,7 +169,7 @@ class Store:
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
                                    ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
-                                   ("room_event_style", "rival_slow REAL")):
+                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -472,6 +482,25 @@ class Store:
                 removed += c.execute("DELETE FROM event_progress WHERE event_id=? AND at=?", (eid, a)).rowcount
             c.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
         return removed
+
+    def set_active_fans(self, room_id: int, ym: str, fan_power: Any, total: Any, users: list[dict[str, Any]], now: float) -> None:
+        """ルームの、その月のアクティブファン (ファンレベル) を置き換える。"""
+        rid = int(room_id)
+        with self.tx() as c:
+            c.execute("DELETE FROM active_fans WHERE room_id=? AND ym=?", (rid, ym))
+            c.executemany("""INSERT OR REPLACE INTO active_fans(room_id, ym, user_id, level, title_id, at) VALUES (?, ?, ?, ?, ?, ?)""",
+                          [(rid, ym, int(u["user_id"]), u.get("level"), u.get("title_id"), now) for u in users if u.get("user_id")])
+            c.execute("""INSERT INTO room_fans(room_id, ym, fan_power, total, at) VALUES (?, ?, ?, ?, ?)
+                         ON CONFLICT(room_id, ym) DO UPDATE SET fan_power=excluded.fan_power, total=excluded.total, at=excluded.at""",
+                      (rid, ym, fan_power, total, now))
+            c.execute("UPDATE rooms SET fans_at=? WHERE room_id=?", (now, rid))
+            self._names(c, [{"user_id": int(u["user_id"]), "name": u.get("user_name")} for u in users if u.get("user_id")], now)
+
+    def set_user_room(self, user_id: int, room_id: Any, now: float) -> None:
+        """ユーザーが持っているルーム (無い・非公開なら None) を残す。"""
+        self.conn.execute("""INSERT INTO user_rooms(user_id, room_id, checked_at) VALUES (?, ?, ?)
+                             ON CONFLICT(user_id) DO UPDATE SET room_id=excluded.room_id, checked_at=excluded.checked_at""",
+                          (int(user_id), None if room_id in (None, "", 0) else int(room_id), now))
 
     def add_final(self, event_id: int, rows: list[dict[str, Any]], now: float) -> int:
         """終わる直前の細かい推移を残す。戻り値は残したルームの数。"""

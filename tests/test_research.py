@@ -414,6 +414,12 @@ class FakeAll:
             return {"room_url_key": "scan1", "room_name": "番号で見つけた", "follower_num": 5, "is_onlive": False}
         if path.startswith("/api/room/profile"):
             raise http_error(404)
+        if path.startswith("/api/active_fan/users?room_id=3&"):
+            return {"users": [{"user_id": 77, "level": 8, "title_id": 2, "user_name": "常連"}], "total_user_count": 1, "fan_power": 5}
+        if path.startswith("/api/active_fan/users"):
+            return {"users": [], "total_user_count": 0}
+        if path == "/api/user/profile?user_id=77":
+            return {"room_profile": {"room_id": 4, "room_url_key": "ev4", "room_name": "参加"}}  # 77 はルーム 4 の配信者
         raise AssertionError(f"想定していない問い合わせ: {path}")
 
 
@@ -442,6 +448,10 @@ def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
         assert (daily["followers"], daily["lives"], daily["view_max"], daily["view_n"]) == (10, 1, 25, 1)
         assert "view_num" in s.meta("onlives_keys")
         assert s.meta("room_stats_upto") is True and s.meta("room_profile_at")  # ルームの分析も作った
+        # 最近配信したルームのアクティブファン (ポイントに出ない常連も) と、配信者のアカウントとルームの結び付き
+        assert [tuple(r) for r in s.all("SELECT room_id, user_id, level FROM active_fans")] == [(3, 77, 8)]
+        assert s.one("SELECT fan_power, total FROM room_fans WHERE room_id=3")[:] == (5, 1)
+        assert s.one("SELECT room_id FROM user_rooms WHERE user_id=77")[0] == 4
     with Store(tmp_path) as s:
         assert s.room(key="scan1")["found_via"] == "scan" and s.room(room_id=3)["found_via"] == "live"
     assert [c["user_id"] for c in research.analyze(tmp_path, [])["candidates"]] == [77]
@@ -502,7 +512,8 @@ def test_sweep_takes_turns_between_jobs(tmp_path):
 def test_sweep_gives_rankings_every_other_turn(tmp_path):
     sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()))
     done = []
-    for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_event_history", "_next_scan"):
+    for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_fans", "_next_event_history",
+                 "_next_owner", "_next_scan"):
         setattr(sw, name, (lambda n: lambda now: done.append(n) or True)(name))
     with Store(tmp_path) as s:
         s.set_meta("live_at", NOW)

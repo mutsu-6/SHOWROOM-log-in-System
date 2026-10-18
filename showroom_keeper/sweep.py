@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from datetime import datetime
 import sys
 import threading
 import time
@@ -30,6 +31,7 @@ from typing import Any, Callable
 
 from . import research, room_analysis
 from .recorder import next_page_number
+from .status import JST
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
 
 log = logging.getLogger("research")
@@ -53,6 +55,10 @@ FINAL_LAST_EVERY = 15  # その間隔 (秒)
 FINAL_SPRINT = 60  # 終わるこれだけ前からは、もっと細かく (ラスト数秒のまとめ投げを見るため。秒)
 FINAL_SPRINT_EVERY = 2  # その間隔 (秒。同時に終わるイベントが多い時は、問い合わせの間隔 0.5 秒の分ずつ遅れる)
 FINAL_AFTER = 900  # 終わったあとも、これだけのあいだは 1 分ごとに読む (最後のギフトの反映を見るため。秒)
+FANS_EVERY = 7 * 86400  # ルームのアクティブファンを読み直す間隔 (秒)
+FANS_PAGE = 50  # アクティブファンの 1 回に読む人数 (SHOWROOM の 1 ページ)
+FANS_PAGES = 20  # 1 ルームで読むページの上限 (1000 人)
+OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っているルーム) を読み直す間隔 (秒)
 PROGRESS_RETRY = 600  # 開催中のイベントのポイントが読めなかった時に、読み直すまでの時間 (秒。推移が抜けないように短く)
 DISK_MIN = 2 << 30  # ディスクの空きがこれより少なくなったら、収集を止める (ログイン状態などが書けなくならないように)
 DISK_CHECK_EVERY = 600  # ディスクの空きを確かめる間隔 (秒)
@@ -70,6 +76,8 @@ class Sweeper:
         self._turn = 0
         self._rooms: list[Any] = []
         self._rankings: list[Any] = []
+        self._fan_rooms: list[Any] = []
+        self._owners: list[Any] = []
         self._history_failures = 0
         self._aggregated = False
         self.doing = ""
@@ -173,7 +181,8 @@ class Sweeper:
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
         # 貢献ランキングはギフター分析にいちばん効くので、ほかの仕事 1 つごとに 1 回回す (問い合わせのおよそ半分を使う)
-        others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_event_history]
+        others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
+                  self._next_owner]
         if self.scan:
             others.append(self._next_scan)
         jobs = [j for job in others for j in (job, self._next_ranking)]
@@ -472,6 +481,58 @@ class Sweeper:
                 c.execute("""UPDATE room_events SET final=0, ranking_at=NULL WHERE room_id=? AND event_id IN (
                                SELECT event_id FROM contributions WHERE room_id=? AND guessed IS NOT NULL)""",
                           (r["room_id"], r["room_id"]))
+        return True
+
+    def _next_fans(self, now: float) -> bool:
+        """最近配信したルームのアクティブファン (その月のファンレベル) を、FANS_EVERY ごとに読む。
+
+        ファンレベルは、見る・コメント・ギフトで上がるので、貢献ランキングに出ない (ポイントで貢献していない) 常連も分かる。
+        """
+        r = self._take(self._fan_rooms, """SELECT room_id, name, key FROM rooms
+               WHERE live_at > ? AND (fans_at IS NULL OR fans_at < ?) ORDER BY fans_at IS NOT NULL, fans_at, live_at DESC""",
+                       (now - ACTIVE_DAYS * 86400, now - FANS_EVERY))
+        if r is None:
+            return False
+        self.doing = f"アクティブファン ({r['name'] or r['key'] or r['room_id']})"
+        ym = datetime.fromtimestamp(now, JST).strftime("%Y%m")
+        users: list[dict[str, Any]] = []
+        data: dict[str, Any] = {}
+        for page in range(FANS_PAGES):
+            try:
+                data = self.c.get(f"/api/active_fan/users?room_id={r['room_id']}&ym={ym}&offset={page * FANS_PAGE}&limit={FANS_PAGE}") or {}
+            except Exception as err:  # noqa: BLE001
+                if not is_missing(err):
+                    raise
+                break
+            got = [u for u in data.get("users") or [] if isinstance(u, dict)]
+            users += got
+            if len(got) < FANS_PAGE or len(users) >= int(data.get("total_user_count") or 0):
+                break
+        self.store.set_active_fans(r["room_id"], ym, data.get("fan_power"), data.get("total_user_count"), users, now)
+        return True
+
+    def _next_owner(self, now: float) -> bool:
+        """ユーザーのプロフィールを読み、その人が持っているルーム (配信者のアカウントとルームの結び付き) を残す。
+
+        アクティブファンのレベルの高い人から読む (配信者はほかのルームでも常連になっていることが多いため)。
+        """
+        r = self._take(self._owners, """SELECT af.user_id FROM active_fans af LEFT JOIN user_rooms ur USING(user_id)
+               WHERE ur.user_id IS NULL OR ur.checked_at < ? GROUP BY af.user_id ORDER BY MAX(af.level) DESC""",
+                       (now - OWNER_EVERY,))
+        if r is None:
+            return False
+        self.doing = "ユーザーのプロフィール"
+        try:
+            p = self.c.get(f"/api/user/profile?user_id={r['user_id']}") or {}
+        except Exception as err:  # noqa: BLE001
+            if not is_missing(err):
+                raise
+            p = {}
+        room = p.get("room_profile") if isinstance(p.get("room_profile"), dict) else {}
+        self.store.set_user_room(r["user_id"], room.get("room_id"), now)
+        if room.get("room_id"):
+            self.store.upsert_rooms([{"room_id": room["room_id"], "key": room.get("room_url_key"), "name": room.get("room_name"),
+                                      "followers": room.get("follower_num")}], "owner", now)
         return True
 
     def _next_ranking(self, now: float) -> bool:

@@ -16,10 +16,12 @@ research.db を読んで作るだけで、SHOWROOM には問い合わせない�
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import math
 import time
 from typing import Any
 
+from .status import JST
 from .research_store import PROGRESS_THIN_AFTER, Store, median
 
 PROFILE_EVENTS = 10  # タイプ分けに使う、直近の終わったイベントの数
@@ -408,31 +410,73 @@ def tactics(s: Store, room_id: int) -> dict[str, Any]:
             "early_leads": len(gaps), "early_gap": median(gaps), "rival_slow": median(slows)}
 
 
-# ------------------------------------------------------------------ リス活 (挨拶回り)
+# ------------------------------------------------------------------ リス活 (挨拶回り) と、推し・付き合い投げ
 ROUND_EVENTS = 5  # リス活を見る、直近の終わったイベントの数
 ROUND_CORE = 5  # そのイベントの貢献上位の何人を「コアな人」とみるか
+ROUND_FANS = 10  # アクティブファンのレベルの高い何人を「コアな人」に足すか (ポイントに出ない常連も入れるため)
+TSUKIAI = 0.2  # 最推しのルームの 1 イベントで送った最大の量に対して、これより少なければ「付き合い投げ」
+
+
+def room_owner(s: Store, room_id: int) -> int | None:
+    """ルームの配信者のユーザー ID (プロフィールでルームを公開している時だけ分かる)。"""
+    row = s.one("SELECT user_id FROM user_rooms WHERE room_id=? ORDER BY checked_at DESC LIMIT 1", (int(room_id),))
+    return row[0] if row is not None else None
+
+
+def regulars(s: Store, room_id: int) -> dict[str, Any] | None:
+    """アクティブファン (いちばん新しい月): 人数・ファンパワーと、そのうち貢献ランキングに一度も出ていない人の数。"""
+    rid = int(room_id)
+    f = s.one("SELECT * FROM room_fans WHERE room_id=? ORDER BY ym DESC LIMIT 1", (rid,))
+    if f is None:
+        return None
+    fans = s.all("SELECT user_id, level FROM active_fans WHERE room_id=? AND ym=? ORDER BY level DESC", (rid, f["ym"]))
+    givers = {r[0] for r in s.all("""SELECT DISTINCT c.user_id FROM room_events re
+                                     JOIN contributions c ON c.event_id = re.event_id AND c.room_id = re.room_id WHERE re.room_id=?""",
+                                  (rid,))}
+    silent = [r for r in fans if r["user_id"] not in givers]
+    return {"ym": f["ym"], "total": f["total"], "fan_power": f["fan_power"], "listed": len(fans), "silent": len(silent),
+            "silent_top_level": silent[0]["level"] if silent else None, "top_level": fans[0]["level"] if fans else None}
+
+
+def _oshi(s: Store, uid: int, room_id: int, amount: int, cache: dict[int, tuple[Any, int]]) -> tuple[str, Any]:
+    """その人にとって、このルームへの送り方が「推し」「掛け持ち」「付き合い投げ」のどれか。
+
+    最推しのルーム = 貢献ランキングでいちばん多く送ったルーム。そのルームの 1 イベントで送った最大の量 (ガチイベの量) とくらべて、
+    TSUKIAI より少なければ付き合い投げ (付き合いの古さは問わない)。
+    """
+    if uid not in cache:
+        main = s.one("""SELECT room_id, SUM(point) AS total, MAX(point) AS best FROM contributions WHERE user_id=?
+                        GROUP BY room_id ORDER BY total DESC LIMIT 1""", (uid,))
+        cache[uid] = (main["room_id"], main["best"] or 0) if main is not None else (None, 0)
+    main, best = cache[uid]
+    if main == room_id:
+        return "推し", main
+    return ("付き合い" if best and amount < TSUKIAI * best else "掛け持ち"), main
 
 
 def listener_rounds(s: Store, room_id: int) -> dict[str, Any]:
-    """リス活: イベント中に、貢献上位のコアな人が、競争相手 (同じイベントのルーム) 以外のルームにギフトを送って回ったか。
-
-    - 回ったルーム: コアな人が、そのイベントと期間の重なるほかのイベントで、貢献ランキングに載ったルーム (競争相手を除く)
-    - 来てくれた人: そのイベントで、このルームに初めて貢献した人のうち、回ったルームの貢献ランキングに前から載っていた人
-      (挨拶回りのお返しに来てくれた人の目安)
-    配信者本人のアカウントは分からないので、コアな人 (TO・貢献上位) の分だけを見る。
+    """リス活: イベント中に、コアな人 (配信者本人・貢献上位・ファンレベルの高い常連) が、競争相手 (同じイベントのルーム)
+    以外のルームにギフトを送って回ったか。そのイベントの貢献者を「推し・掛け持ち・付き合い投げ」に分け、
+    回った先のルームが最推しの人 (お返しに来た人の目安) を数える。
     """
     rid = int(room_id)
+    owner = room_owner(s, rid)
     events = s.all("""SELECT re.event_id, e.name, e.start, e.end FROM room_events re JOIN events e USING(event_id)
                       WHERE re.room_id=? AND re.final=1 AND e.start IS NOT NULL AND e.end IS NOT NULL AND e.rooms_at >= e.end
                       ORDER BY e.end DESC LIMIT ?""", (rid, ROUND_EVENTS))
+    cache: dict[int, tuple[Any, int]] = {}
     out = []
     for ev in events:
         eid = ev["event_id"]
-        core = [r[0] for r in s.all("SELECT user_id FROM contributions WHERE event_id=? AND room_id=? ORDER BY point DESC LIMIT ?",
-                                    (eid, rid, ROUND_CORE))]
+        contrib = s.all("SELECT user_id, point FROM contributions WHERE event_id=? AND room_id=? ORDER BY point DESC", (eid, rid))
+        ym = datetime.fromtimestamp(ev["end"], JST).strftime("%Y%m")
+        fans = [r[0] for r in s.all("SELECT user_id FROM active_fans WHERE room_id=? AND ym<=? ORDER BY ym DESC, level DESC LIMIT ?",
+                                    (rid, ym, ROUND_FANS))]
+        core = list(dict.fromkeys(([owner] if owner else []) + [r["user_id"] for r in contrib[:ROUND_CORE]] + fans))
         rivals = {r[0] for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (eid,))}
         visited: dict[int, int] = {}
         visitors = 0
+        owner_rooms = 0
         for uid in core:
             rows = s.all("""SELECT c.room_id, SUM(c.point) AS points FROM contributions c JOIN events e USING(event_id)
                             WHERE c.user_id=? AND c.event_id != ? AND e.end > ? AND e.start < ? GROUP BY c.room_id""",
@@ -440,24 +484,25 @@ def listener_rounds(s: Store, room_id: int) -> dict[str, Any]:
             rooms = [r for r in rows if r["room_id"] not in rivals and r["room_id"] != rid]
             if rooms:
                 visitors += 1
+            if uid == owner:
+                owner_rooms = len(rooms)
             for r in rooms:
                 visited[r["room_id"]] = visited.get(r["room_id"], 0) + r["points"]
+        kinds = {"推し": 0, "掛け持ち": 0, "付き合い": 0}
         returned = 0
-        if visited:
-            seen = {r[0] for r in s.all("""SELECT DISTINCT c.user_id FROM room_events re JOIN events e USING(event_id)
-                                           JOIN contributions c ON c.event_id = re.event_id AND c.room_id = re.room_id
-                                           WHERE re.room_id=? AND e.end < ?""", (rid, ev["start"]))}
-            fresh = [r[0] for r in s.all("SELECT user_id FROM contributions WHERE event_id=? AND room_id=?", (eid, rid)) if r[0] not in seen]
-            for uid in fresh:
-                if s.one(f"""SELECT 1 FROM contributions c JOIN events e USING(event_id)
-                             WHERE c.user_id=? AND e.end <= ? AND c.room_id IN ({','.join('?' * len(visited))}) LIMIT 1""",
-                         (uid, ev["end"], *visited)):
-                    returned += 1
+        for r in contrib:
+            kind, main = _oshi(s, r["user_id"], rid, r["point"], cache)
+            kinds[kind] += 1
+            if kind != "推し" and main in visited:
+                returned += 1
         out.append({"event_id": eid, "name": ev["name"], "end": ev["end"], "core": len(core), "visitors": visitors,
-                    "rooms": len(visited), "points": sum(visited.values()), "returned": returned})
+                    "rooms": len(visited), "points": sum(visited.values()), "owner_rooms": owner_rooms if owner else None,
+                    "returned": returned, "kinds": kinds})
     done = [e for e in out if e["core"]]
-    return {"events": out, "avg_rooms": sum(e["rooms"] for e in done) / len(done) if done else None,
-            "avg_returned": sum(e["returned"] for e in done) / len(done) if done else None}
+    return {"owner": bool(owner), "events": out,
+            "avg_rooms": sum(e["rooms"] for e in done) / len(done) if done else None,
+            "avg_returned": sum(e["returned"] for e in done) / len(done) if done else None,
+            "kinds": {k: sum(e["kinds"][k] for e in out) for k in ("推し", "掛け持ち", "付き合い")}}
 
 
 # ------------------------------------------------------------------ ルームのページ
@@ -515,7 +560,7 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
             "depth": depth, "depth_note": DEPTH_NOTES.get(depth or ""), "depths": DEPTH_NOTES,
             "size_name": SIZE_NAMES[m["size_class"]] if m else None,
             "momentum": momentum(s, room_id, now), "style": room_style(s, room_id), "event_styles": styles,
-            "tactics": tactics(s, room_id), "rounds": listener_rounds(s, room_id),
+            "tactics": tactics(s, room_id), "rounds": listener_rounds(s, room_id), "regulars": regulars(s, room_id),
             "new_share": new_share(s, room_id), "followers": followers_growth(s, room_id, now), "daily": daily[::-1],
             "types": TYPES, "styles": STYLES, "caution": CAUTION}
 
@@ -679,59 +724,73 @@ def balance(state_dir: Any, room_key: str, now: float | None = None, days: int =
 
 
 # ------------------------------------------------------------------ 誘い投げ (記録しているルームだけ)
-LURE_CORE = 5  # 有料ギフトの多い順に、何人を「コアな常連」とみるか
-LURE_SMALL = 1000  # 少額ギフト: 1 回に送ったポイント (G) がこれ以下 (1000 円以下くらい)
-LURE_FOLLOW = 60  # コアな常連の少額ギフトのあと、ほかの人のギフトが続いたかを見る時間 (秒)
+LURE_CORE = 5  # 有料ギフトの多い順に、何人を「コアな常連」とみるか (アクティブファンのレベルの高い人も足す)
+LURE_FANS = 10  # アクティブファンのレベルの高い何人を、コアな常連に足すか
+LURE_SMALL = 1000  # 少額ギフト: 1 回に送った有料ギフトがこれ以下 (1 SG = 1 円なので 1000 円以下)
+LURE_WINDOW = 180  # 誘い投げの前後をくらべる時間 (秒)
 LURE_ALTERNATE = 120  # 2 人の常連が、この秒数のうちに交互に少額ギフトを送ったら「交互」と数える
 
 
-def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: int = BALANCE_DAYS) -> dict[str, Any] | None:
-    """誘い投げ: コアな常連が、ギフトが飛ぶ空気を作るために少額の有料ギフトをこまめに・交互に送ったか、
-    そのあとほかの人の有料ギフトが続きやすくなったか (記録した 1 回ずつのギフトから)。名前と ID は出さない。
+def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: int = BALANCE_DAYS,
+                store: Store | None = None, room_id: int | None = None) -> dict[str, Any] | None:
+    """誘い投げ: コアな常連が、ギフトが飛ぶ空気を作るために、少額の有料ギフトをこまめに・交互に送り、盛り上げたか。
 
-    - 呼び水の強さ = コアな常連の少額ギフトのあと LURE_FOLLOW 秒のうちに、ほかの人の有料ギフトがあった割合
-      ÷ 配信中のふつうの LURE_FOLLOW 秒に、ほかの人の有料ギフトがあった割合 (1 より大きいほど、続きやすい)
+    記録した 1 回ずつのギフトとコメントの数から出す (名前と ID は出さない)。
+    - 誘い投げ = コアな常連の少額の有料ギフト (1 回 LURE_SMALL 円以下)
+    - 盛り上がり = 同じ配信の中で、誘い投げの「後の 3 分」と「前の 3 分」をくらべる (配信の流れで自然に増え減りする分を除くため)。
+      ほかの人のギフト (無料も含む) を送った人数・有料のポイント・コメントの数
+    - こまめさ = 配信 1 時間あたりの誘い投げの回数と、間隔の真ん中の値
     """
-    from . import listing
+    from . import comment_counts, listing
 
     now = time.time() if now is None else now
     files = listing._record_files(state_dir)
     if room_key not in files:
         return None
     catalog = (listing._read_catalog(state_dir) or ({}, {}))[0]
-    paid = []
+    gifts = []
     for g in listing._load_file(files[room_key]):
         if g["at"] < now - days * 86400 or g.get("user_id") is None:
             continue
         pt, free = listing._points(catalog, g)
-        if not free and pt > 0:
-            paid.append((g["at"], g.get("user_id"), pt, g.get("live_id")))
-    if not paid:
+        gifts.append((g["at"], g.get("user_id"), pt, free, g.get("live_id")))
+    if not gifts:
         return None
-    paid.sort()
+    gifts.sort()
     totals: dict[Any, int] = {}
-    for _, uid, pt, _ in paid:
-        totals[uid] = totals.get(uid, 0) + pt
+    for _, uid, pt, free, _ in gifts:
+        if not free:
+            totals[uid] = totals.get(uid, 0) + pt
     core = set(sorted(totals, key=lambda u: -totals[u])[:LURE_CORE])
-    core_throws = [x for x in paid if x[1] in core]
-    small = [x for x in core_throws if x[2] <= LURE_SMALL]
-    others = [x[0] for x in paid if x[1] not in core]
-    followed = sum(1 for t, *_ in small if any(t < o <= t + LURE_FOLLOW for o in others))
-    # ふつうの割合: 配信ごと (live_id) の始めから終わりまでを LURE_FOLLOW 秒に区切り、ほかの人の有料ギフトがあった区切りの割合
-    bins = hit = 0
-    by_live: dict[Any, list[float]] = {}
-    for t, _, _, live in paid:
-        by_live.setdefault(live, []).append(t)
-    other_set = sorted(others)
-    for times in by_live.values():
-        start, end = min(times), max(times)
-        n = max(1, int((end - start) // LURE_FOLLOW) + 1)
-        bins += n
-        hit += sum(1 for i in range(n) if any(start + i * LURE_FOLLOW <= o < start + (i + 1) * LURE_FOLLOW for o in other_set))
-    base = hit / bins if bins else None
-    rate = followed / len(small) if small else None
-    alternations = sum(1 for a, b, c in zip(small, small[1:], small[2:])
-                       if a[1] == c[1] != b[1] and c[0] - a[0] <= LURE_ALTERNATE)
-    return {"days": days, "core": len(core), "paid": len(paid), "core_throws": len(core_throws), "small": len(small),
-            "small_share": len(small) / len(core_throws) if core_throws else None, "follow_rate": rate, "base_rate": base,
-            "lift": rate / base if rate is not None and base else None, "alternations": alternations}
+    if store is not None and room_id is not None:  # ポイントに出ない常連 (ファンレベルの高い人) も入れる
+        core |= {r[0] for r in store.all("""SELECT user_id FROM active_fans WHERE room_id=? AND ym=(SELECT MAX(ym) FROM active_fans
+                                            WHERE room_id=?) ORDER BY level DESC LIMIT ?""", (int(room_id), int(room_id), LURE_FANS))}
+    lures = [g for g in gifts if g[1] in core and not g[3] and 0 < g[2] <= LURE_SMALL]
+    others = [g for g in gifts if g[1] not in core]
+    minutes: dict[Any, dict[int, int]] = {x.get("live_id"): {int(k): v for k, v in (x.get("minutes") or {}).items()}
+                                          for x in comment_counts.load(state_dir, room_key)}
+
+    def window(live: Any, a: float, b: float) -> tuple[int, int, int]:
+        got = [g for g in others if g[4] == live and a <= g[0] < b]
+        cm = sum(v for m, v in minutes.get(live, {}).items() if a <= m < b)
+        return len({g[1] for g in got}), sum(g[2] for g in got if not g[3]), cm
+
+    before = [0, 0, 0]
+    after = [0, 0, 0]
+    for t, _, _, _, live in lures:
+        for acc, w in ((before, window(live, t - LURE_WINDOW, t)), (after, window(live, t + 1, t + 1 + LURE_WINDOW))):
+            for i in range(3):
+                acc[i] += w[i]
+    ratio = [(a / b) if b else None for a, b in zip(after, before)]
+    # こまめさ: 配信ごとの長さ (最初と最後のギフトのあいだ) あたりの回数と、同じ配信の中の誘い投げの間隔
+    spans: dict[Any, list[float]] = {}
+    for t, *_, live in gifts:
+        spans.setdefault(live, []).append(t)
+    hours = sum((max(v) - min(v)) / 3600 for v in spans.values())
+    gaps = [b[0] - a[0] for a, b in zip(lures, lures[1:]) if a[4] == b[4]]
+    alternations = sum(1 for a, b, c in zip(lures, lures[1:], lures[2:])
+                       if a[1] == c[1] != b[1] and a[4] == c[4] and c[0] - a[0] <= LURE_ALTERNATE)
+    return {"days": days, "core": len(core), "lures": len(lures), "per_hour": len(lures) / hours if hours else None,
+            "gap": median(gaps), "alternations": alternations, "window": LURE_WINDOW,
+            "people_ratio": ratio[0], "points_ratio": ratio[1], "comments_ratio": ratio[2],
+            "people_before": before[0], "people_after": after[0], "has_comments": any(minutes.values())}
