@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS user_names (
 CREATE INDEX IF NOT EXISTS user_names_name ON user_names(name);
 CREATE INDEX IF NOT EXISTS events_key ON events(key);
 CREATE INDEX IF NOT EXISTS events_end ON events(end);
+CREATE INDEX IF NOT EXISTS events_start ON events(start);
 CREATE INDEX IF NOT EXISTS users_name ON users(name);
 -- Internet Archive に残っている SHOWROOM のページ (消えたルーム・退会したユーザーの情報を取り戻すため)
 CREATE TABLE IF NOT EXISTS archive_pages (
@@ -134,10 +135,12 @@ CREATE TABLE IF NOT EXISTS room_profile (
     room_id INTEGER PRIMARY KEY, at REAL, events INTEGER, size_class INTEGER, top1 REAL, top3 REAL, contributors REAL,
     capped INTEGER, rel_top10 REAL, rel_per_contrib REAL, rel_point REAL, type TEXT,
     momentum REAL, recent_place REAL, prev_place REAL, style TEXT, style_events INTEGER, style_counts TEXT);
--- 大会 (段階ごとに別のイベントになっている大きな大会) のまとまり。series_id は大会の最初の段階のイベント番号
--- (大会でないと調べたイベントは series_id が NULL)。how は auto (自動) か manual (手で直した)。series.py が作る
+-- 大会 (段階ごとに別のイベントになっている大きな大会) のまとまり。木の形: 大会 → 道すじ (route。本選権#1・SR枠 など) → 段階。
+-- series_id は大会の最初の段階のイベント番号 (大会でないと調べたイベントは NULL)。parents は前の段階のイベント番号 (「,」区切り。
+-- 道すじが合流する段階は複数)。brand は名前の【】の印から取った大会の名前。how は auto (自動) か manual (手で直した)。series.py が作る
 CREATE TABLE IF NOT EXISTS event_series (
-    event_id INTEGER PRIMARY KEY, series_id INTEGER, stage_no INTEGER, stage TEXT, how TEXT, at REAL);
+    event_id INTEGER PRIMARY KEY, series_id INTEGER, stage_no INTEGER, stage TEXT, how TEXT, at REAL,
+    parents TEXT, route TEXT, brand TEXT);
 CREATE INDEX IF NOT EXISTS event_series_series ON event_series(series_id) WHERE series_id IS NOT NULL;
 -- 管理画面で手でつないだ・外したイベント (series_id が NULL なら外した)。自動では変えない
 CREATE TABLE IF NOT EXISTS event_series_manual (event_id INTEGER PRIMARY KEY, series_id INTEGER, at REAL);
@@ -211,13 +214,16 @@ class Store:
                                    ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
                                    ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"), ("room_lives", "genre TEXT"),
-                                   ("user_rooms", "room_key TEXT")):
+                                   ("user_rooms", "room_key TEXT"), ("event_series", "parents TEXT"),
+                                   ("event_series", "route TEXT"), ("event_series", "brand TEXT")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                         if (table, col.split()[0]) == ("room_events", "c_p100"):
                             # 100 位のポイントを、前に集めた分からも作り直す (build_room_stats が少しずつ)
                             self.conn.execute("DELETE FROM meta WHERE k='room_stats_upto'")
+                        if (table, col.split()[0]) == ("event_series", "route"):
+                            self.conn.execute("DELETE FROM event_series WHERE how='auto'")  # 木の形でまとめ直す
                 # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS contributions_guessed ON contributions(room_id, event_id)
                                      WHERE guessed IS NOT NULL""")

@@ -2789,7 +2789,8 @@ async function showEvent(id) {
 }
 
 /* ------------------------------------------------------------ 大会 (段階ごとに別のイベントになっている大きな大会) */
-const SERIES_NOTE = "段階ごとのイベント (予選・準決勝・決勝など) を、名前 (段階の言葉を除くと似ている)・時期 (前の段階の終わりから 60 日のうち)・参加ルームの重なり (半分以上) から自動でまとめています。まちがっていたら、イベントのページで手でつないだり外したりできます";
+const SERIES_NOTE = "段階ごとのイベント (予選・準決勝・決勝など) を、名前 (【】の大会の名前が同じか、段階の言葉を除くと似ている。年・第何回がちがえば別)・時期 (前の段階の終わりから 200 日のうち)・参加ルームの重なり (半分以上が同じ大会の前の段階にいた) から自動でまとめています。大会 → 道すじ (本選権#1・SR枠・ラストチャンス など) → 段階 の木の形です。【】の印だけでは、ほかのオーディションの中の枠か大会の本体かを分けられないので、まちがっていたら、イベントのページで手でつないだり外したりしてください";
+const routeText = (r) => r ? esc(r) : '<span class="uid">本体</span>';
 const stageText = (x) => `${num(x.stage_no)} 段階目${x.stage ? ` <span class="uid">${esc(x.stage)}</span>` : ""}`;
 async function showSeriesList(box) {
   let d;
@@ -2799,9 +2800,10 @@ async function showSeriesList(box) {
     { label: "大会", value: (r) => r.name, html: (r) => `<a href="#series/${esc(r.series_id)}">${esc(r.name)}</a>`, cls: "name" },
     { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
     { label: "段階", num: true, value: (r) => r.stages, html: (r) => num(r.stages) },
+    { label: "道すじ", num: true, value: (r) => r.routes, html: (r) => num(r.routes || 1) },
     { label: "イベント", num: true, value: (r) => r.events, html: (r) => num(r.events) },
     { label: "終了", num: true, value: (r) => r.end, html: (r) => ymd(r.end) },
-  ], d.series, { sort: 4, limit: 50, csvName: "大会", rowAttr: (r) => `class="clickable" data-go="#series/${esc(r.series_id)}"`,
+  ], d.series, { sort: 5, limit: 50, csvName: "大会", rowAttr: (r) => `class="clickable" data-go="#series/${esc(r.series_id)}"`,
     empty: "まだ大会は見つかっていません (イベントの参加ルームを読んだものから、10 分ごとに調べます)" });
 }
 function taikaiBox(d) {
@@ -2817,8 +2819,14 @@ function taikaiBox(d) {
   }
   const s = t.series;
   return `<div class="card" style="margin:8px 0;padding:10px 12px"><b>大会: <a href="#series/${esc(s.series_id)}">${esc(s.name || `大会 ${s.series_id}`)}</a></b>
-    <span class="uid">${num(s.stage_no)} / ${num(s.stages)} 段階目</span> ${how}
-    <div class="hint" style="margin-top:4px">${(t.events || []).map((e) => `${num(e.stage_no)}. ${e.event_id === d.event_id ? `<b>${esc(e.name)}</b>` : eventLink(e.event_id, e.name)}`).join(" → ")}</div>
+    <span class="uid">${num(s.stage_no)} / ${num(s.stages)} 段階目 ・ 道すじ ${routeText(s.route)}</span> ${how}
+    <div class="hint" style="margin-top:4px">${(() => {
+      const evs = t.events || [];
+      const mine = evs.filter((e) => (e.route || null) === (s.route || null) || s.parents.includes(e.event_id) || e.event_id === d.event_id)
+        .sort((a, b) => (a.start || 0) - (b.start || 0));
+      return mine.map((e) => `${num(e.stage_no)}. ${e.event_id === d.event_id ? `<b>${esc(e.name)}</b>` : eventLink(e.event_id, e.name)}`).join(" → ")
+        + (evs.length > mine.length ? ` <span class="uid">(ほかの道すじ ${num(evs.length - mine.length)} イベント)</span>` : "");
+    })()}</div>
     <details><summary class="uid">まちがっていたら直す</summary>${ctl}</details></div>`;
 }
 document.addEventListener("click", async (ev) => {
@@ -2845,7 +2853,7 @@ async function showSeries(id) {
   let h = `${crumb}<div class="page-head"><div class="grow"><h2>${esc(d.name)}</h2>
       <div class="card-key">${esc(period({ start: first.start, end: Math.max(...d.events.map((e) => e.end || 0)) || null }))} ・ ${num(d.stages)} 段階・${num(d.events.length)} イベント${ended ? "" : " ・ 開催中"}</div></div></div>
     <div class="tiles">
-      ${tile("段階", `${num(d.stages)} <small>段階</small>`, `最後: ${esc(last.stage || last.name)}`)}
+      ${tile("段階", `${num(d.stages)} <small>段階</small>`, `道すじ ${num(d.routes.length)} ・ 最後: ${esc(last.stage || last.name)}`)}
       ${tile("出たルーム", `${num(d.rooms)} <small>ルーム</small>`, "どこかの段階に出たルーム")}
       ${tile("大会全体のポイント", shortNum(d.total_points), "全段階・全ルームの合計")}
       ${tile("分かったギフター", `${num(d.gifters)} <small>人</small>`, "貢献ランキング (各ルームの上位 100 人) に出た人")}
@@ -2853,12 +2861,19 @@ async function showSeries(id) {
         `最初の段階は 1 日 ${num(d.star_per_day)} pt 以下 (無料の星だけで送れる目安) で、あとの段階でそれより多く送った人 (目安)`)}
     </div>
     <div class="hint">${SERIES_NOTE}</div>`;
-  h += `<h3>段階ごとの勝ち上がりの線 <small class="muted">勝ち上がり = 次の段階以降にも出たルーム</small></h3>` + dataTable("sp-lines", [
+  const nameOf = Object.fromEntries(d.events.map((e) => [e.event_id, e.name]));
+  h += `<h3>道すじ <small class="muted">始まりの順。合流する段階は、前の段階が複数あります</small></h3>`
+    + `<div class="tree">${d.routes.map((r) => `<div style="margin:4px 0"><b>${routeText(r.route)}</b> <span class="uid">${num(r.rooms)} ルーム</span><br>${
+      r.events.map((id) => { const l = d.lines.find((x) => x.event_id === id);
+        return `<span class="tag">${num(l.stage_no)}</span> ${eventLink(id, l.name)}${l.parents.length && l.parents.some((p) => !r.events.includes(p))
+          ? ` <span class="uid">← ${l.parents.filter((p) => !r.events.includes(p)).map((p) => esc(nameOf[p] || p)).join("・")}</span>` : ""}`; }).join(" → ")}</div>`).join("")}</div>`;
+  h += `<h3>段階ごとの勝ち上がりの線 <small class="muted">勝ち上がり = 次の段階 (このイベントを前の段階とするイベント) にも出たルーム</small></h3>` + dataTable("sp-lines", [
     { label: "段階", num: true, value: (r) => r.stage_no, html: (r) => stageText(r) },
+    { label: "道すじ", value: (r) => r.route || "", html: (r) => routeText(r.route) },
     { label: "イベント", value: (r) => r.name, html: (r) => `${eventLink(r.event_id, r.name)}${r.entrance ? ` <span class="tag">${esc(r.entrance)}</span>` : ""}`, cls: "name" },
     { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
     { label: "ルーム", num: true, value: (r) => r.rooms, html: (r) => num(r.rooms) },
-    { label: "勝ち上がり", num: true, value: (r) => r.advanced, html: (r) => r.advanced == null ? '<span class="uid">最後</span>' : num(r.advanced) },
+    { label: "勝ち上がり", num: true, value: (r) => r.advanced, html: (r) => r.advanced == null ? '<span class="uid">次なし</span>' : num(r.advanced) },
     { label: "線 (順位)", num: true, value: (r) => r.line_rank, html: (r) => r.line_rank ? `${num(r.line_rank)} 位` : "-" },
     { label: "線 (pt)", num: true, value: (r) => r.line_point, html: (r) => r.line_point != null ? `<b>${num(r.line_point)}</b>` : "-" },
     { label: "落ちた中で最高", num: true, value: (r) => r.best_out, html: (r) => r.best_out != null ? num(r.best_out) : "-" },
@@ -2867,8 +2882,9 @@ async function showSeries(id) {
   ], d.lines, { sort: 0, desc: false, limit: 50, csvName: `大会_${d.series_id}_勝ち上がり`, rowAttr: (r) => `class="clickable" data-go="#event/${esc(r.event_id)}"`,
     note: "線 (pt) = 勝ち上がったルームの中でいちばん少ないポイント。落ちた中で最高 が線より多い時は、ポイント以外 (審査など) でも選ばれています" });
   h += `<div id="sp-chart"></div>`;
-  h += `<div class="cols"><div><h3>ポイントの増え方 <small class="muted">続けて出たルームの 1 日あたりのポイントの倍率 (真ん中の値)</small></h3>` + dataTable("sp-growth", [
-    { label: "段階", sort: false, value: (r) => r.from, html: (r) => `${num(r.from)} → ${num(r.to)}` },
+  h += `<div class="cols"><div><h3>ポイントの増え方 <small class="muted">前の段階 → 次の段階で続けて出たルームの、1 日あたりのポイントの倍率 (真ん中の値)</small></h3>` + dataTable("sp-growth", [
+    { label: "段階", num: true, value: (r) => r.to_stage, html: (r) => `${num(r.from_stage)} → ${num(r.to_stage)}` },
+    { label: "イベント", value: (r) => r.to_name, html: (r) => `${eventLink(r.from, r.from_name)} → ${eventLink(r.to, r.to_name)}`, cls: "name" },
     { label: "倍率", num: true, value: (r) => r.ratio, html: (r) => r.ratio != null ? `<b>${r.ratio.toFixed(2)} 倍</b>` : "-" },
     { label: "くらべたルーム", num: true, value: (r) => r.rooms, html: (r) => num(r.rooms) },
   ], d.growth, { sort: 0, desc: false, limit: 20, csvName: `大会_${d.series_id}_増え方`, empty: "段階が 1 つだけです" })
@@ -2881,6 +2897,7 @@ async function showSeries(id) {
     { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
     { label: "pt", num: true, value: (r) => r.points, html: (r) => `<b>${num(r.points)}</b>` },
     { label: "進んだ段階", num: true, value: (r) => r.reached, html: (r) => `${num(r.reached)} / ${num(d.stages)}` },
+    { label: "道すじ", value: (r) => r.routes.join("・"), html: (r) => esc(r.routes.join("・")) },
   ], d.top_rooms, { sort: 1, limit: 30, csvName: `大会_${d.series_id}_ルーム`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` })
     + `</div><div><h3>ギフター <small class="muted">大会全体の合計</small></h3>` + dataTable("sp-gifters", [
     { label: "ギフター", value: (g) => g.name || "", html: (g) => `${gifterLink(g.user_id, g.name)}${g.left ? ' <span class="tag">退会</span>' : ""}`, cls: "name" },

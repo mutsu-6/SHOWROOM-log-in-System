@@ -133,3 +133,68 @@ def test_manual_link_and_detach(db):
         assert series.series_of(s, 103)["stage_no"] == 3
     with pytest.raises(ValueError):
         explore.series_link(db, "999", "101")
+
+
+def test_core_name_routes_and_brand():
+    assert series.route_label("【aw本選権＃2】ハワイアンウェディング2026 準決勝") == "本選権#2"
+    assert series.route_label("【SR枠】ハワイアンウェディング2026") == "SR枠"
+    assert series.route_label("【aw枠】KIMONO girl 第3回 ラストチャンス") == "ラストチャンス"
+    assert series.brand("【フレキャン2025 枠A】CanCam賞") == series.brand("【フレキャン2025】モデルプレス賞") == "フレキャン2025"
+    assert series.brand("【ミスサークル枠】超十代 2025") == "ミスサークル"
+    assert series.brand("【SR枠】ハワイアンウェディング2026") is None
+    assert series.stage_label("【aw本選権#1】ハワイアンウェディング2026 予選") == "予選"
+    assert series.same_name("【フレキャン2025 枠A】CanCam賞", "【フレキャン2025】モデルプレス賞")
+    assert not series.same_name("【フレキャン2026】CanCam賞", "【フレキャン2025】モデルプレス賞")  # 年がちがう
+    assert not series.same_name("【aw枠】KIMONO girl 第3回 本選1st", "【aw枠】KIMONO girl 第2回 本選ファイナル")
+
+
+def test_routes_merge_into_one_tree(tmp_path):
+    """ハワイアンウェディングのような形: 本選権#1・#2 ごとに 予選 → 準決勝 → 決勝、別の入口の【SR枠】、
+    そのあと【aw枠】本選 1st → 2nd に合流する。半年ほど続く。"""
+    t0 = NOW - 300 * DAY
+    hw = "ハワイアンウェディング2026"
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in range(1, 60)], "archive", NOW)
+        for k, base, off in ((1, 0, 0), (2, 20, 60)):
+            _stage(s, k * 10 + 1, f"【aw本選権＃{k}】{hw} 予選", t0 + off * DAY, 7, [(base + r, 1000 - r) for r in range(1, 13)])
+            _stage(s, k * 10 + 2, f"【aw本選権＃{k}】{hw} 準決勝", t0 + (off + 10) * DAY, 7, [(base + r, 3000 - r) for r in range(1, 9)])
+            _stage(s, k * 10 + 3, f"【aw本選権＃{k}】{hw} 決勝", t0 + (off + 20) * DAY, 7, [(base + r, 9000 - r) for r in range(1, 6)])
+        _stage(s, 40, f"【SR枠】{hw}", t0 + DAY, 14, [(r, 500) for r in range(41, 47)])
+        _stage(s, 50, f"【aw枠】{hw} 本選1st", t0 + 100 * DAY, 10,
+               [(r, 20000) for r in (1, 2, 3, 4, 5, 21, 22, 23, 24, 25, 41, 42, 43)])
+        _stage(s, 51, f"【aw枠】{hw} 本選2nd", t0 + 120 * DAY, 10, [(r, 40000) for r in (1, 2, 3, 21, 22, 23)])
+        _stage(s, 52, f"【aw枠】{hw} ラストチャンス", t0 + 135 * DAY, 7, [(r, 30000) for r in (4, 5, 24)])
+        while series.step(s, NOW):
+            pass
+        rows = {r["event_id"]: dict(r) for r in s.all("SELECT * FROM event_series")}
+        sid = rows[11]["series_id"]
+        assert sid == 11 and all(rows[e]["series_id"] == sid for e in (12, 13, 21, 22, 23, 40, 50, 51, 52))
+        assert rows[13]["parents"] == "12" and rows[13]["route"] == "本選権#1" and rows[13]["stage_no"] == 3
+        assert rows[40]["route"] == "SR枠" and rows[40]["stage_no"] == 1  # 別の入口 (同じころに始まった)
+        assert rows[50]["parents"] == "13,23,40" and rows[50]["route"] == "aw枠" and rows[50]["stage_no"] == 4  # 合流
+        assert rows[51]["parents"] == "50" and rows[51]["stage_no"] == 5  # 合流のあとは、前の決勝にはつながない
+        assert rows[52]["route"] == "ラストチャンス"
+        d = series.series_detail(s, sid)
+    line = {x["event_id"]: x for x in d["lines"]}
+    assert line[13]["advanced"] == 5 and line[11]["advanced"] == 8 and line[11]["line_rank"] == 8
+    assert line[40]["advanced"] == 3 and line[40]["best_out"] == 500
+    assert {r["route"] for r in d["routes"]} == {"本選権#1", "本選権#2", "SR枠", "aw枠", "ラストチャンス"}
+    assert any(g["from"] == 23 and g["to"] == 50 for g in d["growth"])
+
+
+def test_brand_marks_link_stages_with_different_names(tmp_path):
+    """フレキャンのような形: 段階ごとの名前がまったくちがい、共通は頭の【】の印と年だけ。同じ時期に枠 A・B に分かれる。"""
+    t0 = NOW - 200 * DAY
+    with Store(tmp_path) as s:
+        _stage(s, 1, "【フレキャン2025 枠A】モデルプレス賞 SHOWROOM審査", t0, 7, [(r, 100) for r in range(1, 11)])
+        _stage(s, 2, "【フレキャン2025 枠B】超十代賞 SHOWROOM審査", t0, 7, [(r, 100) for r in range(11, 21)])
+        _stage(s, 3, "【フレキャン2025】CanCam賞", t0 + 30 * DAY, 7, [(r, 300) for r in (1, 2, 3, 11, 12, 13)])
+        _stage(s, 4, "【フレキャン2025】ファイナル審査", t0 + 150 * DAY, 3, [(r, 900) for r in (1, 11, 12)])
+        _stage(s, 5, "【フレキャン2024】ファイナル審査", t0 - 200 * DAY, 3, [(r, 900) for r in (1, 11, 12)])
+        while series.step(s, NOW):
+            pass
+        rows = {r["event_id"]: dict(r) for r in s.all("SELECT * FROM event_series")}
+    assert rows[1]["series_id"] == rows[2]["series_id"] == rows[3]["series_id"] == rows[4]["series_id"] is not None
+    assert rows[2]["route"] == "枠B" and rows[2]["stage_no"] == 1
+    assert rows[3]["parents"] == "1,2" and rows[4]["parents"] == "3" and rows[4]["stage_no"] == 3
+    assert rows[5]["series_id"] is None  # 前の年の大会とはつなげない

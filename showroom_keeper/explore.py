@@ -593,7 +593,7 @@ def _taikai(s: Store, eid: int) -> dict[str, Any]:
     out: dict[str, Any] = {"series": of, "manual": manual is not None, "checked": s.one(
         "SELECT 1 FROM event_series WHERE event_id=?", (eid,)) is not None}
     if of is not None:
-        out["events"] = [dict(r) for r in s.all("""SELECT e.event_id, e.name, e.start, e.end, es.stage_no, es.stage, es.how
+        out["events"] = [dict(r) for r in s.all("""SELECT e.event_id, e.name, e.start, e.end, es.stage_no, es.stage, es.how, es.route
                                                    FROM event_series es JOIN events e USING(event_id)
                                                    WHERE es.series_id=? ORDER BY es.stage_no, e.start""", (of["series_id"],))]
     return out
