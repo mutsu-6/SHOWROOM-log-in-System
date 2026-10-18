@@ -492,11 +492,26 @@ def test_forbidden_counts_as_busy():
 def test_sweep_takes_turns_between_jobs(tmp_path):
     get = FakeAll()
     sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()))
-    for _ in range(6):
+    for _ in range(14):
         sw.step()
     kinds = [c.split("?")[0].rsplit("/", 1)[-1] for c in get.calls]
-    # 配信中 → イベント一覧のあとは、ルーム → 参加ルーム → ルーム番号 … と順番に回す
+    # 配信中 → イベント一覧のあとは、ルーム → 参加ルーム → ルーム番号 … と順番に回す (間に貢献ランキングを挟む)
     assert "profile" in kinds and "summary_ranking" in kinds and "room_list" in kinds
+
+
+def test_sweep_gives_rankings_every_other_turn(tmp_path):
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()))
+    done = []
+    for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_event_history", "_next_scan"):
+        setattr(sw, name, (lambda n: lambda now: done.append(n) or True)(name))
+    with Store(tmp_path) as s:
+        s.set_meta("live_at", NOW)
+        s.set_meta("events_at", NOW)
+        s.set_meta("anchor_done_at", NOW)
+    sw._clock = lambda: NOW
+    for _ in range(10):
+        sw.step()
+    assert done.count("_next_ranking") == 5 and done[1::2] == ["_next_ranking"] * 5  # ほかの仕事 1 つごとに 1 回
 
 
 def test_job_runs_one_at_a_time(tmp_path):

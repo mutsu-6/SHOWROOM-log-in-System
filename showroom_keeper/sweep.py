@@ -162,9 +162,11 @@ class Sweeper:
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
-        jobs = [self._next_progress, self._next_ranking, self._next_room, self._next_event_rooms, self._next_event_history]
+        # 貢献ランキングはギフター分析にいちばん効くので、ほかの仕事 1 つごとに 1 回回す (問い合わせのおよそ半分を使う)
+        others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_event_history]
         if self.scan:
-            jobs.append(self._next_scan)
+            others.append(self._next_scan)
+        jobs = [j for job in others for j in (job, self._next_ranking)]
         for i in range(len(jobs)):
             job = jobs[(self._turn + i) % len(jobs)]
             if job(now):
