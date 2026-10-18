@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS watch (user_id INTEGER PRIMARY KEY, memo TEXT, added_
 CREATE TABLE IF NOT EXISTS event_progress (
     event_id INTEGER, room_id INTEGER, at REAL, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, room_id, at));
 CREATE INDEX IF NOT EXISTS event_progress_at ON event_progress(event_id, at);
+-- 終わる直前の細かい推移 (終わる 3 時間前から 1 分ごと、10 分前から 15 秒ごと。上位 30 ルーム)。追い上げの時刻を見るため
+CREATE TABLE IF NOT EXISTS event_final (
+    event_id INTEGER, at REAL, room_id INTEGER, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, at, room_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS room_events (
     room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
     point INTEGER, rank INTEGER, PRIMARY KEY (room_id, event_id)) WITHOUT ROWID;
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS user_names (
     user_id INTEGER, name TEXT, at REAL, source TEXT, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS user_names_name ON user_names(name);
 CREATE INDEX IF NOT EXISTS events_key ON events(key);
+CREATE INDEX IF NOT EXISTS events_end ON events(end);
 CREATE INDEX IF NOT EXISTS users_name ON users(name);
 -- Internet Archive に残っている SHOWROOM のページ (消えたルーム・退会したユーザーの情報を取り戻すため)
 CREATE TABLE IF NOT EXISTS archive_pages (
@@ -466,6 +470,14 @@ class Store:
                 removed += c.execute("DELETE FROM event_progress WHERE event_id=? AND at=?", (eid, a)).rowcount
             c.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
         return removed
+
+    def add_final(self, event_id: int, rows: list[dict[str, Any]], now: float) -> int:
+        """終わる直前の細かい推移を残す。戻り値は残したルームの数。"""
+        keep = [(int(event_id), now, int(r["room_id"]), int(r["point"]), r.get("rank"))
+                for r in rows if r.get("room_id") and r.get("point") is not None]
+        with self.tx() as c:
+            c.executemany("INSERT OR REPLACE INTO event_final(event_id, at, room_id, point, rank) VALUES (?, ?, ?, ?, ?)", keep)
+        return len(keep)
 
     def ranking_failed(self, event_id: int, room_id: int) -> None:
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, failures) VALUES (?, ?, 1)

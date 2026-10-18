@@ -46,6 +46,11 @@ SCAN_MARGIN = 20000  # ルーム番号の順番の調べを、見つかってい
 IDLE = 60  # することが無いときに待つ時間 (秒)
 STALL = 900  # 1 つの仕事がこれより長くかかったら、どこで止まっているかをログに書く (秒)
 RETRY_AFTER = 86400  # 失敗したルーム・イベントを後回しにする時間 (秒)
+FINAL_WINDOW = 3 * 3600  # 終わるこれだけ前から、上位 30 ルームのポイントを細かく残す (秒)
+FINAL_EVERY = 60  # その間隔 (秒)
+FINAL_LAST = 600  # 終わるこれだけ前からは、さらに細かく (秒)
+FINAL_LAST_EVERY = 15  # その間隔 (秒)
+FINAL_AFTER = 900  # 終わったあとも、これだけのあいだは 1 分ごとに読む (最後のギフトの反映を見るため。秒)
 PROGRESS_RETRY = 600  # 開催中のイベントのポイントが読めなかった時に、読み直すまでの時間 (秒。推移が抜けないように短く)
 DISK_MIN = 2 << 30  # ディスクの空きがこれより少なくなったら、収集を止める (ログイン状態などが書けなくならないように)
 DISK_CHECK_EVERY = 600  # ディスクの空きを確かめる間隔 (秒)
@@ -73,6 +78,7 @@ class Sweeper:
         self.last_step_at: float | None = None  # 最後に仕事を終えた時刻
         self._thread_id: int | None = None
         self._disk_checked = 0.0
+        self._final_at: dict[int, float] = {}  # 終わる直前の推移を、イベントごとに最後に読んだ時刻
         self.disk_low: int | None = None  # ディスクの空きが少なくて止めている時の空き (バイト)
         self._stop = threading.Event()
 
@@ -152,6 +158,8 @@ class Sweeper:
             self.doing = "ディスクの空きが少ないので止めています"
             return False
         st = self.store
+        if self._next_final(now):  # 終わる直前の推移は、時刻が大事なので、ほかの仕事より先に行う
+            return True
         if now - (st.meta("live_at") or 0) >= LIVE_EVERY:
             return self._onlives(now)
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
@@ -268,6 +276,35 @@ class Sweeper:
         self.doing = "月ごとの集計"
         months = self.store.build_user_month()
         self._aggregated = not (self.store.build_room_stats() or months)
+
+    def _next_final(self, now: float) -> bool:
+        """終わる直前の推移: 終わる FINAL_WINDOW 前から FINAL_EVERY ごと (最後の FINAL_LAST は FINAL_LAST_EVERY ごと)、
+        終わったあと FINAL_AFTER のあいだも FINAL_EVERY ごとに、参加ルームの 1 ページ目 (上位 30 ルーム) を event_final に残す。
+
+        追い上げがどれだけ終わりぎりぎりに集まっているか (差し・追い込みの上手さ) を見るため。1 時間ごとの推移では見えない。
+        1 イベントにつき 3 時間で 220 回ほど問い合わせる (同時に終わるイベントが多い時は、間隔の過ぎたものから順に)。
+        """
+        due = []
+        for e in self.store.all("""SELECT event_id, name, end FROM events WHERE progress_at IS NOT NULL AND end > ? AND end <= ?""",
+                                (now - FINAL_AFTER, now + FINAL_WINDOW)):
+            every = FINAL_LAST_EVERY if 0 < e["end"] - now <= FINAL_LAST else FINAL_EVERY
+            last = self._final_at.get(e["event_id"], 0)
+            if now - last >= every:
+                due.append((now - last - every, e))
+        if not due:
+            return False
+        _, e = max(due, key=lambda x: x[0])  # いちばん遅れているもの
+        self._final_at[e["event_id"]] = now
+        self.doing = f"終わる直前のポイント ({e['name'] or e['event_id']})"
+        try:
+            data = self.c.get(f"/api/event/room_list?event_id={e['event_id']}&p=1") or {}
+        except Exception as err:  # noqa: BLE001 - 次の回にまた読む
+            self.last_error = f"{self.doing}: {str(err).splitlines()[0] if str(err) else type(err).__name__}"
+            return True
+        rows = [{"room_id": r.get("room_id"), "point": r.get("point"), "rank": r.get("rank")}
+                for r in data.get("list") or [] if isinstance(r, dict)]
+        self.store.add_final(e["event_id"], rows, now)
+        return True
 
     def _next_progress(self, now: float) -> bool:
         """開催中のイベントの参加ルームのポイントと順位を、PROGRESS_EVERY ごとに残す (ポイントの推移)。

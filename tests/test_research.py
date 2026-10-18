@@ -822,3 +822,29 @@ def test_falling_reason_when_main_room_stopped(tmp_path):
     t = research.analyze(tmp_path, [], max_age=0)["trend"]
     assert [u["user_id"] for u in t["falling"]] == [1] and t["falling"][0]["reason"] == "推しのルームが休んだ・消えた"
     assert t["falling_reasons"] == {"推しのルームが休んだ・消えた": 1}
+
+
+def test_sweep_records_the_last_hours_finely(tmp_path):
+    clock = [NOW]
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if "room_list?event_id=8&p=1" in path:
+            return {"list": [{"room_id": 4, "point": int(clock[0] - NOW), "rank": 1}], "next_page": 2}
+        return {}
+
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 8, "name": "もうすぐ終わる", "start": NOW - 86400, "end": NOW + 3600}])
+        s.conn.execute("UPDATE events SET progress_at=? WHERE event_id=8", (NOW,))
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False,
+                       clock=lambda: clock[0])
+    assert sw._next_final(NOW) and not sw._next_final(NOW + 30)  # 1 分ごと
+    assert sw._next_final(NOW + 61)
+    assert sw._next_final(NOW + 3600 - 500) and sw._next_final(NOW + 3600 - 484)  # 終わる 10 分前からは 15 秒ごと
+    assert not sw._next_final(NOW + 3600 - 480)
+    assert sw._next_final(NOW + 3600 + 100)  # 終わったあとも少し読む
+    assert not sw._next_final(NOW + 3600 + 2000)  # 15 分たったらやめる
+    with Store(tmp_path) as s:
+        rows = s.all("SELECT at, point FROM event_final WHERE event_id=8 ORDER BY at")
+    assert len(rows) == 5 and all("p=1" in c for c in calls)  # 1 ページ目 (上位 30 ルーム) だけ
