@@ -346,7 +346,7 @@ def status(store: Store) -> dict[str, Any]:
 
 class ArchiveWorker:
     def __init__(self, state_dir: Path, gap: float = ARCHIVE_GAP):
-        self.c = ArchiveCollector(state_dir, throttle=Throttle(gap))
+        self.c = ArchiveCollector(state_dir, throttle=Throttle(gap, name="Internet Archive"))
         self.running = False
         self._stop = threading.Event()
 

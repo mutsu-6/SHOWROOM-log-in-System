@@ -62,7 +62,8 @@ class Throttle:
     """
 
     def __init__(self, gap: float = REQUEST_GAP, sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time, name: str = "SHOWROOM"):
+        self.name = name  # ログに出す問い合わせ先
         self.base = self.gap = float(gap)
         self._sleep, self._clock, self._wall = sleep, clock, wall
         self._lock = threading.Lock()
@@ -134,8 +135,11 @@ class Throttle:
             self.pause_log = [{"at": now, "until": now + length, "seconds": length, "count": self.pauses, "why": why},
                               *self.pause_log][:PAUSE_LOG]
             text = f"{length / 3600:g} 時間" if length >= 3600 else f"{length / 60:.0f} 分"
-            log.warning("SHOWROOM への問い合わせが続けて失敗したので、全ルームの収集などを %s止めます (続けて %d 回目。%s)。"
-                        "視聴とログインの維持は続けます", text, self.pauses, why)
+            if self.name == "SHOWROOM":
+                log.warning("SHOWROOM への問い合わせが続けて失敗したので、全ルームの収集などを %s止めます (続けて %d 回目。%s)。"
+                            "視聴とログインの維持は続けます", text, self.pauses, why)
+            else:
+                log.warning("%s への問い合わせが続けて失敗したので、%s止めます (続けて %d 回目。%s)", self.name, text, self.pauses, why)
 
 
 THROTTLE = Throttle()

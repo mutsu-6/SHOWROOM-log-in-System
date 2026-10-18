@@ -1544,7 +1544,18 @@ function archiveStatus(d) {
   const pct = (p) => p[0] ? `${Math.floor(p[1] / p[0] * 100)}%` : "0%";
   const doing = !a.index_done ? "ページの一覧を作っています" : `イベント ${pct(a.events)}・貢献ランキング ${pct(a.contributions)}`;
   return `<br>Internet Archive から取り戻し: ${w.running ? doing : "止まっています"} ・ 消えたルーム ${num(a.gone_rooms)} (うち Archive で見つけた ${num(a.rooms)})
-    ・ 前の名前 ${num(a.names)} 件 (退会済みユーザー ${num(a.left_named)} 人)${w.last_error ? ` ・ 前回の失敗: ${esc(w.last_error)}` : ""}`;
+    ・ 前の名前 ${num(a.names)} 件 (退会済みユーザー ${num(a.left_named)} 人)${archivePause(w)}`;
+}
+function archivePause(w) {
+  const t = w.throttle || {};
+  const err = w.last_error || "";
+  // クラウド (データセンター) からのつなぎを、Internet Archive がまとめて断っている (2026-10-18 に確かめた。家の回線からは開ける)
+  const refused = /refused|reset|Errno 111|Errno 104/i.test(err);
+  if (t.paused > 0) {
+    const next = tm(Date.now() / 1000 + t.paused, true);
+    return `<br><b style="color:var(--warn)">Internet Archive に${refused ? "サーバーからのつなぎを断られている" : "続けて読めなかった"}ので、止めています (次に試すのは ${esc(next)}・続けて ${num(t.pauses)} 回目。止める時間は 1・2・4…時間と延び、最大 24 時間)。SHOWROOM からの収集は続いています</b>`;
+  }
+  return err ? ` ・ 前回の失敗: ${esc(err)}${refused ? " (Internet Archive がクラウドからのつなぎを断っていることがあります)" : ""}` : "";
 }
 const R_FILTERS = [["all", "すべて"], ["recorded", "記録したギフトがある"], ["paid", "有料ギフトを送った (記録)"], ["events", "イベントで上位 10 位"], ["multi", "複数のルームに送る"], ["wide", "1 つのルームに偏らない"]];
 const R_SORTS = [["other", "ほかのルームへのポイント順"], ["event", "イベントでのポイント順"], ["events", "参加イベントの多い順"], ["visits", "来場回数の多い順"], ["rooms", "送るルームの多い順"], ["last", "最近ギフトを送った順"]];
