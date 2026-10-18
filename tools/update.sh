@@ -47,6 +47,10 @@ for _ in $(seq 1 30); do
   if [ "$code" = "200" ] || [ "$code" = "401" ]; then
     echo "   管理画面が動いています"
     sudo docker compose logs --tail 15 showroom-keeper
+    # 更新のたびに作り直しの途中のファイルと古いイメージがたまり、ディスク (29GB) を食うので片付ける
+    # (7 日以内のものは、次の作り直しを速くするために残す)
+    sudo docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+    sudo docker image prune -f >/dev/null 2>&1 || true
     echo "== 終わりました ($after)"
     exit 0
   fi
