@@ -911,3 +911,45 @@ def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str,
                         "base": core_base / base[0] if base[0] else None},
             "mirror": {"n": len(balls), "in_relay": sum(1 for g in balls if id(g) in in_relay) / len(balls) if balls else None,
                        "relays": sum(1 for r in relays if sum(1 for g in r if g[5] == MIRROR_BALL) >= 2)}}
+
+
+# ------------------------------------------------------------------ ふだんの配信の上位 (記録しているルームだけ)
+STAGE_TOP = 10  # 配信の順位で「上位」とみる順位
+STAGE_SHOW = 30  # ルームのページに出す人数
+
+
+def stage_regulars(state_dir: Any, room_key: str, now: float | None = None, days: int = BALANCE_DAYS,
+                   store: Store | None = None) -> dict[str, Any] | None:
+    """ふだんの配信で、だれが配信の順位 (ステージの上位 100 人) の上位にいるか。
+
+    配信ごとに最後に読んだ順位を使う。上位 STAGE_TOP に入った配信の数・いちばん良かった順位・順位に入った配信の数と、
+    同じ配信で記録したギフトの有料ポイント (記録が無ければ 0)。
+    """
+    from . import listing, stage_ranks
+
+    now = time.time() if now is None else now
+    lives = stage_ranks.last_per_live(state_dir, room_key, now - days * 86400)
+    if not lives:
+        return None
+    users: dict[int, dict[str, Any]] = {}
+    for x in lives.values():
+        for rank, uid in x["ranks"]:
+            u = users.setdefault(int(uid), {"user_id": int(uid), "lives": 0, "top": 0, "best": rank, "paid": 0})
+            u["lives"] += 1
+            u["top"] += rank <= STAGE_TOP
+            u["best"] = min(u["best"], rank)
+    files = listing._record_files(state_dir)
+    if room_key in files:
+        catalog = (listing._read_catalog(state_dir) or ({}, {}))[0]
+        for g in listing._load_file(files[room_key]):
+            uid = g.get("user_id")
+            if g.get("live_id") in lives and uid is not None and int(uid) in users:
+                pt, free = listing._points(catalog, g)
+                if not free:
+                    users[int(uid)]["paid"] += pt
+    rows = sorted(users.values(), key=lambda u: (-u["top"], u["best"], -u["lives"]))[:STAGE_SHOW]
+    if store is not None:
+        for u in rows:
+            r = store.one("SELECT name FROM users WHERE user_id=?", (u["user_id"],))
+            u["name"] = r[0] if r is not None else None
+    return {"lives": len(lives), "days": days, "people": len(users), "rows": rows, "top": STAGE_TOP}

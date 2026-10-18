@@ -244,3 +244,16 @@ async def test_glitter_rooms_are_recorded_for_a_week(monkeypatch, tmp_path):
     assert set(saved) == {"d", "before", "watched"}  # 8 日前の分は忘れる
     cfg.record_glitter = False
     assert await rec.GiftRecorder(cfg)._targets() == {}
+
+
+async def test_save_stage_ranks(monkeypatch, tmp_path):
+    from showroom_keeper import stage_ranks
+
+    async def fake_aget(path, cookie=None):
+        assert path == "/api/live/stage_user_list?room_id=5"
+        return {"stage_user_list": [{"rank": 1, "order_no": 1, "user": {"user_id": 9, "name": "x"}}, {"rank": 2, "user": {}}]}
+
+    monkeypatch.setattr(rec, "aget", fake_aget)
+    r = rec.GiftRecorder(Config(state_file=tmp_path / "s.json"))
+    await r._save_stage("room", 5, 77)
+    assert stage_ranks.last_per_live(tmp_path, "room")[77]["ranks"] == [[1, 9]]

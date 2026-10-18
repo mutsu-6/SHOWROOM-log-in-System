@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import comment_counts, live_events
+from . import comment_counts, live_events, stage_ranks
 from .activity import parse_message
 from .api import BASE_URL
 from .config import Config
@@ -36,6 +36,7 @@ EVENT_GRACE = 600  # イベント終了後もこの秒数は記録を続ける (
 # 件数の上限はない。同時に投げる通信だけを抑え、API と接続の集中を避ける
 FETCH_CONCURRENCY = 8
 CONNECT_CONCURRENCY = 8
+STAGE_EVERY = 900  # 配信の順位 (ステージの上位 100 人。ポイントは出ない) を読む間隔 (秒)。配信の終わりにも 1 回読む
 GLITTER_KEEP = 7 * 86400  # グリッターを取ったルームを、この秒数のあいだ配信のたびに記録する
 GLITTER_FILE = "glitter_rooms.json"  # {room_url_key: 最後にグリッターのバッジを見た時刻} (起動し直しても続けるため)
 
@@ -376,6 +377,7 @@ class GiftRecorder:
             try:
                 await ws.send(f"SUB\t{info['bcsvr_key']}")
                 pinger = asyncio.ensure_future(self._ping(ws))
+                stager = asyncio.ensure_future(self._stage_loop(key, room_id, live_id))
                 try:
                     async for message in ws:
                         data = parse_message(message)
@@ -393,6 +395,9 @@ class GiftRecorder:
                             break
                 finally:
                     pinger.cancel()
+                    stager.cancel()
+                    with suppress(Exception):
+                        await self._save_stage(key, room_id, live_id)  # 配信の終わり (最後の順位)
                     with suppress(Exception):
                         comments.flush(key)
             finally:
@@ -402,6 +407,21 @@ class GiftRecorder:
             raise
         except Exception as e:  # noqa: BLE001 - 次の確認で配信中なら再接続する
             log.debug("%s の記録が中断しました: %s", key, e)
+
+    async def _stage_loop(self, key: str, room_id: int, live_id: Any) -> None:
+        while True:
+            await asyncio.sleep(STAGE_EVERY)
+            with suppress(Exception):
+                await self._save_stage(key, room_id, live_id)
+
+    async def _save_stage(self, key: str, room_id: int, live_id: Any) -> None:
+        """配信の順位 (ステージの上位 100 人) を、ルームの live_ranks に 1 行足す。"""
+        data = await self._fetch(f"/api/live/stage_user_list?room_id={room_id}", self._cookie())
+        rows = [(int(x.get("rank") or x.get("order_no") or 0), (x.get("user") or {}).get("user_id"))
+                for x in (data or {}).get("stage_user_list") or [] if isinstance(x, dict)]
+        rows = [[r, u] for r, u in rows if u]
+        if rows:
+            stage_ranks.append(self.state_dir, key, live_id, rows)
 
     @staticmethod
     async def _ping(ws: Any) -> None:

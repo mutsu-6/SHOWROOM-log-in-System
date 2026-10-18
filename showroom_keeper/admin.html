@@ -2215,6 +2215,17 @@ function roomAnalysisHtml(d) {
     ], a.event_styles, { sort: 1, limit: 10, csvName: `${d.key}_走り方`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"`,
       note: "位置は参加ルームの中の位置 (上から何%)。最終日の伸びは、最後の 24 時間に得たポイントの割合" });
   }
+  const sg = d.stage;
+  if (sg) {
+    html += `<h3>ふだんの配信の上位 <small class="muted">記録した直近 ${num(sg.days)} 日の ${num(sg.lives)} 配信の、配信の順位 (上位 100 人。ポイントは SHOWROOM が出さないので、記録したギフトから)</small></h3>`
+      + dataTable("rp-stage", [
+        { label: "ギフター", value: (u) => u.name || String(u.user_id), html: (u) => gifterLink(u.user_id, u.name || `ID ${u.user_id}`), cls: "name" },
+        { label: `${sg.top} 位以内`, num: true, value: (u) => u.top, html: (u) => `<b>${num(u.top)}</b> <span class="uid">/ ${num(sg.lives)} 配信</span>` },
+        { label: "いちばん良い順位", num: true, value: (u) => u.best, html: (u) => `${num(u.best)} 位` },
+        { label: "順位に入った配信", num: true, value: (u) => u.lives, html: (u) => num(u.lives) },
+        { label: "記録した有料 pt", num: true, value: (u) => u.paid, html: (u) => u.paid ? num(u.paid) : "-" },
+      ], sg.rows, { sort: 1, limit: 15, csvName: `${d.key}_ふだんの配信の上位`, rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"` });
+  }
   const lu = d.lure;
   if (lu) {
     const rt = (x) => x == null ? "—" : `${x.toFixed(1)} <small>倍</small>`;

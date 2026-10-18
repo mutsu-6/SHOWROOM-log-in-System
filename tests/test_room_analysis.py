@@ -539,3 +539,21 @@ def test_lure_throws_counts_visits_around_lures(tmp_path):
     v = ra.lure_throws(tmp_path, "aaa", NOW)["visits"]
     assert v["lives"] == 1 and v["visits"] == 3 and v["first"] == 2 and v["levels"] == 1 and v["regular"] == 1 and v["streak"] == 1
     assert v["before"] == 1 and v["after"] == 2 and v["ratio"] == 2.0
+
+
+def test_stage_regulars(tmp_path):
+    from showroom_keeper import stage_ranks
+
+    (tmp_path / "gifts").mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 100, "free": False}}}))
+    (tmp_path / "gifts" / "aaa.jsonl").write_text(json.dumps({"at": int(NOW) - 100, "live_id": 1, "user_id": 7, "gift_id": 1, "num": 3}) + "\n")
+    stage_ranks.append(tmp_path, "aaa", 1, [[1, 8], [2, 7]], NOW - 2000)
+    stage_ranks.append(tmp_path, "aaa", 1, [[1, 7], [12, 8]], NOW - 1000)  # 同じ配信は最後に読んだ順位を使う
+    stage_ranks.append(tmp_path, "aaa", 2, [[3, 7]], NOW - 500)
+    st = ra.stage_regulars(tmp_path, "aaa", NOW)
+    assert st["lives"] == 2 and st["people"] == 2
+    seven, eight = st["rows"]
+    assert seven == {"user_id": 7, "lives": 2, "top": 2, "best": 1, "paid": 300}
+    assert eight["top"] == 0 and eight["best"] == 12
+    assert ra.stage_regulars(tmp_path, "zzz", NOW) is None
