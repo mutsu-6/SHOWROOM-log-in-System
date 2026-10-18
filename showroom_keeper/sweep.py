@@ -64,6 +64,7 @@ FANS_EMPTY_STOP = 3  # 前の月を読み足して、この月数続けて 0 人
 OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っているルーム) を読み直す間隔 (秒)
 CONFIRM_DAYS = 14  # 終わってからこの日数のうちのイベントは、正式な結果が出たあとに参加ルームを読み直す
 PROFILE_EVERY = 7 * 86400  # ルームのプロフィール (SHOWランク・リーグなど) を読み直す間隔 (秒)
+GIFT_DAILY_EVERY = 600  # 記録したギフトの日ごとの合計に、新しい分を足す間隔 (秒)
 PAGE_RETRY = 86400  # イベントのページが読めなかった時に、読み直すまでの時間 (秒)
 NOTICES_EVERY = 86400  # お知らせを読む間隔 (秒)
 NOTICE_PAGES = 50  # お知らせの一覧を読むページの上限 (最初の回に、古い分までさかのぼる)
@@ -89,6 +90,7 @@ class Sweeper:
         self._owners: list[Any] = []
         self._fan_history: list[Any] = []
         self._profiles: list[Any] = []
+        self._gift_daily_at = 0.0
         self._pages: list[Any] = []
         self._history_failures = 0
         self._aggregated = False
@@ -187,6 +189,7 @@ class Sweeper:
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
             return self._event_list(now)
         self._aggregate()
+        self._gift_daily(now)
         if room_analysis.step(st, now):  # ルームの分析 (SHOWROOM には問い合わせないので、仕事の順番には数えない)
             self.doing = "ルームの分析"
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
@@ -298,6 +301,21 @@ class Sweeper:
             # 推移を残していたイベントが終わった: 終わった時のポイント (最終結果) も、終わった時刻の値として推移に入れる
             self.store.add_progress(e["event_id"], rooms, e["end"])
         return True
+
+    def _gift_daily(self, now: float) -> None:
+        """記録したギフトの、ルーム × 日の合計 (room_gift_daily) に、GIFT_DAILY_EVERY ごとに新しい分を足しておく
+        (ルームのページを開いた時に、まとめて数えて待たせないように)。SHOWROOM には問い合わせない。"""
+        if now - self._gift_daily_at < GIFT_DAILY_EVERY:
+            return
+        self._gift_daily_at = now
+        from . import explore, listing
+
+        self.doing = "ギフトの日ごとの合計"
+        for key in listing._record_files(self.state_dir):
+            try:
+                explore.update_gift_daily(self.state_dir, self.store, key)
+            except Exception as err:  # noqa: BLE001 - 1 つのルームの失敗で、ほかを止めない
+                log.debug("%s のギフトの日ごとの合計を作れませんでした: %s", key, err)
 
     def _aggregate(self) -> None:
         """前に集めた貢献ランキングを、月ごとの集計 (user_month) に少しずつ入れる。

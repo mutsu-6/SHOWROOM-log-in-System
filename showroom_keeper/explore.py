@@ -246,6 +246,13 @@ def _jst_day(t: float) -> str:
     return text
 
 
+def _jst_noon(t: float) -> float:
+    """その日 (日本時間) の正午。今が正午より前なら、前の日の正午 (先の時刻にならないように)。"""
+    n = (int(t) + 32400) // 86400
+    noon = n * 86400 - 32400 + 43200
+    return noon if noon <= t else noon - 86400
+
+
 def update_gift_daily(state_dir: Path, s: Store, room_key: str) -> None:
     """記録したギフトのファイルの、前に足したところから先だけを、ルーム × 日の合計 (room_gift_daily) に足す。
 

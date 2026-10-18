@@ -1020,3 +1020,15 @@ def test_gifter_visits_and_overlap(tmp_path):
     v = d["visits"]
     assert v["times"] == 3 and v["top_hours"] == [21] and v["rooms"][0]["key"] == "aaa" and v["rooms"][0]["max_n"] == 12
     assert d["overlap"] and d["overlap"][0]["key"] == "aaa" and d["overlap"][0]["overlap"] > 0.5  # ギフトの記録が無いので来場でくらべる
+
+
+def test_sweep_keeps_gift_daily_up_to_date(tmp_path):
+    (tmp_path / "gifts").mkdir()
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 100, "free": False}}}))
+    # このファイルでは、ギフトの一覧はいつも「5 番 = 100 pt の有料ギフト」に差し替えている (上の fixture)
+    (tmp_path / "gifts" / "aaa.jsonl").write_text(json.dumps({"at": NOW, "user_id": 7, "gift_id": 5, "num": 1}) + "\n")
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()), scan=False)
+    sw._gift_daily(NOW)
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT SUM(paid_points) FROM room_gift_daily WHERE room_key='aaa'") == 100
