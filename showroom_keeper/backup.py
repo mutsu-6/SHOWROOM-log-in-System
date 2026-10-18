@@ -114,7 +114,7 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
         old.unlink(missing_ok=True)
     mb = round((folder / name).stat().st_size / 1e6, 1)
     result = {"ok": True, "at": now, "file": name, "mb": mb, "seconds": round(time.time() - started, 1),
-              "copies": min(len(copies), max(keep, 1))}
+              "copies": min(len(copies), max(keep, 1)), "tables": table_sizes(folder / name)}
     log.info("research.db のバックアップを作りました: %s (%.1f MB、%.0f 秒)", name, mb, result["seconds"])
     _save_last(state_dir, result)
     return result
@@ -209,6 +209,25 @@ def _size(path: Path) -> int:
     return total
 
 
+def table_sizes(path: Path) -> dict[str, int]:
+    """research.db の表ごとの大きさ (索引も含む、バイト)。全体を読むので、動いている DB ではなく、作ったばかりの写しで行う。
+    dbstat が使えない SQLite では空。"""
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            owner = dict(con.execute("SELECT name, tbl_name FROM sqlite_master WHERE type IN ('table', 'index')").fetchall())
+            out: dict[str, int] = {}
+            for name, size in con.execute("SELECT name, pgsize FROM dbstat WHERE aggregate = 1"):
+                table = owner.get(name, name)
+                out[table] = out.get(table, 0) + int(size or 0)
+            return out
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log.debug("表ごとの大きさを測れませんでした: %s", e)
+        return {}
+
+
 def record_disk(state_dir: Path, now: float | None = None) -> None:
     """ディスクの空きと、見張る記録 (WATCHED) の大きさを 1 日 1 回残す (毎日のバックアップの時と、管理画面を開いた時。400 日分)。"""
     now = time.time() if now is None else now
@@ -218,6 +237,8 @@ def record_disk(state_dir: Path, now: float | None = None) -> None:
         return
     try:
         sizes = {name: _size(Path(state_dir) / name) for name in WATCHED if (Path(state_dir) / name).exists()}
+        # research.db の表ごと (毎日のバックアップの時に、写しで測ったもの)
+        sizes.update({f"research.db の {t}": b for t, b in ((last_backup(state_dir) or {}).get("tables") or {}).items()})
         hist = (hist + [[now, shutil.disk_usage(state_dir).free, sizes]])[-400:]
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(hist), encoding="utf-8")
