@@ -48,8 +48,9 @@ for _ in $(seq 1 30); do
     echo "   管理画面が動いています"
     sudo docker compose logs --tail 15 showroom-keeper
     # 更新のたびに作り直しの途中のファイルと古いイメージがたまり、ディスク (29GB) を食うので片付ける
-    # (2GB までは、次の作り直しを速くするために残す。4 日で 5.9GB たまっていた)
-    sudo docker builder prune -f --max-used-space 2GB >/dev/null 2>&1 || true
+    # (5GB までは残す。ブラウザを入れる段の分 (3.6GB ほど) まで消すと、次の更新でブラウザを入れ直して
+    # 5 分以上 CPU とディスクが重くなる。4 日で 5.9GB たまっていた)
+    sudo docker builder prune -f --max-used-space 5GB >/dev/null 2>&1 || true
     sudo docker image prune -f >/dev/null 2>&1 || true
     echo "== 終わりました ($after)"
     exit 0
