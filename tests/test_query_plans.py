@@ -128,6 +128,7 @@ def test_sweep_jobs_do_not_read_whole_tables(traced):
         sw._next_fans(NOW)
         sw._next_owner(NOW)
         sw._next_event_page(NOW)
+        sw._next_fans_history(NOW)
         c.close()
     check(traced, run)
 

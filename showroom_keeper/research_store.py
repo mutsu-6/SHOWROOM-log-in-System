@@ -181,7 +181,7 @@ class Store:
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
                                    ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
-                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"),
+                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"),
                                    ("user_rooms", "room_key TEXT")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
@@ -535,8 +535,9 @@ class Store:
             c.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
         return removed
 
-    def set_active_fans(self, room_id: int, ym: str, fan_power: Any, total: Any, users: list[dict[str, Any]], now: float) -> None:
-        """ルームの、その月のアクティブファン (ファンレベル) を置き換える。"""
+    def set_active_fans(self, room_id: int, ym: str, fan_power: Any, total: Any, users: list[dict[str, Any]], now: float,
+                        current: bool = True) -> None:
+        """ルームの、その月のアクティブファン (ファンレベル) を置き換える。current=False は前の月を読み足した分 (読み直す時期は変えない)。"""
         rid = int(room_id)
         with self.tx() as c:
             c.execute("DELETE FROM active_fans WHERE room_id=? AND ym=?", (rid, ym))
@@ -545,7 +546,8 @@ class Store:
             c.execute("""INSERT INTO room_fans(room_id, ym, fan_power, total, at) VALUES (?, ?, ?, ?, ?)
                          ON CONFLICT(room_id, ym) DO UPDATE SET fan_power=excluded.fan_power, total=excluded.total, at=excluded.at""",
                       (rid, ym, fan_power, total, now))
-            c.execute("UPDATE rooms SET fans_at=? WHERE room_id=?", (now, rid))
+            if current:
+                c.execute("UPDATE rooms SET fans_at=? WHERE room_id=?", (now, rid))
             self._names(c, [{"user_id": int(u["user_id"]), "name": u.get("user_name")} for u in users if u.get("user_id")], now)
 
     def set_user_room(self, user_id: int, room_id: Any, now: float, key: Any = None) -> None:

@@ -425,6 +425,7 @@ class FakeAll:
 
 def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, "SCAN_MARGIN", 2)
+    monkeypatch.setattr(sweep, "FANS_FIRST", "209901")  # 前の月のアクティブファンは読み足さない (この試しでは何年分も続くため)
     get = FakeAll()
     sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()))
     steps = 0
@@ -459,7 +460,8 @@ def test_sweep_finds_rooms_and_collects_rankings(tmp_path, monkeypatch):
     assert sw.step() is False and len(get.calls) == before  # することが無ければ問い合わせない
 
 
-def test_sweep_puts_off_rooms_and_events_that_keep_failing(tmp_path):
+def test_sweep_puts_off_rooms_and_events_that_keep_failing(tmp_path, monkeypatch):
+    monkeypatch.setattr(sweep, "FANS_FIRST", "209901")  # 前の月のアクティブファンは読み足さない (この試しでは何年分も続くため)
     class Broken(FakeAll):
         def __call__(self, path):
             if path.startswith("/api/live/summary_ranking?room_id=4") or path.startswith("/api/event/room_list?event_id=3&"):
@@ -955,3 +957,28 @@ def test_rankings_wait_for_the_official_result(tmp_path):
     sw._read_event_rooms = lambda eid, now: read.append(eid) or []
     assert not sw._next_event_rooms(end + 7200 + 60)
     assert sw._next_event_rooms(datetime(2026, 10, 19, 13, 1, tzinfo=JST).timestamp()) and read == [1]
+
+
+def test_fans_history_reads_past_months_backwards(tmp_path):
+    now = datetime(2026, 10, 18, 12, tzinfo=JST).timestamp()
+    asked = []
+
+    def get(path):
+        asked.append(path)
+        ym = path.split("ym=")[1].split("&")[0]
+        if ym >= "202607":
+            return {"fan_power": 100, "total_user_count": 1, "users": [{"user_id": 5, "level": 9, "user_name": "常連"}]}
+        return {"fan_power": 0, "total_user_count": 0, "users": []}  # 2026-06 より前はルームが無い
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "a", "name": "A", "followers": 10, "live_at": now}], "live", now)
+        s.set_active_fans(1, "202610", 100, 1, [{"user_id": 5, "level": 9}], now - 100)  # 今の月はふつうに読んである
+    while sw._next_fans_history(now):
+        sw._fan_history.clear()
+    yms = [p.split("ym=")[1].split("&")[0] for p in asked]
+    assert yms == ["202609", "202608", "202607", "202606", "202605", "202604"]  # 3 か月続けて 0 人でやめる
+    with Store(tmp_path) as s:
+        assert s.one("SELECT fans_back FROM rooms WHERE room_id=1")[0] == "done"
+        assert s.scalar("SELECT COUNT(*) FROM active_fans WHERE room_id=1") == 4  # 10・9・8・7 月
+        assert s.one("SELECT fans_at FROM rooms WHERE room_id=1")[0] == now - 100  # 前の月を読んでも、読み直す時期は変えない

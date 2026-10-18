@@ -58,6 +58,9 @@ FINAL_AFTER = 900  # 終わったあとも、これだけのあいだは 1 分�
 FANS_EVERY = 7 * 86400  # ルームのアクティブファンを読み直す間隔 (秒)
 FANS_PAGE = 50  # アクティブファンの 1 回に読む人数 (SHOWROOM の 1 ページ)
 FANS_PAGES = 20  # 1 ルームで読むページの上限 (1000 人)
+FANS_PAST_PAGES = 4  # 前の月を読み足す時に、1 か月で読むページの上限 (200 人。レベルの高い順なので、常連は入る)
+FANS_FIRST = "202202"  # SHOWROOM に残っている、いちばん古いアクティブファンの月 (2026-10-18 に確かめた。それより前は 404)
+FANS_EMPTY_STOP = 3  # 前の月を読み足して、この月数続けて 0 人ならやめる (ルームができる前)
 OWNER_EVERY = 90 * 86400  # ユーザーのプロフィール (持っているルーム) を読み直す間隔 (秒)
 CONFIRM_DAYS = 14  # 終わってからこの日数のうちのイベントは、正式な結果が出たあとに参加ルームを読み直す
 PAGE_RETRY = 86400  # イベントのページが読めなかった時に、読み直すまでの時間 (秒)
@@ -83,6 +86,7 @@ class Sweeper:
         self._rankings: list[Any] = []
         self._fan_rooms: list[Any] = []
         self._owners: list[Any] = []
+        self._fan_history: list[Any] = []
         self._pages: list[Any] = []
         self._history_failures = 0
         self._aggregated = False
@@ -188,7 +192,7 @@ class Sweeper:
             return True
         # 貢献ランキングはギフター分析にいちばん効くので、ほかの仕事 1 つごとに 1 回回す (問い合わせのおよそ半分を使う)
         others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
-                  self._next_owner, self._next_event_page, self._next_notices]
+                  self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history]
         if self.scan:
             others.append(self._next_scan)
         jobs = [j for job in others for j in (job, self._next_ranking)]
@@ -584,6 +588,50 @@ class Sweeper:
             self.store.set_meta("notices_error", None)
         except Exception as err:  # noqa: BLE001
             self.store.set_meta("notices_error", str(err).splitlines()[0][:200] if str(err) else type(err).__name__)
+        return True
+
+    def _next_fans_history(self, now: float) -> bool:
+        """前の月のアクティブファンを、新しい月からさかのぼって読み足す (SHOWROOM に FANS_FIRST から残っている)。
+
+        最近配信したルームから、フォロワーの多い順に。1 回に 1 ルームの 1 か月 (FANS_PAST_PAGES ページまで)。
+        rooms.fans_back に読んだいちばん古い月を残し、FANS_FIRST まで読むか、FANS_EMPTY_STOP か月続けて 0 人なら 'done'。
+        """
+        r = self._take(self._fan_history, """SELECT room_id, name, key, fans_back FROM rooms
+               WHERE live_at > ? AND fans_at IS NOT NULL AND (fans_back IS NULL OR fans_back != 'done')
+               ORDER BY COALESCE(followers, 0) DESC""", (now - ACTIVE_DAYS * 86400,))
+        if r is None:
+            return False
+        this = datetime.fromtimestamp(now, JST).strftime("%Y%m")
+        start = r["fans_back"] or this
+        y, m = int(start[:4]), int(start[4:])
+        y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        ym = f"{y:04d}{m:02d}"
+        if ym < FANS_FIRST:
+            self.store.conn.execute("UPDATE rooms SET fans_back='done' WHERE room_id=?", (r["room_id"],))
+            return True
+        self.doing = f"前の月のアクティブファン ({r['name'] or r['key'] or r['room_id']}・{ym[:4]}/{ym[4:]})"
+        users: list[dict[str, Any]] = []
+        data: dict[str, Any] = {}
+        missing = False
+        for page in range(FANS_PAST_PAGES):
+            try:
+                data = self.c.get(f"/api/active_fan/users?room_id={r['room_id']}&ym={ym}&offset={page * FANS_PAGE}&limit={FANS_PAGE}") or {}
+            except Exception as err:  # noqa: BLE001
+                if not is_missing(err):
+                    raise
+                missing = True
+                break
+            got = [u for u in data.get("users") or [] if isinstance(u, dict)]
+            users += got
+            if len(got) < FANS_PAGE or len(users) >= int(data.get("total_user_count") or 0):
+                break
+        if not missing:
+            self.store.set_active_fans(r["room_id"], ym, data.get("fan_power"), data.get("total_user_count"), users, now, current=False)
+        # 読んだ月から新しい方へ FANS_EMPTY_STOP か月が、どれも 0 人なら、それより前にはルームが無かったとみる
+        recent = [x[0] for x in self.store.all("SELECT total FROM room_fans WHERE room_id=? AND ym>=? ORDER BY ym LIMIT ?",
+                                                (r["room_id"], ym, FANS_EMPTY_STOP))]
+        empty = missing or (len(recent) >= FANS_EMPTY_STOP and not any(recent))
+        self.store.conn.execute("UPDATE rooms SET fans_back=? WHERE room_id=?", ("done" if empty else ym, r["room_id"]))
         return True
 
     def _next_owner(self, now: float) -> bool:
