@@ -98,3 +98,53 @@ def test_backup_removes_old_copies_before_making_new_one(tmp_path, monkeypatch):
     r = backup.backup_research_db(tmp_path, keep=1, now=1792000000 + 86400)
     assert r["ok"] and seen == [[]]
     assert len(list(backup.backup_dir(tmp_path).glob("research-*.db"))) == 1
+
+
+def test_upload_gcs_sends_in_chunks(tmp_path, monkeypatch):
+    import io
+    import json as _json
+    import urllib.request
+
+    from showroom_keeper import backup as b
+
+    folder = b.backup_dir(tmp_path)
+    folder.mkdir(parents=True)
+    (folder / "research-20261018-0400.db").write_bytes(b"x" * 2500)
+    monkeypatch.setattr(b, "GCS_CHUNK", 1000)
+    calls = []
+
+    class Resp(io.BytesIO):
+        headers = {"Location": "https://upload/session"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(req, timeout=0):
+        if isinstance(req, str) or req.full_url == b.TOKEN_URL:
+            return Resp(_json.dumps({"access_token": "t", "expires_in": 3600}).encode())
+        calls.append((req.get_method(), req.full_url, req.headers.get("Content-range"), len(req.data or b"")))
+        if req.get_method() == "PUT" and not calls[-1][2].endswith("2499/2500"):
+            raise urllib.error.HTTPError(req.full_url, 308, "Resume Incomplete", {}, None)
+        return Resp(b"{}")
+
+    import urllib.error
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    now = 1792292400.0  # 2026-10-18 (日) 12:00 日本時間
+    r = b.upload_gcs(tmp_path, "my-bucket", now)
+    assert r["ok"] and r["name"] == "research-sun.db"
+    assert calls[0][0] == "POST" and "my-bucket" in calls[0][1] and "name=research-sun.db" in calls[0][1]
+    assert [c[2] for c in calls[1:]] == ["bytes 0-999/2500", "bytes 1000-1999/2500", "bytes 2000-2499/2500"]
+    assert b.last_upload(tmp_path)["ok"]
+
+    def denied(req, timeout=0):
+        if req.full_url == b.TOKEN_URL:
+            return Resp(_json.dumps({"access_token": "t", "expires_in": 3600}).encode())
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", denied)
+    r = b.upload_gcs(tmp_path, "my-bucket", now)
+    assert not r["ok"] and "権限" in r["reason"]
+    assert b.upload_gcs(tmp_path, "", now) is None
