@@ -187,3 +187,39 @@ def upload_gcs(state_dir: Path, bucket: str, now: float | None = None) -> dict[s
     tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, folder / GCS_FILE)
     return result
+
+
+DISK_FILE = "disk_history.json"  # ディスクの空きを 1 日 1 回残したもの (増え方から、いっぱいになる日を見積もる)
+
+
+def record_disk(state_dir: Path, now: float | None = None) -> None:
+    """ディスクの空きを 1 日 1 回残す (毎日のバックアップの時と、管理画面を開いた時。400 日分)。"""
+    now = time.time() if now is None else now
+    path = Path(state_dir) / DISK_FILE
+    hist = _disk_history(path)
+    if hist and now - hist[-1][0] < 86400:
+        return
+    try:
+        hist = (hist + [[now, shutil.disk_usage(state_dir).free]])[-400:]
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(hist), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _disk_history(path: Path) -> list[list[float]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+
+def disk_days_left(state_dir: Path, free: int, now: float) -> float | None:
+    """最近 30 日の空きの減り方で、あと何日でいっぱいになるかを見積もる (7 日分たまるまでは None)。"""
+    record_disk(state_dir, now)
+    old = [h for h in _disk_history(Path(state_dir) / DISK_FILE) if now - h[0] <= 31 * 86400]
+    if not old or now - old[0][0] < 7 * 86400:
+        return None
+    per_day = (old[0][1] - free) / ((now - old[0][0]) / 86400)
+    return free / per_day if per_day > 0 else None
