@@ -157,10 +157,11 @@ def test_room_detail_without_data(tmp_path):
 
 
 def test_room_daily(tmp_path):
+    day0 = int(NOW - 10 * DAY) // DAY * DAY + 3 * 3600  # 日本時間の昼 (0 時をまたぐと別の日になり、夜中に動かすと失敗していた)
     with Store(tmp_path) as s:
-        s.add_room_daily([{"room_id": 1, "followers": 100, "viewers": 50, "started_at": 111}], NOW - 10 * DAY)
-        s.add_room_daily([{"room_id": 1, "followers": 100, "viewers": 80, "started_at": 111}], NOW - 10 * DAY + 300)
-        s.add_room_daily([{"room_id": 1, "followers": 101, "viewers": 20, "started_at": 222}], NOW - 10 * DAY + 600)
+        s.add_room_daily([{"room_id": 1, "followers": 100, "viewers": 50, "started_at": 111}], day0)
+        s.add_room_daily([{"room_id": 1, "followers": 100, "viewers": 80, "started_at": 111}], day0 + 300)
+        s.add_room_daily([{"room_id": 1, "followers": 101, "viewers": 20, "started_at": 222}], day0 + 600)
         s.add_room_daily([{"room_id": 1, "followers": 130, "viewers": None, "started_at": 333}], NOW)
         rows = s.all("SELECT * FROM room_daily ORDER BY day")
         assert (rows[0]["lives"], rows[0]["view_max"], rows[0]["view_sum"], rows[0]["view_n"], rows[0]["followers"]) == (2, 80, 150, 3, 101)

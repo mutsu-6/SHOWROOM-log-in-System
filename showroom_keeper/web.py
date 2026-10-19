@@ -428,6 +428,10 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 self._json(feed.build(self._state_dir(), self._support(q), list(self.keeper.cfg.rooms),
                                       float(q.get("hours") or 24), int(q.get("min_point") or feed.DEFAULT_MIN_POINT)))
+            elif url.path == "/api/news":
+                from . import news
+
+                self._json(news.build(self._state_dir(), float(q.get("days") or 7)))
             elif url.path == "/api/lookup/user":
                 from .listing import lookup_user
 

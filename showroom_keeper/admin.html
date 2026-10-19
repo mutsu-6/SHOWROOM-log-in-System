@@ -357,6 +357,22 @@ td a.name-link, td a { word-break: break-word; }
 .feed-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .feed-filters button { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .feed-filters button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.news { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+.news .card h3 { margin: 0 0 2px; display: flex; gap: 8px; align-items: center; }
+.news .card .why { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.news ol { list-style: none; margin: 0; padding: 0; counter-reset: n; }
+.news ol li { counter-increment: n; display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
+.news ol li::before { content: counter(n); flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--panel2); color: var(--muted);
+  font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+.news ol li:first-child::before { background: var(--accent); color: #fff; }
+.news ol li .bd { flex: 1; min-width: 0; word-break: break-word; }
+.news ol li .big { font-weight: 700; font-variant-numeric: tabular-nums; }
+.news ol li .sm { color: var(--muted); font-size: 12px; }
+.headline { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.headline:last-child { border-bottom: 0; }
+.headline .ic { flex: none; font-size: 18px; }
+.headline .bd { min-width: 0; word-break: break-word; }
+.headline .k { color: var(--muted); font-size: 11px; font-weight: 700; }
 .feed-filters button .n { opacity: .7; margin-left: 3px; font-variant-numeric: tabular-nums; }
 .chart-head .seg { flex: 0 1 auto; min-width: 0; }
 .cols > div { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
@@ -378,6 +394,7 @@ td a.name-link, td a { word-break: break-word; }
   <nav id="nav">
     <a href="#home" data-nav="home">ホーム</a>
     <a href="#notices" data-nav="notices">お知らせ<span class="nbadge" id="feed-n" hidden></span></a>
+    <a href="#news" data-nav="news">ニュース</a>
     <a href="#gifters" data-nav="gifters">ギフター</a>
     <a href="#rooms" data-nav="rooms">ルーム</a>
     <a href="#events" data-nav="events">イベント</a>
@@ -401,6 +418,7 @@ td a.name-link, td a { word-break: break-word; }
         <div class="card"><h3>情報の集まり具合</h3><div id="home-collect"></div></div>
       </div>
       <div>
+        <div class="card"><h3>話題 <small class="muted" id="home-news-days"></small></h3><div id="home-news"><div class="loading"><span class="spinner"></span>読み込み中…</div></div></div>
         <div class="card"><h3>新しいお知らせ</h3><div id="home-feed"><div class="loading"><span class="spinner"></span>読み込み中…</div></div></div>
         <div class="card"><h3>もうすぐ終わるイベント</h3><div id="home-events"><div class="loading"><span class="spinner"></span>読み込み中…</div></div></div>
       </div>
@@ -423,6 +441,19 @@ td a.name-link, td a { word-break: break-word; }
     <div id="f-urgent"></div>
     <div class="feed-filters" id="f-filters"></div>
     <div id="f-body"></div>
+  </section>
+
+  <!-- ニュース (集めた情報から選んだ、目立つギフター・ルーム・イベントの話題) -->
+  <section data-page="news">
+    <div class="page-head">
+      <div class="grow"><h2>SHOWROOM ニュース</h2>
+        <p class="sub" style="margin:0">集めた情報から選んだ、目立つギフター・ルーム・イベントの話題です。名前をクリックすると、そのページを開きます。</p></div>
+      <div class="seg" role="group" id="n-days">
+        <button type="button" data-days="1">24 時間</button><button type="button" data-days="7">7 日</button><button type="button" data-days="30">30 日</button>
+      </div>
+    </div>
+    <div class="hint" id="n-made" style="margin:-6px 0 10px"></div>
+    <div id="n-body"></div>
   </section>
 
   <!-- ギフター -->
@@ -3315,6 +3346,7 @@ function renderHomeTiles() {
 async function showHome() {
   renderHomeTiles();
   renderHomeFeed();
+  renderHomeNews();
   const [st, w, ev] = await Promise.allSettled([api("/api/research/status"), loadWatch().then(() => research.watch), api("/api/events?state=ongoing")]);
   if (page.name !== "home") return;
   if (st.status === "fulfilled") { homeStatus = st.value; renderHomeTiles(); }
@@ -3534,8 +3566,83 @@ for (const [sel, field, key] of [["#f-hours", "hours", "feedHours"], ["#f-min", 
 }
 $("#f-read").addEventListener("click", () => { markSeen(); feed.mark = feed.seen; renderNotices(); toast("すべて読んだことにしました"); });
 
+/* ------------------------------------------------------------ ニュース */
+// 話題ごとに、アイコン・ひとこと (何から選んだか)・1 行の書き方。サーバーで 30 分使い回すので、画面は開いた時に読むだけ
+const pct = (v) => v == null ? "—" : `${Math.round(v * 100)}%`;
+const leftSec = (s) => s < 60 ? `${Math.round(s)} 秒前` : `${Math.round(s / 60)} 分前`;
+const NEWS = {
+  big_gifts: ["💎", "記録しているルームで、1 回 1 万 pt 以上のギフト (10 分以内の続きはまとめる)",
+    (x) => [`${gifterLink(x.user_id, x.name || `ID ${x.user_id}`)} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt`,
+      `${x.gifts.map((y) => `${esc(y.name)} ×${num(y.num)}`).join("、")} ・ ${tm(x.at, true).slice(0, 11)}`]],
+  top_fans: ["👑", "終わったイベントの貢献ランキングの 1 位の人のポイント (ルームごと)",
+    (x) => [`${x.user_id ? gifterLink(x.user_id, x.name || `ID ${x.user_id}`) : "1 位の人"} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt`,
+      `${eventLink(x.event_id, x.event_name)} ・ ルームの ${pct(x.share)} を 1 人で${x.rank ? ` ・ ルームは ${num(x.rank)} 位` : ""}`]],
+  big_rooms: ["🏆", "終わったイベントで、ルームが集めたポイント",
+    (x) => [roomLink(x.room_key, x.room_name), `${num(x.point)} pt`, `${eventLink(x.event_id, x.event_name)}${x.rank ? ` ・ ${num(x.rank)} 位` : ""}`]],
+  close_races: ["⚔️", "1 位が 10 万 pt 以上のイベントで、1 位と 2 位の差が小さい順",
+    (x) => [eventLink(x.event_id, x.event_name), `差 ${num(x.gap)} pt`,
+      `1 位 ${roomLink(x.first.room_key, x.first.room_name)} ${num(x.first.point)} pt ・ 2 位 ${roomLink(x.second.room_key, x.second.room_name)} ${num(x.second.point)} pt (差は ${(x.gap_share * 100).toFixed(2)}%)`]],
+  comebacks: ["🔥", "終わる 24 時間前に 3 位より下だったのに、1 位で終えたルーム (1 時間ごとの推移を残したイベント)",
+    (x) => [`${roomLink(x.room_key, x.room_name)} が ${num(x.before)} 位から 1 位に`, `+${num(x.gained)} pt`, `${eventLink(x.event_id, x.event_name)} ・ 最後の 24 時間で`]],
+  last_shots: ["⚡", "終わる 10 分前からの細かい推移で、続く 2 回のあいだにいちばん増えたところ",
+    (x) => [`${roomLink(x.room_key, x.room_name)} が終わる ${leftSec(x.left)}に`, `+${num(x.jump)} pt`,
+      `${eventLink(x.event_id, x.event_name)}${x.before && x.after && x.before !== x.after ? ` ・ ${num(x.before)} 位 → ${num(x.after)} 位` : ""}`]],
+  new_stars: ["🌟", "今月のイベントの貢献が多いのに、前の月には貢献ランキングに出ていない人 (集め始めのころは多めに出ます)",
+    (x) => [gifterLink(x.user_id, x.name || `ID ${x.user_id}`), `${num(x.point)} pt`, `今月の貢献 ・ ${num(x.rooms)} ルームに送っている`]],
+  top_month: ["💰", "今月のイベントの貢献ランキングで見えた分の合計 (各ルームの上位 100 人まで)",
+    (x) => [gifterLink(x.user_id, x.name || `ID ${x.user_id}`), `${num(x.point)} pt`, "今月の貢献"]],
+  rising_rooms: ["📈", "イベントの順位の位置が、前の期間より上がっているルーム (ルームの分析の「勢い」)",
+    (x) => [roomLink(x.room_key, x.room_name), `+${Math.round((x.momentum || 0) * 100)}`,
+      `参加ルームの中の位置 上から ${pct(x.prev_place)} → ${pct(x.recent_place)}${x.type ? ` ・ ${esc(x.type)}` : ""}`]],
+};
+const newsData = {};  // 日数 → 話題
+let newsDays = store.get("newsDays", "7");
+async function loadNews(days) {
+  if (!newsData[days] || Date.now() - newsData[days].loaded > 5 * 60000) newsData[days] = { ...(await api(`/api/news?days=${days}`)), loaded: Date.now() };
+  return newsData[days];
+}
+function newsLine(t, x) {
+  const [main, big, sub] = NEWS[t.key][2](x);
+  return `<li><div class="bd">${main} <span class="big">${big}</span><div class="sm">${sub}</div></div></li>`;
+}
+async function showNews() {
+  if (!["1", "7", "30"].includes(newsDays)) newsDays = "7";
+  $$("#n-days button").forEach((b) => b.classList.toggle("active", b.dataset.days === newsDays));
+  const box = $("#n-body"), days = newsDays;
+  if (!newsData[days]) box.innerHTML = loadingHtml("話題を選んでいます (全ルーム分だと、初めは数秒かかることがあります)…");
+  let d;
+  try { d = await loadNews(days); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "news" || days !== newsDays) return;
+  $("#n-made").textContent = `直近 ${d.days} 日 ・ ${tm(d.made_at, true).slice(0, 11)} に選びました (30 分ごとに選び直します)`;
+  const shown = d.topics.filter((t) => t.items.length && NEWS[t.key]);
+  box.innerHTML = shown.length ? `<div class="news">${shown.map((t) => `<div class="card"><h3><span aria-hidden="true">${NEWS[t.key][0]}</span>${esc(t.title)}</h3>
+      <div class="why">${esc(NEWS[t.key][1])}</div><ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol></div>`).join("")}</div>`
+      + `<div class="hint">まだ話題の無いもの: ${d.topics.filter((t) => !t.items.length).map((t) => esc(t.title)).join("、") || "なし"}</div>`
+    : `<div class="empty">直近 ${d.days} 日の話題はまだありません。全ルームの収集が進み、イベントが終わると出てきます。</div>`;
+}
+$("#n-days").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-days]");
+  if (!b) return;
+  newsDays = b.dataset.days;
+  store.set("newsDays", newsDays);
+  showNews();
+});
+// ホームには、話題ごとのいちばん目立つ 1 件を出す (7 日)
+async function renderHomeNews() {
+  const box = $("#home-news");
+  let d;
+  try { d = await loadNews("7"); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "home") return;
+  $("#home-news-days").textContent = "直近 7 日";
+  const heads = d.topics.filter((t) => t.items.length && NEWS[t.key]).slice(0, 5);
+  box.innerHTML = heads.length ? heads.map((t) => { const [main, big, sub] = NEWS[t.key][2](t.items[0]);
+    return `<div class="headline"><span class="ic" aria-hidden="true">${NEWS[t.key][0]}</span><div class="bd"><div class="k">${esc(t.title)}</div>${main} <b>${big}</b><div class="hint" style="margin-top:0">${sub}</div></div></div>`; }).join("")
+    + `<div class="hint"><a href="#news">ニュースを見る ›</a></div>`
+    : `<div class="hint" style="margin-top:0">まだ話題はありません。<a href="#news">ニュース ›</a></div>`;
+}
+
 /* ------------------------------------------------------------ 起動 */
-const PAGES = { home: showHome, notices: showNotices, gifters: showGifters, gifter: showGifter, rooms: showRooms, room: showRoom, events: showEvents, event: showEvent,
+const PAGES = { home: showHome, notices: showNotices, news: showNews, gifters: showGifters, gifter: showGifter, rooms: showRooms, room: showRoom, events: showEvents, event: showEvent,
   series: showSeries, live: showLive, collect: showCollect, settings: () => {} };
 
 /* ------------------------------------------------------------ 設定 */

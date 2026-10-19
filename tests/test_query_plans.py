@@ -283,3 +283,13 @@ def test_feed_does_not_read_whole_tables(traced):
         s.set_watch(101, True, "", NOW)
         s.add_progress(1, [{"room_id": 2, "point": 5}], NOW)
     check(traced, lambda d: feed.build(d, ["k2"], ["k1"], now=NOW))
+
+
+def test_news_does_not_read_whole_tables(traced):
+    from showroom_keeper import news
+
+    d = traced[0]
+    with Store(d) as s:
+        s.add_final(1, [{"room_id": 1, "point": 5, "rank": 1}], NOW - 10 * DAY - 30)
+        s.conn.execute("INSERT INTO user_month(user_id, month, points) VALUES (101, ?, 5)", (news._month(NOW),))
+    check(traced, lambda d: news.build(d, 31, now=NOW))
