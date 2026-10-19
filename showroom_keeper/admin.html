@@ -2107,6 +2107,7 @@ $("#r-support").addEventListener("change", async () => { research.data = null; r
 // 記録したギフトの送り主 (期間ごと)。ギフターの一覧に、有料 pt・回数・最後に送った日として足す
 const REC_PERIODS = [["0", "記録: すべての期間"], ["1", "記録: 直近 24 時間に送った人"], ["7", "記録: 直近 7 日に送った人"], ["30", "記録: 直近 30 日に送った人"]];
 const recorded = {};  // 期間 → {at, rows, catalog}
+const SIGNUP_YEAR_LIMIT = 100;  // research.SIGNUP_YEAR_LIMIT と同じ (登録した年ごとに、上位とは別に返す人数)
 async function loadRecorded(days) {
   const hit = recorded[days];
   if (hit && Date.now() - hit.at < 60000) return hit;
@@ -2158,9 +2159,11 @@ function gifterList(d, rec) {
       : f === "events" ? u.best_rank && u.best_rank <= 10 : f === "multi" ? u.room_count > 1 : u.focus !== null && u.focus < 0.7));
   });
   const years = d.signup_years || [];
+  // 登録時期・イベント・偏りで絞れるのは、集計で分かった人 (上位と、登録した年ごとの上位) だけ。記録したギフトだけで分かっている人は、それらが分からない
+  const narrow = research.signup !== "all" || ["events", "wide"].includes(research.filter);
   if (research.signup !== "all" && !research.signup.startsWith("within") && !years.some((y) => String(y.year) === research.signup)) research.signup = "all";
   const signupSelect = years.length ? `<select id="r-signup" title="ユーザー ID から推測した登録時期で絞り込む">${[["all", "すべての登録時期"], ["within1", "ここ 1 年以内に登録"], ["within3", "ここ 3 年以内に登録"],
-    ...years.map((y) => [String(y.year), `${y.year} 年ごろに登録 (${y.rough ? "大まか・" : ""}${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
+    ...years.map((y) => [String(y.year), `${y.year} 年ごろに登録 (${y.rough ? "大まか・" : ""}全体で ${num(y.count)} 人)`])].map(([v, l]) => `<option value="${v}" ${v === research.signup ? "selected" : ""}>${l}</option>`).join("")}</select>` : "";
   const periodSelect = `<select id="r-rec" title="記録したギフトの期間 (記録しているルームの分だけ)">${REC_PERIODS.map(([v, l]) => `<option value="${v}" ${v === research.recDays ? "selected" : ""}>${l}</option>`).join("")}</select>`;
   const recCount = rec ? rec.rows.length : 0;
   let html = `<div class="summary">${all
@@ -2187,7 +2190,8 @@ function gifterList(d, rec) {
   ];
   html += dataTable("gifters", cols, rows, { sort: period ? 8 : 1, csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
     rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`,
-    note: `集計で上位 ${num(d.candidates.length)} 人と、記録したギフトの送り主 ${num(recCount)} 人。記録 pt・有料・回数は、記録しているルームの分だけです` });
+    note: `集計で上位 ${num(d.candidates.length)} 人と、記録したギフトの送り主 ${num(recCount)} 人。記録 pt・有料・回数は、記録しているルームの分だけです${narrow
+      ? `。${research.signup !== "all" ? "登録時期" : "この絞り込み"}は、集計で上位 ${num(d.candidates.length)} 人${research.signup !== "all" ? `と、登録した年ごとの上位 ${num(SIGNUP_YEAR_LIMIT)} 人` : ""}の中から選んでいます (記録したギフトだけで分かっている人は、登録時期・イベントの順位が分からないので入りません)` : ""}` });
   if (!all) {
     const fans = d.fans.filter((u) => signupMatch(u));
     html += `<h3>応援ルームのギフター</h3>` + dataTable("fans", [
@@ -2214,11 +2218,24 @@ function watchTable(w) {
 }
 $("#gf-body").addEventListener("click", (ev) => {
   const f = ev.target.closest("[data-rf]");
-  if (f) { research.filter = f.dataset.rf; delete DT.gifters; showGifters("list"); }
+  if (f) { research.filter = f.dataset.rf; delete DT.gifters; redrawGifters(); }
 });
+// 絞り込みを変えた時は、読み込んであるもので描き直すだけにする。前は押すたびに (60 秒たっていれば) 記録したギフトの送り主を
+// 全員分サーバーから読み直していて、その間は何も変わらないので、絞り込みが効かないように見えた (2026-10-19)
+function redrawGifters() {
+  const d = research.data, rec = recorded[research.recDays];
+  if (!d || !rec || page.name !== "gifters") { showGifters("list"); return; }
+  $("#gf-body").innerHTML = gifterList(d, rec);
+}
 $("#gf-body").addEventListener("change", (ev) => {
-  if (ev.target.id === "r-signup") { research.signup = ev.target.value; showGifters("list"); }
-  if (ev.target.id === "r-rec") { research.recDays = ev.target.value; delete DT.gifters; showGifters("list"); }
+  if (ev.target.id === "r-signup") { research.signup = ev.target.value; redrawGifters(); }
+  if (ev.target.id === "r-rec") {
+    research.recDays = ev.target.value; delete DT.gifters;
+    // 期間を変えた時だけ読み直す (何万人分あると時間がかかるので、読んでいる間はそう出す)
+    const t = $("#gf-body [data-dt=gifters]");
+    if (t) t.innerHTML = loadingHtml("記録したギフトの送り主を読み込んでいます…");
+    showGifters("list");
+  }
 });
 // 一覧の中の絞り込み (打つたびに表だけ描き直す。入力欄は残すので、打っている途中でも消えない)
 $("#gf-body").addEventListener("input", (ev) => {
