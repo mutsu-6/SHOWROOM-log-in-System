@@ -75,13 +75,18 @@ DISK_MIN = 2 << 30  # ディスクの空きがこれより少なくなったら�
 DISK_CHECK_EVERY = 600  # ディスクの空きを確かめる間隔 (秒)
 BATCH = 100  # 次の仕事の候補をまとめて調べる件数
 ANCHOR_ROOMS = 3  # 1 つのイベントで貢献ランキングを取るルームの数 (上位・中ほど・下位)
+RANKING_SHARE = 0.7  # 問い合わせのうち、終わったイベントの貢献ランキングに回す割合 (取る分が残っている間。残りはほかの仕事)
+SHARE_WINDOW = 2000  # 割合を数える問い合わせの数 (これを超えたら半分にして、最近の分を重く見る)
 
 
 class Sweeper:
     def __init__(self, state_dir: Path, collector: Collector | None = None, scan: bool = True,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, ranking_share: float = RANKING_SHARE):
         self.state_dir = Path(state_dir)
         self.c = collector or Collector(self.state_dir)
+        self.c.hold_rankings()  # 貢献ランキングは、ためてからまとめて保存する (書く量を減らすため)
+        self.ranking_share = min(max(float(ranking_share), 0.0), 0.95)
+        self._used = {True: 0, False: 0}  # 最近の問い合わせの数 (True: 貢献ランキング、False: ほかの仕事)
         self.scan = scan
         self._clock = clock
         self._turn = 0
@@ -183,6 +188,7 @@ class Sweeper:
             self.doing = "ディスクの空きが少ないので止めています"
             return False
         st = self.store
+        self.c.flush_rankings(due_only=True)  # ためている貢献ランキングが、件数か時間を過ぎていれば保存する
         if self._next_final(now):  # 終わる直前の推移は、時刻が大事なので、ほかの仕事より先に行う
             return True
         if now - (st.meta("live_at") or 0) >= LIVE_EVERY:
@@ -199,19 +205,37 @@ class Sweeper:
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
-        # 貢献ランキングはギフター分析にいちばん効くので、ほかの仕事 1 つごとに 1 回回す (問い合わせのおよそ半分を使う)
-        others = [self._next_progress, self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
+        # 開催中のイベントの推移は、1 時間ごとの時刻が大事なので、割合に数えず先に行う
+        if self._next_progress(now):
+            return True
+        # 貢献ランキングはギフター分析にいちばん効くので、問い合わせの数で数えて ranking_share の割合を回す。
+        # ほかの仕事は 1 つで何回も問い合わせる (ルームの取り直し・参加ルームのページなど) ので、仕事の数ではなく問い合わせの数でくらべる。
+        # 取る貢献ランキングが無くなれば、ほかの仕事だけが回る
+        others = [self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
                   self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history,
                   self._next_room_profile]
         if self.scan:
             others.append(self._next_scan)
-        jobs = [j for job in others for j in (job, self._next_ranking)]
-        for i in range(len(jobs)):
-            job = jobs[(self._turn + i) % len(jobs)]
-            if job(now):
-                self._turn = (self._turn + i + 1) % len(jobs)
+        ranking_first = self._used[True] < self.ranking_share * (self._used[True] + self._used[False])
+        if ranking_first and self._run(self._next_ranking, now, True):
+            return True
+        for i in range(len(others)):
+            job = others[(self._turn + i) % len(others)]
+            if self._run(job, now, False):
+                self._turn = (self._turn + i + 1) % len(others)
                 return True
-        return False
+        return not ranking_first and self._run(self._next_ranking, now, True)
+
+    def _run(self, job: Callable[[float], bool], now: float, ranking: bool) -> bool:
+        """仕事を 1 つ行い、使った問い合わせの数を数える (貢献ランキングに回す割合を守るため)。"""
+        before = self.c.requests
+        try:
+            return job(now)
+        finally:
+            used = self._used
+            used[ranking] += max(self.c.requests - before, 1)
+            if used[True] + used[False] > SHARE_WINDOW:
+                used[True], used[False] = used[True] // 2, used[False] // 2
 
     # ---------------------------------------------------------------- ルームを見つける
     def _onlives(self, now: float) -> bool:
@@ -463,6 +487,7 @@ class Sweeper:
                                           (eid,))]
             for rid in dict.fromkeys(rooms[i] for i in (0, len(rooms) // 2, -1)[:ANCHOR_ROOMS] if rooms):
                 self.c.fetch_ranking(eid, rid, final=True)
+            self.c.flush_rankings()  # 目印は、取ったらすぐ使う (登録時期の推測) ので、ためずに保存する
         except Exception as err:  # noqa: BLE001 - 目印は飛び飛びなので、読めないものは飛ばす
             if not is_missing(err):
                 self.last_error = f"{self.doing}: {str(err).splitlines()[0] if str(err) else type(err).__name__}"
@@ -725,6 +750,8 @@ class Sweeper:
 
     def _next_ranking(self, now: float) -> bool:
         """終わったイベントの貢献ランキングを、新しいイベントから 1 件取る (失敗は数えて RANKING_RETRIES 回まで)。"""
+        if not self._rankings:
+            self.c.flush_rankings()  # 次の候補を選ぶ前に、ためている分を保存する (同じものをもう一度取らないように)
         r = self._take(self._rankings, f"""SELECT re.room_id, re.event_id, e.name FROM room_events re JOIN events e USING(event_id)
                 WHERE {PENDING_RANKING} ORDER BY e.end DESC""", (now - 3600, RANKING_RETRIES))
         if r is None:
@@ -737,11 +764,11 @@ class Sweeper:
 SWEEPER: Sweeper | None = None
 
 
-def start(state_dir: Path, scan: bool = True) -> Sweeper:
+def start(state_dir: Path, scan: bool = True, ranking_share: float = RANKING_SHARE) -> Sweeper:
     """全ルームの収集を別のスレッドで始める (2 回目からは動いているものを返す)。"""
     global SWEEPER
     if SWEEPER is None or not SWEEPER.running:
-        SWEEPER = Sweeper(state_dir, scan=scan)
+        SWEEPER = Sweeper(state_dir, scan=scan, ranking_share=ranking_share)
         threading.Thread(target=SWEEPER.run_forever, daemon=True, name="sweep").start()
     return SWEEPER
 
