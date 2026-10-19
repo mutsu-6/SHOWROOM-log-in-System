@@ -1695,6 +1695,23 @@ function gifterStates(st) {
       <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:4px">${f.quarters.map((q, i) => `<span class="tag" title="${ym(q.from)}〜${ym(q.to)} ・ 送ったルーム ${num(q.rooms)}${i && f.similarity[i - 1] != null ? ` ・ 前の 3 か月との近さ ${f.similarity[i - 1].toFixed(2)}` : ""}">${ym(q.to).slice(2)} ${q.top_name ? esc(q.top_name) : "-"}${i && f.similarity[i - 1] != null && f.similarity[i - 1] < 0.3 ? " ↻" : ""}</span>`).join("")}</div>
       <div class="hint">3 か月ごとの、いちばん多く送ったルーム (↻ は前の 3 か月から送り先が大きく替わった)。上位 100 人に入らなかったルームの小口は見えないので、集中度は高めに出ます (見かけの一本推し)。線はどれも仮の値です</div>`;
   }
+  const lf = st.life;
+  if (lf && (lf.rooms.length || lf.meteor.first)) {
+    const me = lf.meteor;
+    const STAGE_NOTE = "見えた月 (そのルームの上位 100 人に出た月) の数の段: 1 = 初見、2 = 2 回目、3〜6 = 定着しかけ、7 以上 = 定着 (募金の業界では、回数が増えるほど次の年も続く)";
+    h += `<h3>段階と寿命 <small class="muted">ルームごとの段と古参・全体での流星型</small></h3>
+      <div class="tiles">
+        ${tile("初めて見えた月", me.first ? ym(me.first) : "—", me.first ? `その月にそれまでの合計の ${pctText(me.share)} ・ そのあと ${num(me.later_months)} か月見えた` : "")}
+        ${tile("流星型", me.type == null ? "—" : me.type ? "<b>流星型</b>" : "ちがう", me.type == null ? "初めて見えてから 3 か月たっていないので決めません"
+          : "初めて見えた月に合計の 7 割以上を出し、そのあと 3 か月どこにも (アクティブファンにも) 出ていない", me.type ? "warn" : "")}
+      </div>` + (lf.rooms.length ? dataTable("gp-life", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.veteran ? ' <span class="tag live" title="このルームの直近 12 か月のギフターの中で、最初に見えた月が早い順に上から 4 分の 1 まで (12 か月以上前から)">古参</span>' : ""}`, cls: "name" },
+      { label: "段", value: (r) => r.months_seen, html: (r) => `<b title="${esc(STAGE_NOTE)}">${esc(r.stage)}</b>` },
+      { label: "見えた月", num: true, value: (r) => r.months_seen, html: (r) => `${num(r.months_seen)} か月` },
+      { label: "最初に見えた月", value: (r) => r.first, html: (r) => `${ym(r.first)} <span class="uid">(${num(r.tenure)} か月前)</span>${r.fan_first && r.fan_first < r.first ? `<div class="uid">アクティブファンには ${ym(r.fan_first)} から</div>` : ""}` },
+      { label: "直近 12 か月の pt", num: true, value: (r) => r.points, html: (r) => num(r.points) },
+    ], lf.rooms, { sort: 2, limit: 10, csvName: "ギフター_段階と寿命", note: `${STAGE_NOTE}。見えた月は上位 100 人に入った月なので、小さく送る人は段が低く出ます。線はどれも仮の値です` }) : "");
+  }
   const pl = (st.pillars || []).filter((p) => p.share != null || p.first);
   if (pl.length) {
     h += `<h3>ルームの中での重み <small class="muted">${v ? `${ym(v.months[0])}〜${ym(v.months[1])}` : ""}。そのルームの上位 100 人の合計のうち、この人が出した割合</small></h3>` + dataTable("gp-pillars", [

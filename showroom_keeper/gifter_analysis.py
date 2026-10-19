@@ -38,6 +38,13 @@ QUARTERS = 8  # 渡り鳥を見る四半期 (3 か月) の数 (2 年)
 MOVED = 0.3  # 隣り合う四半期の送り先の近さ (コサイン類似度) がこれ未満なら「送り先が替わった」
 BIRD_MOVES = 2  # 直近 1 年 (4 回の替わり目) に、これだけ以上替わったら「渡り鳥」
 BIRD_QUARTERS = 3  # 送った四半期がこれより少なければ、渡り鳥かどうかは決めない
+# 段階と寿命 (docs/ギフターの分類.md の軸 5 と、軸 3 の流星型)。線はどれも仮の値
+LADDER = ((1, "初見"), (2, "2 回目"), (6, "定着しかけ"))  # そのルームで見えた月の数の段 (7 以上は「定着」。募金の継続率の階段をまねる)
+VETERAN_SHARE = 0.25  # そのルームの直近 12 か月のギフターのうち、最初に見えた月が早い順にこれだけまでが「古参」
+VETERAN_MONTHS = 12  # 古参は、最初に見えてからこの月数以上
+LIFE_ROOMS = 10  # 段階を出すルームの数 (直近 12 か月に送った量の多い順)
+METEOR_SHARE = 0.7  # 初めて見えた月に、それまでの合計のこれだけ以上を出し
+METEOR_GAP = 3  # そのあとこの月数、どこの貢献ランキングにもアクティブファンにも出ていなければ「流星型」
 CUT_TTL = 86400  # 月ごとの区切りを覚えておく時間 (古い月も集め直しで増えるので、1 日で読み直す)
 
 _cuts: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
@@ -145,7 +152,68 @@ def gifter_states(s: Store, uid: int, now: float | None = None) -> dict[str, Any
     first = _add(month, -(TIER_MONTHS - 1))
     seen = visibility(s, uid, first, month)
     return {"month": month, "rooms": rooms, "switch": switch, "tiers": tiers, "visibility": seen["visibility"],
-            "pillars": seen["pillars"], "focus": focus(s, uid, per, month, seen["visibility"])}
+            "pillars": seen["pillars"], "focus": focus(s, uid, per, month, seen["visibility"]),
+            "life": life(s, uid, per, month)}
+
+
+def _months_between(a: str, b: str) -> int:
+    ya, ma = map(int, a.split("-"))
+    yb, mb = map(int, b.split("-"))
+    return (yb - ya) * 12 + (mb - ma)
+
+
+def stage_of(months_seen: int) -> str:
+    for upto, name in LADDER:
+        if months_seen <= upto:
+            return name
+    return "定着"
+
+
+def life(s: Store, uid: int, per: dict[int, dict[str, int]], month: str) -> dict[str, Any]:
+    """段階と寿命: ルームごとの段 (見えた月の数)・古参と、流星型。
+
+    - 見えた月 = そのルームの貢献ランキング (上位 100 人) に出た月。小さく送る人は段が低く出る
+    - 古参 = そのルームの直近 12 か月のギフターの中で、最初に見えた月が早い順に上から VETERAN_SHARE まで、かつ VETERAN_MONTHS 以上前から
+    - 流星型 = 初めて見えた月に、それまでの合計の METEOR_SHARE 以上を出し、そのあと METEOR_GAP か月どこにも出ていない
+      (100 位より下で続けている人もいるので、アクティブファンに出ていれば流星にしない)
+    """
+    first = _add(month, -(TIER_MONTHS - 1))
+    recent = sorted(((rid, sum(pt for m, pt in v.items() if first <= m <= month)) for rid, v in per.items()), key=lambda x: -x[1])
+    rooms = []
+    for rid, pt in [x for x in recent if x[1] > 0][:LIFE_ROOMS]:
+        seen = sorted(m for m, v in per[rid].items() if v > 0)
+        start = seen[0]
+        # そのルームの直近 12 か月のギフターの、最初に見えた月 (イベントごとに主キーで引く)
+        firsts = {r[0]: r[1] for r in s.all(f"""SELECT c.user_id, MIN({MONTH_SQL}) FROM room_events re JOIN events e USING(event_id)
+                                                 JOIN contributions c ON c.event_id=re.event_id AND c.room_id=re.room_id
+                                                 WHERE re.room_id=? AND e.end IS NOT NULL GROUP BY c.user_id
+                                                 HAVING MAX({MONTH_SQL}) >= ?""", (rid, first))}
+        order = sorted(firsts.values())
+        cut = order[max(0, int(len(order) * VETERAN_SHARE + 1e-9) - 1)] if order else None
+        tenure = _months_between(start, month)
+        fan_first = s.scalar("SELECT MIN(ym) FROM active_fans WHERE user_id=? AND room_id=?", (int(uid), rid), default=None)
+        rooms.append({"room_id": rid, "points": pt, "months_seen": len(seen), "stage": stage_of(len(seen)), "first": start,
+                      "tenure": tenure, "gifters": len(order), "veteran_cut": cut,
+                      "veteran": cut is not None and start <= cut and tenure >= VETERAN_MONTHS,
+                      "fan_first": f"{fan_first[:4]}-{fan_first[4:]}" if fan_first else None})
+    # 流星型 (全体): 初めて見えた月と、そのあと
+    months = {r["month"]: r["points"] for r in s.all("SELECT month, points FROM user_month WHERE user_id=? AND month<=?",
+                                                       (int(uid), month))}
+    meteor: dict[str, Any] = {"first": None, "share": None, "type": None}
+    if months:
+        m0 = min(m for m, v in months.items() if v > 0) if any(months.values()) else None
+        if m0:
+            total = sum(months.values())
+            share = months[m0] / total if total else 0
+            until = _add(m0, METEOR_GAP)
+            after = [m for m, v in months.items() if v > 0 and m0 < m <= until]
+            fan_after = s.one("SELECT 1 FROM active_fans WHERE user_id=? AND ym > ? AND ym <= ? LIMIT 1",
+                              (int(uid), m0.replace("-", ""), until.replace("-", ""))) is not None
+            gap_ok = until <= month  # そのあと METEOR_GAP か月が、集め終わった月の中にある
+            meteor = {"first": m0, "share": share, "later_months": sum(1 for m, v in months.items() if v > 0 and m > m0),
+                      "fan_after": fan_after,
+                      "type": None if not gap_ok else bool(share >= METEOR_SHARE and not after and not fan_after)}
+    return {"rooms": rooms, "meteor": meteor}
 
 
 def _cos(a: dict[int, float], b: dict[int, float]) -> float:

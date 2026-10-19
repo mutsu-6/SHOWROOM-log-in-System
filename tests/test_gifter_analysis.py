@@ -103,3 +103,30 @@ def test_focus_types_and_wandering(tmp_path):
     assert f[3]["type"] == "箱推し・分散" and round(f[3]["effective"]) == 5
     assert f[4]["bird"] is True and f[4]["moves"] >= 2 and f[1]["bird"] is None  # 1 は 1 四半期だけなので決めない
     assert [q["top"] for q in f[4]["quarters"] if q["top"]] == [20, 21, 22, 23]
+
+
+def test_life_ladder_veteran_and_meteor(tmp_path):
+    """段階と寿命: ルームごとの段 (見えた月の数)・古参と、初めて見えた月に大きく出してすぐ消えた流星型。"""
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        eid = 0
+        months = ["2025-06"] + [f"2026-0{i}" for i in range(1, 10)]
+        for m in months:
+            eid += 1
+            rows = {1: 300}
+            if m >= "2026-08":
+                rows.update({20 + i: 100 for i in range(6)})  # 新しく来た人たち
+            _event(s, eid, m, {10: rows})
+        _event(s, 100, "2026-05", {30: {5: 9000, 6: 9000, 8: 9000}})
+        _event(s, 101, "2026-06", {30: {6: 500}})
+        _event(s, 102, "2026-08", {30: {7: 9000}})
+        s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (30, '202606', 8, 15)")
+        life = {u: ga.gifter_states(s, u, NOW)["life"] for u in (1, 5, 6, 7, 8, 20)}
+    r1 = life[1]["rooms"][0]
+    assert r1["months_seen"] == 10 and r1["stage"] == "定着" and r1["veteran"] and r1["first"] == "2025-06"
+    assert life[20]["rooms"][0]["stage"] == "2 回目" and not life[20]["rooms"][0]["veteran"]
+    assert life[5]["meteor"]["type"] is True and life[5]["meteor"]["share"] == 1
+    assert life[6]["meteor"]["type"] is False  # 次の月も出た
+    assert life[7]["meteor"]["type"] is None  # まだ 3 か月たっていない
+    assert life[8]["meteor"]["type"] is False  # アクティブファンには残っている (100 位より下で続けているかもしれない)
+    assert ga.stage_of(1) == "初見" and ga.stage_of(3) == "定着しかけ" and ga.stage_of(7) == "定着"

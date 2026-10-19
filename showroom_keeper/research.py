@@ -1144,7 +1144,7 @@ def _states(s: Store, rooms: "_Rooms", uid: int) -> dict[str, Any]:
     from .gifter_analysis import gifter_states
 
     st = gifter_states(s, uid)
-    for r in st["rooms"] + st["pillars"]:
+    for r in st["rooms"] + st["pillars"] + st["life"]["rooms"]:
         r["key"], r["name"] = rooms.label(r.pop("room_id"))
     for q in st["focus"]["quarters"]:
         if q["top"] is not None:
