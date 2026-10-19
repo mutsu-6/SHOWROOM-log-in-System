@@ -334,3 +334,14 @@ def test_long_step_during_showroom_pause_is_not_a_bug(checker, slow, monkeypatch
     found = []
     checker._heavy_work(time.time(), found)
     assert found == []
+
+
+def test_hold_does_not_stop_a_started_analysis(monkeypatch):
+    monkeypatch.setattr(memory, "_hold_until", 0.0)
+    memory.hold_off(60)
+    assert memory.tight()
+    seen = []
+    t = threading.Thread(target=lambda: seen.append(memory.tight()), name="analysis")
+    t.start()
+    t.join()
+    assert seen == [False]  # 数え直しの続き (見るルームの集計を先に作る) は止めない

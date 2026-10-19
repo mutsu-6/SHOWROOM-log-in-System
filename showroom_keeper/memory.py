@@ -49,8 +49,10 @@ def holding() -> float:
 
 def tight(need_mb: float = HEAVY_MIN_FREE_MB) -> bool:
     """メモリの空きが need_mb より少ないか (分からなければ False = 気にせず数える)。
-    サーバーが重くて後回しにしている間も True (前の結果がある数え直しを、空くまで待つ)。"""
-    if time.time() < _hold_until:
+    サーバーが重くて後回しにしている間も True (前の結果がある数え直しを、空くまで待つ)。
+    ただし、すでに始まった分析の数え直しの続き (いちばん後に開いた見るルームの集計を先に作る所。スレッド「analysis」) は
+    後回しにしない (止めると、次にそのページを開いた人が、その集計を待つことになるため)。"""
+    if time.time() < _hold_until and threading.current_thread().name != "analysis":
         return True
     free = free_mb()
     return free is not None and free < need_mb
