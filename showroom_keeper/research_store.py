@@ -69,6 +69,31 @@ CREATE INDEX IF NOT EXISTS events_key ON events(key);
 CREATE INDEX IF NOT EXISTS events_end ON events(end);
 CREATE INDEX IF NOT EXISTS events_start ON events(start);
 CREATE INDEX IF NOT EXISTS users_name ON users(name);
+-- 上の検索欄の索引 (search_index.py) に、まだ入れていない名前の印。名前が入った・変わった時に、下の仕掛け (トリガー) が付ける。
+-- 仕掛けはふつうの SQL だけなので、どの接続から書いても動く (名前をそろえる計算は Python なので、索引に入れるのは search_index が後で)。
+-- INSERT OR IGNORE は、外の文の ON CONFLICT に負けて失敗するので、NOT EXISTS で確かめる
+CREATE TABLE IF NOT EXISTS search_dirty (kind TEXT, ref INTEGER, name TEXT DEFAULT '', PRIMARY KEY (kind, ref, name)) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS users_search_ins AFTER INSERT ON users
+    BEGIN INSERT INTO search_dirty(kind, ref) SELECT 'u', new.user_id
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='u' AND ref=new.user_id AND name=''); END;
+CREATE TRIGGER IF NOT EXISTS users_search_upd AFTER UPDATE OF name ON users WHEN old.name IS NOT new.name
+    BEGIN INSERT INTO search_dirty(kind, ref) SELECT 'u', new.user_id
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='u' AND ref=new.user_id AND name=''); END;
+CREATE TRIGGER IF NOT EXISTS user_names_search_ins AFTER INSERT ON user_names
+    BEGIN INSERT INTO search_dirty(kind, ref, name) SELECT 'f', new.user_id, new.name
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='f' AND ref=new.user_id AND name=new.name); END;
+CREATE TRIGGER IF NOT EXISTS rooms_search_ins AFTER INSERT ON rooms
+    BEGIN INSERT INTO search_dirty(kind, ref) SELECT 'r', new.room_id
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='r' AND ref=new.room_id AND name=''); END;
+CREATE TRIGGER IF NOT EXISTS rooms_search_upd AFTER UPDATE OF name, key ON rooms WHEN old.name IS NOT new.name OR old.key IS NOT new.key
+    BEGIN INSERT INTO search_dirty(kind, ref) SELECT 'r', new.room_id
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='r' AND ref=new.room_id AND name=''); END;
+CREATE TRIGGER IF NOT EXISTS events_search_ins AFTER INSERT ON events
+    BEGIN INSERT INTO search_dirty(kind, ref) SELECT 'e', new.event_id
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='e' AND ref=new.event_id AND name=''); END;
+CREATE TRIGGER IF NOT EXISTS events_search_upd AFTER UPDATE OF name, key ON events WHEN old.name IS NOT new.name OR old.key IS NOT new.key
+    BEGIN INSERT INTO search_dirty(kind, ref) SELECT 'e', new.event_id
+        WHERE NOT EXISTS (SELECT 1 FROM search_dirty WHERE kind='e' AND ref=new.event_id AND name=''); END;
 -- Internet Archive に残っている SHOWROOM のページ (消えたルーム・退会したユーザーの情報を取り戻すため)
 CREATE TABLE IF NOT EXISTS archive_pages (
     page TEXT PRIMARY KEY, kind TEXT, event_key TEXT, room_id INTEGER, url TEXT, stamps TEXT,

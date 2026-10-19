@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from showroom_keeper import explore, listing
+from showroom_keeper import explore, listing, search_index
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -32,7 +32,15 @@ def db(tmp_path):
     return tmp_path
 
 
-def test_search_finds_gifters_rooms_and_events(db):
+@pytest.fixture(params=["index", "like"])
+def search_mode(request, monkeypatch):
+    """検索は、名前の索引 (search_index) と、索引の無い時の前のやり方 (LIKE) の両方で確かめる。"""
+    if request.param == "like":
+        monkeypatch.setattr(search_index, "ensure", lambda s: False)
+    return request.param
+
+
+def test_search_finds_gifters_rooms_and_events(db, search_mode):
     r = explore.search(db, "大口")
     assert [g["user_id"] for g in r["gifters"]] == [7] and r["gifters"][0]["points"] == 90000 + 2500
     assert [x["key"] for x in explore.search(db, "ルーム")["rooms"]] == ["aaa", "bbb", "ccc"]  # フォロワーの多い順
@@ -80,7 +88,7 @@ def test_event_detail(db):
     assert explore.event_detail(db, 999) == {"event_id": "999", "found": False}
 
 
-def test_search_finds_former_names_recorded_gifters_and_known_rooms(db):
+def test_search_finds_former_names_recorded_gifters_and_known_rooms(db, search_mode):
     from showroom_keeper.gifts import record_gift
     from showroom_keeper.listing import remember_rooms
 
@@ -135,7 +143,7 @@ def test_search_finds_former_names_recorded_gifters_and_known_rooms(db):
     assert ev[0]["event_id"] == 77 and ev[0]["named"] is False and ev[0]["name"] == "イベント 77"
 
 
-def test_search_ignores_spaces_width_and_kana(tmp_path, monkeypatch):
+def test_search_ignores_spaces_width_and_kana(tmp_path, monkeypatch, search_mode):
     from showroom_keeper import listing
 
     with Store(tmp_path) as s:
@@ -154,6 +162,31 @@ def test_search_ignores_spaces_width_and_kana(tmp_path, monkeypatch):
     assert [x["key"] for x in r["rooms"]] == ["wnb", "new1"] and r["rooms"][1]["source"] == "showroom"
     with Store(tmp_path) as s:
         assert s.one("SELECT found_via FROM rooms WHERE room_id=99")[0] == "search"
+
+
+def test_search_index_fills_in_steps_and_follows_changes(tmp_path, monkeypatch):
+    """索引は表の最初から少しずつ入れ、入れ終わるまでは前のやり方で探す。名前が変わったら、印の付いた分だけ入れ直す。"""
+    monkeypatch.setattr(search_index, "FILL_STEP", 2)
+    with Store(tmp_path) as s:
+        s.set_cumulative(1, [{"user_id": u, "name": f"ながいなまえ{u}", "point": 10 * u, "visits": 1, "rank": u} for u in range(1, 6)], NOW)
+        assert search_index.refresh(s, budget=0) is False  # まだ入れていない
+        assert s.meta("search_index")["done"] == []
+        # 入れている途中で名前が変わる (入れ終わった所と、まだの所)
+        while "u" not in s.meta("search_index")["done"] and s.meta("search_index")["u"] < 2:
+            search_index._fill(s, s.meta("search_index"), "u")
+        s.set_cumulative(1, [{"user_id": 1, "name": "かわったなまえ", "point": 10, "visits": 1, "rank": 1},
+                             {"user_id": 5, "name": "べつのなまえ", "point": 50, "visits": 1, "rank": 5}], NOW + 1)
+        assert search_index.refresh(s, budget=5) is True
+        assert s.scalar("SELECT COUNT(*) FROM search_dirty") == 0
+        # 前の名前は 1 つずつ (入れている途中に付いた印で、2 つ入らない)
+        assert sorted(r[0] for r in s.all("SELECT name FROM search_former")) == ["ながいなまえ1", "ながいなまえ5"]
+    g = {x["user_id"]: x for x in explore.search(tmp_path, "なまえ")["gifters"]}
+    assert set(g) == {1, 2, 3, 4, 5} and g[1]["name"] == "かわったなまえ"
+    assert [x["user_id"] for x in explore.search(tmp_path, "かわった")["gifters"]] == [1]
+    g = explore.search(tmp_path, "ながいなまえ1")["gifters"]
+    assert [(x["user_id"], x["match"]) for x in g] == [(1, {"kind": "former", "name": "ながいなまえ1"})]
+    # 1〜2 文字は索引の中を全部くらべる
+    assert {x["user_id"] for x in explore.search(tmp_path, "ナマ")["gifters"]} == {1, 2, 3, 4, 5}
 
 
 def test_room_daily_metrics(tmp_path):

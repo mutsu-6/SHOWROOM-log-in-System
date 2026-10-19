@@ -326,6 +326,9 @@ class Sweeper:
             except Exception as err:  # noqa: BLE001
                 log.debug("%s のギフトの送り主を足せませんでした: %s", key, err)
         explore.update_all_live_visits(self.state_dir, self.store)  # ギフターのページの来場 (新しい分だけ)
+        from . import search_index
+
+        search_index.refresh(self.store, search_index.SWEEP_BUDGET)  # 上の検索欄の名前の索引 (変わった名前と、最初に入れる分)
         if not research._coverage_cache:
             research.coverage(self.state_dir)  # 集まり具合を先に数えておく (起動し直したあと、最初にページを開いた人を待たせない)
 

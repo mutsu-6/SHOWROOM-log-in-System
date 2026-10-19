@@ -201,3 +201,13 @@ def test_signup_anchor_does_not_read_whole_contributions(traced):
             assert s.scalar("SELECT COUNT(*) FROM event_max_user WHERE uid IS NOT NULL") == 3
             research._Signup.build(s, research._Recorded(d, s))
     check(traced, run)
+
+
+def test_search_uses_the_name_index(traced):
+    """上の検索欄: 3 文字以上は名前の索引 (search_index) で引き、ギフターの表を全部読まない (前は毎回全部 LIKE でくらべていた)。"""
+    from showroom_keeper import search_index
+
+    with Store(traced[0]) as s:
+        assert search_index.refresh(s, budget=5)
+    traced[1].clear()
+    check(traced, lambda d: explore.search(d, "ルーム1"))

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import event_analysis, room_analysis, series as series_mod
+from . import event_analysis, room_analysis, search_index, series as series_mod
 from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store
 
@@ -275,15 +275,31 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
         return "(" + " OR ".join(f"{_NOSPACE.format(col=col)} LIKE ?" for _ in likes) + ")"
 
     with Store(state_dir) as s:
+        # 名前の索引 (search_index)。入れ終わるまで・作れない SQLite では、前のやり方 (名前を全部 LIKE でくらべる)
+        indexed = search_index.refresh(s)
+
+        def ids(table: str, cols: tuple[str, ...]) -> tuple[str, list[Any]]:
+            cond, args = search_index.where(table, cols, folded)
+            return f"SELECT rowid FROM {table} WHERE {cond}", args
+
         points = "(SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id)"
+        if indexed:
+            sub, args = ids("search_users", ("folded",))
+            users_sql, users_args = f"u.user_id IN ({sub})", args
+            cond, args = search_index.where("search_former", ("folded",), folded)
+            former_sql, former_args = f"(SELECT user_id, name FROM search_former WHERE {cond}) n", args
+        else:
+            users_sql, users_args = name_match("u.name"), likes
+            former_sql, former_args = f"user_names n WHERE {name_match('n.name')}", likes
         gifters = [{**dict(r), "match": None} for r in s.all(
-            f"""SELECT u.user_id, u.name, {points} AS points FROM users u WHERE u.user_id = ? OR {name_match("u.name")}
-                ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""", (num, *likes, num, SEARCH_LIMIT))]
+            f"""SELECT u.user_id, u.name, {points} AS points FROM users u WHERE u.user_id = ? OR {users_sql}
+                ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""", (num, *users_args, num, SEARCH_LIMIT))]
         seen = {g["user_id"] for g in gifters}
         # 前の名前で見つかった人 (今の名前と、どの名前で見つかったかを出す)
-        for r in s.all(f"""SELECT n.user_id, n.name AS old, u.name, {points} AS points FROM user_names n
-                           LEFT JOIN users u USING(user_id) WHERE {name_match("n.name")} ORDER BY points DESC LIMIT ?""",
-                       (*likes, SEARCH_LIMIT)):
+        former_from, _, former_where = former_sql.partition(" WHERE ") if not indexed else (former_sql, "", "")
+        for r in s.all(f"""SELECT n.user_id, n.name AS old, u.name, {points} AS points FROM {former_from}
+                           LEFT JOIN users u USING(user_id) {"WHERE " + former_where if former_where else ""} ORDER BY points DESC LIMIT ?""",
+                       (*former_args, SEARCH_LIMIT)):
             if r["user_id"] not in seen:
                 seen.add(r["user_id"])
                 gifters.append({"user_id": r["user_id"], "name": r["name"] or r["old"], "points": r["points"],
@@ -294,13 +310,18 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
             gifters.append({"user_id": u["user_id"], "name": u["name"], "points": None, "times": u["times"],
                             "match": {"kind": "recorded", "name": u["hit"]}})
 
+        if indexed:
+            sub, args = ids("search_rooms", ("name", "key"))
+            rooms_sql, rooms_args = f"room_id IN ({sub})", args
+        else:
+            rooms_sql, rooms_args = f"{name_match('name')} OR {name_match('key')}", [*likes, *likes]
         rooms = [{**dict(r), "source": "research"} for r in s.all(
             f"""SELECT room_id, key, name, followers, live_at, collected_at FROM rooms
-                WHERE room_id = ? OR key = ? OR {name_match("name")} OR {name_match("key")}
+                WHERE room_id = ? OR key = ? OR {rooms_sql}
                 ORDER BY room_id = ? DESC, key = ? DESC, COALESCE(followers, 0) DESC LIMIT ?""",
-            (num, q, *likes, *likes, num, q, SEARCH_LIMIT))]
+            (num, q, *rooms_args, num, q, SEARCH_LIMIT))]
         known = {r["key"] for r in rooms if r["key"]} | {str(r["room_id"]) for r in rooms}
-        if len(rooms) < SEARCH_LIMIT and not digits:  # ひらがな・カタカナがまざった名前 (SQL ではそろえられない)
+        if not indexed and len(rooms) < SEARCH_LIMIT and not digits:  # ひらがな・カタカナがまざった名前 (SQL ではそろえられない。索引ではそろえてある)
             for r in _rooms_by_folded(s, folded, SEARCH_LIMIT):
                 if r["key"] not in known and str(r["room_id"]) not in known:
                     known.add(r["key"])
@@ -334,10 +355,15 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
         # 名前がそのまま合うものを先に (そのあとはフォロワーの多い順のまま)
         rooms.sort(key=lambda r: _fold(r["name"]) != folded)
 
+        if indexed:
+            sub, args = ids("search_events", ("name", "key"))
+            events_sql, events_args = f"event_id IN ({sub})", args
+        else:
+            events_sql, events_args = f"{name_match('name')} OR {name_match('key')}", [*likes, *likes]
         events = [{**_event_row(r, now), "named": bool(r["name"])} for r in s.all(
-            f"""SELECT * FROM events WHERE event_id = ? OR key = ? OR {name_match("name")} OR {name_match("key")}
+            f"""SELECT * FROM events WHERE event_id = ? OR key = ? OR {events_sql}
                 ORDER BY event_id = ? DESC, COALESCE(end, 0) DESC LIMIT ?""",
-            (num, q, *likes, *likes, num, SEARCH_LIMIT))]
+            (num, q, *events_args, num, SEARCH_LIMIT))]
     return {"gifters": gifters, "rooms": rooms, "events": events}
 
 
