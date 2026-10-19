@@ -41,35 +41,93 @@ def _event_row(e: Any, now: float) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ 検索
-RECORDED_TTL = 60  # 記録したギフトの送り主の名前の一覧を使い回す時間 (秒)
-_recorded_names: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
+_sender_lock = threading.Lock()
 
 
-def _recorded(state_dir: Path) -> dict[int, dict[str, Any]]:
-    """記録したギフトの送り主 {user_id: {name: 最後の名前, names: 使っていた名前, times: 回数}}。
+def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[str, Path] | None = None) -> None:
+    """記録したギフトのファイルの、前に読んだところから先だけを、送り主の表 (gift_senders・gift_sender_names) に足す。
 
-    少額でランキングに出ない人は、ランキングから作る users 表に入らないので、記録からも探す。
+    少額でランキングに出ない人は、ランキングから作る users 表に入らないので、上の検索欄では記録からも探す。
+    前は検索のたびにファイル全部を読み直していた (789 ルーム・66MB で 40 秒・メモリ 420MB。2026-10-19 に Cursor が測った)。
+    ファイルが前より小さくなっていたら (作り直し・まとめ直し)、そのルームの分を最初から作り直す。
     """
-    from .listing import _load_file, _record_files
+    from . import listing
 
-    key = str(Path(state_dir).resolve())
-    hit = _recorded_names.get(key)
-    if hit and time.time() - hit[0] < RECORDED_TTL:
-        return hit[1]
-    out: dict[int, dict[str, Any]] = {}
-    for path in _record_files(state_dir).values():
-        for g in _load_file(path):
-            uid, name = g.get("user_id"), g.get("name")
-            if uid is None:
+    path = (files if files is not None else listing._record_files(state_dir)).get(room_key)  # files: 何ルームも続けて足す時に、一度だけ探したもの
+    if path is None:
+        return
+    with _sender_lock:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        row = s.one("SELECT pos, size FROM gift_sender_pos WHERE room_key=?", (room_key,))
+        pos = row["pos"] if row is not None else 0
+        if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
+            with s.tx() as c:
+                c.execute("DELETE FROM gift_senders WHERE room_key=?", (room_key,))
+            pos = 0
+        if size <= pos:
+            return
+        with path.open("rb") as f:
+            f.seek(pos)
+            chunk = f.read(size - pos)
+        end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
+        if end <= 0:
+            return
+        senders: dict[int, list[Any]] = {}  # user_id -> [回数, 最後の時刻, 最後の名前]
+        names: dict[tuple[int, str], float] = {}
+        for line in chunk[:end].splitlines():
+            try:
+                g = json.loads(line)
+            except ValueError:
                 continue
-            u = out.setdefault(int(uid), {"name": "", "names": set(), "times": 0, "at": 0})
-            u["times"] += 1
+            if not isinstance(g, dict) or g.get("user_id") is None or "at" not in g:
+                continue
+            uid, name, at = int(g["user_id"]), g.get("name") or "", float(g["at"])
+            x = senders.setdefault(uid, [0, 0.0, ""])
+            x[0] += 1
+            if at >= x[1]:
+                x[1] = at
+                x[2] = name or x[2]
             if name:
-                u["names"].add(name)
-                if g["at"] >= u["at"]:
-                    u["name"], u["at"] = name, g["at"]
-    _recorded_names[key] = (time.time(), out)
-    return out
+                names[(uid, name)] = max(at, names.get((uid, name), 0.0))
+        with s.tx() as c:
+            c.executemany("""INSERT INTO gift_senders(room_key, user_id, times, last_at, name) VALUES (?, ?, ?, ?, ?)
+                             ON CONFLICT(room_key, user_id) DO UPDATE SET times=times+excluded.times,
+                               name=CASE WHEN excluded.last_at >= last_at AND excluded.name != '' THEN excluded.name ELSE name END,
+                               last_at=MAX(last_at, excluded.last_at)""",
+                          [(room_key, uid, x[0], x[1], x[2]) for uid, x in senders.items()])
+            c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
+                             ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
+                          [(uid, name, _fold(name), at) for (uid, name), at in names.items()])
+            c.execute("""INSERT INTO gift_sender_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
+                         ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
+                      (room_key, pos + end, pos + end, time.time()))
+
+
+def _recorded_senders(s: Store, folded: str, num: int | None, skip: set[int], limit: int) -> list[dict[str, Any]]:
+    """記録したギフトにしか出ていない人を、送り主の表から探す (名前のそろえた形に folded を含む人と、ユーザー ID が num の人)。"""
+    ids: dict[int, str] = {}
+    if num is not None:
+        for r in s.all("SELECT name FROM gift_sender_names WHERE user_id=? ORDER BY at DESC LIMIT 1", (num,)):
+            ids[num] = r["name"]
+        if num not in ids and s.one("SELECT 1 FROM gift_senders WHERE user_id=? LIMIT 1", (num,)):
+            ids[num] = ""
+    if folded:
+        for r in s.all("SELECT user_id, name FROM gift_sender_names WHERE instr(folded, ?) > 0 ORDER BY at DESC LIMIT ?",
+                       (folded, limit * 10)):
+            ids.setdefault(r["user_id"], r["name"])
+    out = []
+    for uid, hit in ids.items():
+        if uid in skip:
+            continue
+        row = s.one("SELECT SUM(times) AS times FROM gift_senders WHERE user_id=?", (uid,))
+        last = s.one("SELECT name FROM gift_senders WHERE user_id=? AND name != '' ORDER BY last_at DESC LIMIT 1", (uid,))
+        out.append({"user_id": uid, "name": (last["name"] if last else None) or hit, "hit": hit or (last["name"] if last else ""),
+                    "times": (row["times"] if row else 0) or 0})
+    out.sort(key=lambda x: (x["user_id"] != num, -x["times"]))
+    return out[:limit]
 
 
 def _fold(text: Any) -> str:
@@ -151,13 +209,10 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
                 gifters.append({"user_id": r["user_id"], "name": r["name"] or r["old"], "points": r["points"],
                                 "match": {"kind": "former", "name": r["old"]}})
         # 記録したギフトにしか出ていない人 (少額でランキングに出ない人など)
-        rec = [(uid, u) for uid, u in _recorded(state_dir).items()
-               if uid not in seen and (uid == num or any(folded in _fold(n) for n in u["names"]))]
-        rec.sort(key=lambda x: (x[0] != num, -x[1]["times"]))
-        for uid, u in rec[:SEARCH_LIMIT]:
-            hit = u["name"] if folded in _fold(u["name"]) else next((n for n in u["names"] if folded in _fold(n)), u["name"])
-            gifters.append({"user_id": uid, "name": u["name"] or hit, "points": None, "times": u["times"],
-                            "match": {"kind": "recorded", "name": hit}})
+        # (送り主の表は収集の合間に 10 分ごとに足すので、新しい送り主は少し遅れて出る)
+        for u in _recorded_senders(s, folded, num if digits else None, seen, SEARCH_LIMIT):
+            gifters.append({"user_id": u["user_id"], "name": u["name"], "points": None, "times": u["times"],
+                            "match": {"kind": "recorded", "name": u["hit"]}})
 
         rooms = [{**dict(r), "source": "research"} for r in s.all(
             f"""SELECT room_id, key, name, followers, live_at, collected_at FROM rooms
@@ -253,7 +308,7 @@ def _jst_noon(t: float) -> float:
     return noon if noon <= t else noon - 86400
 
 
-def update_gift_daily(state_dir: Path, s: Store, room_key: str) -> None:
+def update_gift_daily(state_dir: Path, s: Store, room_key: str, files: dict[str, Path] | None = None) -> None:
     """記録したギフトのファイルの、前に足したところから先だけを、ルーム × 日の合計 (room_gift_daily) に足す。
 
     ファイルが前より小さくなっていたら (作り直し・まとめ直し)、そのルームの分を最初から作り直す。
@@ -261,7 +316,7 @@ def update_gift_daily(state_dir: Path, s: Store, room_key: str) -> None:
     """
     from . import listing
 
-    path = listing._record_files(state_dir).get(room_key)
+    path = (files if files is not None else listing._record_files(state_dir)).get(room_key)  # files: 何ルームも続けて足す時に、一度だけ探したもの
     if path is None:
         return
     with _gift_daily_lock:

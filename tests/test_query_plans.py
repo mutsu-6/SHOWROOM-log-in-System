@@ -20,7 +20,8 @@ DAY = 86400
 # 大きくなる表 (ルーム × イベント・ギフター × なにか で増えるもの)。room_profile は 1 ルーム 1 行で小さく、
 # ルームの一覧で絞り込み・並べ替えのために全部読むので入れない
 BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "room_events", "user_month", "cumulative",
-       "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives"}
+       "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives",
+       "gift_senders"}
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
@@ -176,4 +177,14 @@ def test_recorded_types_do_not_read_whole_tables(traced):
             gifts = [(NOW - 3600, 10, "k1"), (NOW - 60, 20, "k2")]
             rec = SimpleNamespace(gifts={1: gifts}, points={(1, "k1"): 10, (1, "k2"): 20}, free={})
             assert research._recorded_types(s, rooms, rec, 1, gifts)["gifts"] == 2
+    check(traced, run)
+
+
+def test_recorded_senders_use_the_index(traced):
+    def run(d):
+        with Store(d) as s:
+            with s.tx() as c:
+                c.execute("INSERT INTO gift_senders(room_key, user_id, times, last_at, name) VALUES ('k1', 55, 3, 1, '少額さん')")
+                c.execute("INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (55, '少額さん', '少額さん', 1)")
+            assert explore._recorded_senders(s, "少額", 55, set(), 20)[0]["times"] == 3
     check(traced, run)

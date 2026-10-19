@@ -95,11 +95,23 @@ def test_search_finds_former_names_recorded_gifters_and_known_rooms(db):
     g = {x["user_id"]: x for x in explore.search(db, "中堅")["gifters"]}
     assert g[8]["match"] == {"kind": "former", "name": "中堅"} and g[8]["name"] == "まったく別"
     # 記録したギフトにしか出ていない人も、名前で見つかる
-    explore._recorded_names.clear()
+    # (送り主の表は、収集の合間に、記録のファイルの新しい分だけ足す。検索はファイルを読まない)
     record_gift(db, "rec_room", 1, {"u": 55, "ac": "少額さん", "g": 1, "n": 1, "created_at": NOW})
-    record_gift(db, "rec_room", 1, {"u": 55, "ac": "少額さん", "g": 1, "n": 1, "created_at": NOW + 5})
+    with Store(db) as s:
+        explore.update_gift_senders(db, s, "rec_room")
+    assert explore.search(db, "少額")["gifters"][0]["times"] == 1
+    record_gift(db, "rec_room", 1, {"u": 55, "ac": "少額さん改", "g": 1, "n": 1, "created_at": NOW + 5})
+    with Store(db) as s:
+        explore.update_gift_senders(db, s, "rec_room")  # 新しい 1 行だけ足す
+        explore.update_gift_senders(db, s, "rec_room")  # 増えていなければ何もしない
     g = explore.search(db, "少額")["gifters"]
-    assert g[0]["user_id"] == 55 and g[0]["match"]["kind"] == "recorded" and g[0]["times"] == 2
+    assert g[0]["user_id"] == 55 and g[0]["match"]["kind"] == "recorded" and g[0]["times"] == 2 and g[0]["name"] == "少額さん改"
+    assert explore.search(db, "55")["gifters"][0]["user_id"] == 55  # ユーザー ID でも
+    # ファイルが小さくなったら (まとめ直し)、そのルームの分を作り直す
+    (db / "gifts" / "rec_room.jsonl").write_text((db / "gifts" / "rec_room.jsonl").read_text().splitlines()[0] + "\n")
+    with Store(db) as s:
+        explore.update_gift_senders(db, s, "rec_room")
+    assert explore.search(db, "少額")["gifters"][0]["times"] == 1
     # 設定・記録だけにあるルームも見つかる
     remember_rooms(db, {"rec_room": ("記録だけのルーム", 999)})
     rooms = explore.search(db, "記録だけ")["rooms"]

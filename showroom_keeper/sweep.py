@@ -307,19 +307,24 @@ class Sweeper:
         return True
 
     def _gift_daily(self, now: float) -> None:
-        """記録したギフトの、ルーム × 日の合計 (room_gift_daily) に、GIFT_DAILY_EVERY ごとに新しい分を足しておく
-        (ルームのページを開いた時に、まとめて数えて待たせないように)。SHOWROOM には問い合わせない。"""
+        """記録したギフトの、ルーム × 日の合計 (room_gift_daily) と送り主の表 (gift_senders) に、GIFT_DAILY_EVERY ごとに新しい分を足しておく
+        (ルームのページ・上の検索欄で、まとめて数えて待たせないように)。SHOWROOM には問い合わせない。"""
         if now - self._gift_daily_at < GIFT_DAILY_EVERY:
             return
         self._gift_daily_at = now
         from . import explore, listing
 
         self.doing = "ギフトの日ごとの合計"
-        for key in listing._record_files(self.state_dir):
+        files = listing._record_files(self.state_dir)
+        for key in files:
             try:
-                explore.update_gift_daily(self.state_dir, self.store, key)
+                explore.update_gift_daily(self.state_dir, self.store, key, files)
             except Exception as err:  # noqa: BLE001 - 1 つのルームの失敗で、ほかを止めない
                 log.debug("%s のギフトの日ごとの合計を作れませんでした: %s", key, err)
+            try:
+                explore.update_gift_senders(self.state_dir, self.store, key, files)  # 上の検索欄で、記録にしか出ない送り主を探すため
+            except Exception as err:  # noqa: BLE001
+                log.debug("%s のギフトの送り主を足せませんでした: %s", key, err)
 
     def _aggregate(self) -> None:
         """前に集めた貢献ランキングを、月ごとの集計 (user_month) に少しずつ入れる。

@@ -119,6 +119,15 @@ CREATE TABLE IF NOT EXISTS room_gift_daily (
 CREATE TABLE IF NOT EXISTS room_gift_day_users (room_key TEXT, day TEXT, user_id INTEGER, PRIMARY KEY (room_key, day, user_id)) WITHOUT ROWID;
 -- ギフトの記録のファイルを、どこまで足したか (バイトの位置と、その時のファイルの大きさ)
 CREATE TABLE IF NOT EXISTS room_gift_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
+-- 記録したギフトの送り主 (ルームごと)。上の検索欄で、ランキングに出ない少額の人も探すため。
+-- 記録のファイルの新しい分だけを、収集の合間に足す (explore.update_gift_senders。ファイル全部を読み直さない)
+CREATE TABLE IF NOT EXISTS gift_senders (
+    room_key TEXT, user_id INTEGER, times INTEGER, last_at REAL, name TEXT, PRIMARY KEY (room_key, user_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS gift_senders_user ON gift_senders(user_id);
+-- 送り主が使っていた名前と、そろえた形 (explore._fold。探す時にくらべる)
+CREATE TABLE IF NOT EXISTS gift_sender_names (
+    user_id INTEGER, name TEXT, folded TEXT, at REAL, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS gift_sender_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
 -- SHOWROOM のお知らせ (ログインが要る)
 CREATE TABLE IF NOT EXISTS notices (notice_id INTEGER PRIMARY KEY, label TEXT, title TEXT, created_at REAL, contents TEXT, at REAL);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
