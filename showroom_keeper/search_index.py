@@ -24,6 +24,7 @@ VERSION = 1  # 索引の作り方を変えたら上げる (最初から入れ直
 FILL_STEP = 20000  # 最初から入れる時に、1 回に読む行の数
 DIRTY_STEP = 5000  # 印の付いた名前を、1 回に入れ直す数
 SEARCH_BUDGET = 1.0  # 検索の時に、索引を足すのに使ってよい秒数 (残りは収集の合間に)
+SHORT_LIMIT = 500  # 1 文字の検索で、表ごとに取る候補の数 (その中で、ポイントの多い順などに並べる)
 SWEEP_BUDGET = 20.0  # 収集の合間に、索引を足すのに使ってよい秒数
 
 # 3 文字ずつの索引 (trigram) と、2 文字の検索のための 2 文字ずつの索引 (名前を「みく くち ちゃ」のように 2 文字ずつ区切って入れ、
@@ -206,7 +207,10 @@ def where(table: str, cols: tuple[str, ...], folded: str, two: bool = False) -> 
     if len(folded) == 2 and two:
         t2 = table.replace("search_", "search2_", 1)
         return t2, f"{t2} MATCH ?", [phrase]
-    # 索引 (仮想の表) を 1 行ずつ読むより、中身のふつうの表を読むほうが速い
+    # 索引 (仮想の表) を 1 行ずつ読むより、中身のふつうの表を読むほうが速い。1 文字はとても多く当たる (「み」で何万人) ので、
+    # 候補を SHORT_LIMIT 件で打ち切る (当たった全員のポイントを数えて並べると、サーバーで 11.5 秒かかっていた。2026-10-19 に Cursor が測った)
     names = {"search_users": ("folded",), "search_former": ("folded", "user_id", "name")}.get(table, ("name", "key"))
-    src = f"(SELECT id AS rowid, {', '.join(f'c{i} AS {n}' for i, n in enumerate(names))} FROM {table}_content)"
-    return src, "(" + " OR ".join(f"instr({c}, ?) > 0" for c in cols) + ")", [folded] * len(cols)
+    cond = " OR ".join(f"instr(c{names.index(c)}, ?) > 0" for c in cols)
+    src = (f"(SELECT id AS rowid, {', '.join(f'c{i} AS {n}' for i, n in enumerate(names))} FROM {table}_content"
+           f" WHERE {cond} LIMIT {SHORT_LIMIT})")
+    return src, "1", [folded] * len(cols)
