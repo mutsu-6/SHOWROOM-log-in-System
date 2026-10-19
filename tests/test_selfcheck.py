@@ -305,7 +305,11 @@ def test_watch_loop_notes_lag(slow):
         await asyncio.sleep(0.05)
         task.cancel()
 
-    asyncio.run(run())
+    loop = asyncio.new_event_loop()  # asyncio.run は、Python 3.9 でほかのテストの今のループを消してしまうので使わない
+    try:
+        loop.run_until_complete(run())
+    finally:
+        loop.close()
     assert slow.summary(time.time())[0]["kind"] == "loop"
 
 
