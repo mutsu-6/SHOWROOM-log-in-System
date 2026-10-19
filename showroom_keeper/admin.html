@@ -351,6 +351,8 @@ td a.name-link, td a { word-break: break-word; }
 .feed .bd { flex: 1; min-width: 0; word-break: break-word; }
 .feed .sm { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .feed .tm { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.feed .top3 { list-style: none; margin: 4px 0 2px; padding: 0; color: var(--text); font-size: 13px; }
+.feed .top3 li { padding: 1px 0; }
 .feed .dot-new { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--info); margin-right: 6px; vertical-align: 2px; }
 .feed-urgent { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-weight: 600; }
 .feed-urgent div + div { margin-top: 4px; }
@@ -429,7 +431,7 @@ td a.name-link, td a { word-break: break-word; }
   <section data-page="notices">
     <div class="page-head">
       <div class="grow"><h2>お知らせ</h2>
-        <p class="sub" style="margin:0">大きなギフト・気になるギフターの動き・配信・調べるルームのイベントの順位など、最近の出来事です。1 分ごとに新しくなり、大事なもの (赤い線) は画面の下にも出します。</p></div>
+        <p class="sub" style="margin:0">大きなギフト・気になるギフターの動き・調べるルームが出ているイベントの毎日 24:00 の上位 3 ルームなど、最近の出来事です。1 分ごとに新しくなり、大事なもの (赤い線) は画面の下にも出します。</p></div>
       <div class="row">
         <select id="f-hours" aria-label="期間"><option value="24">直近 24 時間</option><option value="72">直近 3 日</option><option value="168">直近 7 日</option></select>
         <label class="row" style="gap:6px;color:var(--muted)">大きなギフト
@@ -3534,8 +3536,8 @@ $("#q-results").addEventListener("click", (ev) => { if (ev.target.closest("a")) 
 // 最近の出来事を 1 分ごとに読み、まだ見ていない数をメニューに出す。大事なもの (level=high) が新しく来たら、画面の下に出す。
 // 読んだところ (時刻) と、期間・基準の選び方は、この端末のブラウザに残す (残せなくても動く)
 const FEED_KINDS = [["all", "すべて"], ["gift", "大きなギフト", ["big_gift"]], ["watch", "気になるギフター", ["watch_gift", "watch_visit"]],
-  ["live", "配信", ["live_start", "live_end"]], ["event", "イベント", ["event_rank", "event_ending", "event_end"]], ["showroom", "SHOWROOM", ["showroom_notice"]]];
-const FEED_ICON = { big_gift: "💎", watch_gift: "☆", watch_visit: "👣", live_start: "🔴", live_end: "⏹", event_rank: "📈", event_ending: "⏰", event_end: "🏁", showroom_notice: "📢" };
+  ["event", "イベント", ["event_daily"]]];
+const FEED_ICON = { big_gift: "💎", watch_gift: "☆", watch_visit: "👣", event_daily: "🏆" };
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) { /* 残せなくてもよい */ } },
@@ -3558,13 +3560,10 @@ function feedItem(x) {
     case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b>`,
       `${num(x.times)} 回 ・ うち有料 ${num(x.paid_points)} pt${x.times > 1 ? ` ・ ${tm(x.first_at)} から` : ""}`, memo];
     case "watch_visit": return [`<span class="tag warn">気になる</span> ${g} が ${room} に来場`, `${x.n === 1 ? "初めての訪問" : `${num(x.n)} 回目の訪問`}`, memo];
-    case "live_start": return [`${room} が配信を始めました`, ""];
-    case "live_end": return [`${room} が配信を終えました`, [x.minutes ? `約 ${duration(x.minutes * 60)}` : "", x.view_max ? `盛り上がり 最大 ${num(x.view_max)}` : "",
-      x.followers ? `フォロワー ${x.followers > 0 ? "+" : ""}${num(x.followers)}` : ""].filter(Boolean).join(" ・ ")];
-    case "event_rank": return [`${room} が ${ev} で <b>${num(x.before)} 位 → ${num(x.after)} 位</b>`, `${x.after < x.before ? "上がりました" : "下がりました"} ・ ${num(x.point)} pt`];
-    case "event_ending": return [`${ev} が終わるまで 24 時間を切りました`, `${esc(x.room_name)} は今 ${rankText(x.rank)}${x.point != null ? `・${num(x.point)} pt` : ""} ・ 終わり ${tm(x.end, true).slice(0, 11)}`];
-    case "event_end": return [`${ev} が終わりました`, `${esc(x.room_name)} は ${rankText(x.rank)}${x.point != null ? `・${num(x.point)} pt` : ""}`];
-    case "showroom_notice": return [`SHOWROOM のお知らせ: ${esc(x.title)}`, esc(x.label)];
+    case "event_daily": return [`${ev} の ${tm(x.at - 1, true).slice(0, 5)} 24:00 時点の上位 3 ルーム`,
+      `<ol class="top3">${x.top.map((r) => `<li><b>${num(r.rank)} 位</b> ${roomLink(r.room_key, r.room_name)} <span class="uid">${num(r.point)} pt</span></li>`).join("")}</ol>`
+      + (x.mine.length ? `調べるルーム: ${x.mine.map((r) => `${roomLink(r.room_key, r.room_name)} ${rankText(r.rank)}・${num(r.point)} pt`).join("、")}` : "")
+      + `${Math.abs(x.snapshot_at - x.at) >= 300 ? ` <span class="uid">(${tm(x.snapshot_at).slice(0, 5)} の値)</span>` : ""}${x.end ? ` <span class="uid">・ 終わり ${tm(x.end, true).slice(0, 11)}</span>` : ""}`];
     default: return [esc(x.kind), ""];
   }
 }
@@ -3625,9 +3624,7 @@ function renderNotices() {
   const items = kinds ? d.items.filter((x) => kinds.includes(x.kind)) : d.items;
   const EMPTY = { gift: `記録しているルームで、1 回 ${num(d.min_point)} pt 以上のギフトはありませんでした。上の「大きなギフト」で基準を下げられます。`,
     watch: "気になるギフターの、記録しているルームでのギフト・来場はありませんでした。ギフターのページの「☆ 気になる」で印を付けた人が出ます。",
-    live: "視聴するルーム・調べるルームの配信の始まり・終わりはありませんでした (全ルームの収集が動いている時に分かります)。",
-    event: "調べるルームの、イベントの順位の変化・終わりはありませんでした。「設定」の「調べるルーム」に入れたルームが出ます。",
-    showroom: "SHOWROOM のお知らせはありませんでした (1 日 1 回読みます)。" };
+    event: "調べるルームが出ているイベントの、24:00 の上位 3 ルームはまだありません。「設定」の「調べるルーム」に入れたルームが出ているイベントが出ます (1 時間ごとの推移を残している開催中のイベントだけ)。" };
   $("#f-body").innerHTML = items.length ? feedList(items, { base: feed.mark }) : `<div class="empty">${EMPTY[feed.filter] || `直近 ${d.hours} 時間の出来事はありませんでした。`}</div>`;
 }
 async function showNotices() {

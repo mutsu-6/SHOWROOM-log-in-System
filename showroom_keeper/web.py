@@ -430,7 +430,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif url.path == "/api/feed":
                 from . import feed
 
-                self._json(feed.build(self._state_dir(), self._support(q), list(self.keeper.cfg.rooms),
+                self._json(feed.build(self._state_dir(), self._support(q),
                                       float(q.get("hours") or 24), int(q.get("min_point") or feed.DEFAULT_MIN_POINT)))
             elif url.path == "/api/news":
                 from . import news

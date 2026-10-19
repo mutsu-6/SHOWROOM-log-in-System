@@ -309,7 +309,12 @@ def test_feed_does_not_read_whole_tables(traced):
         s.conn.executemany("INSERT INTO gift_event_pos(room_key, pos, size, at) VALUES (?, 0, 0, ?)", [(f"k{r}", NOW) for r in range(1, 6)])
         s.set_watch(101, True, "", NOW)
         s.add_progress(1, [{"room_id": 2, "point": 5}], NOW)
-    check(traced, lambda d: feed.build(d, ["k2"], ["k1"], now=NOW))
+        # 開催中のイベント (24:00 の上位 3 ルームの報告を作る)
+        s.upsert_events([{"event_id": 9, "name": "開催中", "start": NOW - 5 * DAY, "end": NOW + DAY}])
+        s.set_event_rooms(9, [{"room_id": r, "point": r, "rank": 6 - r} for r in range(1, 6)], NOW)
+        s.add_progress(9, [{"room_id": r, "point": r} for r in range(1, 6)], feed._midnights(NOW - DAY, NOW)[0] - 60)
+    check(traced, lambda d: feed.build(d, ["k2"], now=NOW))
+    assert any(x["kind"] == "event_daily" for x in feed.build(d, ["k2"], now=NOW, use_cache=False)["items"])
 
 
 def test_news_does_not_read_whole_tables(traced):
