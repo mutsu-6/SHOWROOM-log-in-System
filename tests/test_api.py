@@ -71,3 +71,40 @@ async def test_live_room_id_picks_one_live_room():
 async def test_live_room_id_skips_rooms_not_to_visit():
     onlives = {"onlives": [{"lives": [{"room_id": 7}, {"room_id": 8}]}]}
     assert await ShowroomAPI(FakeRequest({f"{B}/api/live/onlives": FakeResp(onlives)})).live_room_id(skip={7}) == 8
+
+
+async def test_public_lookups_skip_the_browser_and_share_the_live_list(monkeypatch):
+    """配信状況と配信中の一覧はブラウザを通さず、配信中の一覧は入室・ギフトの記録・収集で 1 分のあいだ使い回す。"""
+    import asyncio
+
+    from showroom_keeper import api, onlives, recorder
+
+    calls = []
+
+    def fake_get_json(path, cookie=None):
+        calls.append(path)
+        if path == onlives.PATH:
+            return {"onlives": [{"lives": [{"room_id": 7, "room_url_key": "k7", "live_id": 70}]}]}
+        return {"room_id": 9, "room_name": "R", "is_live": True}
+
+    monkeypatch.setattr(recorder, "get_json", fake_get_json)
+    monkeypatch.setattr(api, "_public_pool", None)
+    req = FakeRequest({})  # ブラウザには何も問い合わせない
+    a = ShowroomAPI(req, public=api.public_get)
+    status = await a.room_status("k 9")
+    assert status.room_id == 9 and status.is_live and calls == ["/api/room/status?room_url_key=k+9"]
+
+    calls.clear()
+    lives, room_id = await asyncio.gather(a.onlives(), a.live_room_id())
+    assert [s.room_id for s in lives] == [7] and room_id == 7
+    r = recorder.GiftRecorder.__new__(recorder.GiftRecorder)
+    r._glitter, r._glitter_saved, r.state_dir = {}, 1e18, None
+    seen: dict = {}
+    await r._add_glitter(None, {"k7"}, seen, 0)
+    assert r._seen_watched == {"k7": (7, 70)}
+    assert onlives.get(lambda: (_ for _ in ()).throw(AssertionError("取り直した")))["onlives"]
+    assert calls == [onlives.PATH] and req.calls == []  # 1 回だけ取った
+
+    onlives.remember(onlives.fresh(), now=0)  # 1 分より古くなれば取り直す
+    await a.onlives()
+    assert calls == [onlives.PATH, onlives.PATH]

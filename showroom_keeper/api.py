@@ -6,9 +6,12 @@ SHOWROOM の非公式 API は予告なく変わり得るので、レスポンス
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 BASE_URL = "https://www.showroom-live.com"
 
@@ -73,10 +76,32 @@ def parse_login_state(data: Any) -> bool | None:
     return None
 
 
+_public_pool: ThreadPoolExecutor | None = None
+
+
+async def public_get(path: str, params: dict[str, Any] | None = None) -> Any:
+    """ログインの要らない問い合わせ (配信状況・配信中の一覧) を、ブラウザを通さずに行う。配信中の一覧は使い回す (onlives)。
+
+    ギフトの記録の問い合わせで待たされないよう、視聴の分だけの小さなスレッドで行う (視聴を優先する)。
+    """
+    from . import onlives
+    from .recorder import get_json
+
+    global _public_pool
+    if _public_pool is None:
+        _public_pool = ThreadPoolExecutor(2, thread_name_prefix="public-api")
+    if path == onlives.PATH and not params:
+        return await onlives.aget(executor=_public_pool)
+    full = f"{path}?{urllib.parse.urlencode(params)}" if params else path
+    return await asyncio.get_running_loop().run_in_executor(_public_pool, get_json, full)
+
+
 class ShowroomAPI:
-    def __init__(self, request: RequestContext, timeout_ms: float = 15000):
+    def __init__(self, request: RequestContext, timeout_ms: float = 15000,
+                 public: Callable[[str, dict[str, Any] | None], Awaitable[Any]] | None = None):
         self._request = request
         self._timeout = timeout_ms
+        self._public = public  # ログインの要らない問い合わせ (無ければブラウザを通す)
 
     async def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         resp = await self._request.get(f"{BASE_URL}{path}", params=params, timeout=self._timeout)
@@ -84,8 +109,13 @@ class ShowroomAPI:
             raise RuntimeError(f"GET {path} が失敗しました: HTTP {resp.status}")
         return await resp.json()
 
+    async def _get_public(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        if self._public is None:
+            return await self._get_json(path, params)
+        return await self._public(path, params)
+
     async def room_status(self, room_url_key: str) -> RoomStatus:
-        data = await self._get_json("/api/room/status", {"room_url_key": room_url_key})
+        data = await self._get_public("/api/room/status", {"room_url_key": room_url_key})
         return parse_room_status(room_url_key, data)
 
     async def is_logged_in(self, room_id: int | None = None) -> bool | None:
@@ -103,13 +133,13 @@ class ShowroomAPI:
 
     async def onlives(self) -> list[RoomStatus]:
         """配信中のルームの一覧 (SHOWROOM 全体。1 回の問い合わせで取れる)。有料の配信は除く。"""
-        data = await self._get_json("/api/live/onlives")
+        data = await self._get_public("/api/live/onlives")
         return parse_onlives(data)
 
     async def live_room_id(self, skip: set[int] | frozenset[int] = frozenset()) -> int | None:
         """ログイン状態の確認に使うため、配信中のルームを 1 つ探す (skip のルームは使わない)。見つからなければ None。"""
         try:
-            data = await self._get_json("/api/live/onlives")
+            data = await self._get_public("/api/live/onlives")
             for genre in data.get("onlives", []):
                 for live in genre.get("lives", []):
                     if live.get("room_id") and int(live["room_id"]) not in skip:
