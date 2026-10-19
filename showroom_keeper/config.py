@@ -81,8 +81,10 @@ class Config:
     # ログインした状態で訪問しないルーム (入室しない・ギフトの記録やログイン確認にもログインを使わない)。
     # 視聴するルーム (rooms) にも入れた時は、視聴を優先する
     no_visit_rooms: list[str] = field(default_factory=list)
-    # 応援しているルーム (分析の基準) と、ギフターを調べるルーム。どちらも累計ランキングとイベントの
-    # 貢献ランキングを集める (research_days / research_times の時刻に、問い合わせの間隔を空けて)
+    # ギフターを調べるルーム。累計ランキングとイベントの貢献ランキングを集める (research_days / research_times の時刻に、
+    # 問い合わせの間隔を空けて)。support_rooms (前の「応援しているルーム」) は、読んだ時に調べるルームへ移す
+    # (2026-10-20 に利用者が決めた。分析の基準にするルームは、設定ではなく分析の画面でその場で選ぶ)。
+    # 移したあとも support_rooms は残し、画面で見るルームを初めて選ぶ前の、最初の見るルームに使う
     support_rooms: list[str] = field(default_factory=list)
     research_rooms: list[str] = field(default_factory=list)
     credentials: Credentials = field(default_factory=Credentials)
@@ -221,6 +223,7 @@ class Config:
 
         cfg.rooms = list(dict.fromkeys(normalize_room_key(str(r)) for r in rooms))
         apply_settings(cfg)
+        fold_support(cfg)
         cfg.validate()
         return cfg
 
@@ -320,7 +323,13 @@ def apply_settings(cfg: Config) -> bool:
     for key in SETTINGS_KEYS:
         if key in data:
             setattr(cfg, key, values[key])
+    fold_support(cfg)
     return True
+
+
+def fold_support(cfg: Config) -> None:
+    """前の「応援しているルーム」を、調べるルームに移す (毎日の収集とお知らせが、そのまま続くように)。"""
+    cfg.research_rooms = list(dict.fromkeys([*cfg.support_rooms, *cfg.research_rooms]))
 
 
 def save_settings(cfg: Config, data: dict[str, Any]) -> dict[str, list[str]]:

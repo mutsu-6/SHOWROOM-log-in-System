@@ -793,16 +793,19 @@ def _summary(uid: int, name: str | None, slots: dict[int, dict[str, Any]], ev: A
     }
 
 
-_analysis: dict[Any, tuple[float, dict[str, Any]]] = {}
-_analysis_lock = threading.Lock()
+_analysis: dict[Any, tuple[float, dict[str, Any]]] = {}  # 見るルームごとの結果 (土台を数えた時刻, 結果)
+_bases: dict[str, list[Any]] = {}  # 土台 (見るルームに関係ない、全ルーム分の重い集計): state_dir → [確かめた時刻, 土台]
+_analysis_lock = threading.Lock()  # 土台を同時に何本も数えない
+_view_lock = threading.Lock()  # 見るルームごとの集計も 1 本ずつ
 _analysis_running: set[Any] = set()
 _analysis_guard = threading.Lock()
+SIGNUP_BASE_LIMIT = SIGNUP_YEAR_LIMIT + 400  # 土台に残す、登録した年ごとの上位の人数 (見るルームのギフターを除いても足りるように)
 
 
 def forget_analysis() -> None:
     """集め終わったときなど: 次の analyze で数え直す (それまでは前の結果を出し、裏で数え直す)。"""
-    for k, (_, result) in list(_analysis.items()):
-        _analysis[k] = (0.0, result)
+    for b in _bases.values():
+        b[0] = 0.0
 
 
 def _analysis_path(state_dir: Path, key: Any) -> Path:
@@ -811,83 +814,142 @@ def _analysis_path(state_dir: Path, key: Any) -> Path:
     return Path(state_dir) / "cache" / f"analysis-{hashlib.sha1(repr(key[1:]).encode()).hexdigest()[:12]}.json"
 
 
-def _load_analysis(state_dir: Path, key: Any) -> tuple[float, dict[str, Any]] | None:
-    """起動し直したあと: 前に数えた結果をファイルから読む (古ければ、それを出して裏で数え直す)。"""
+def _base_path(state_dir: Path) -> Path:
+    return Path(state_dir) / "cache" / "analysis-base.json"
+
+
+def _read_json(path: Path) -> Any:
     import json
 
     try:
-        result = json.loads(_analysis_path(state_dir, key).read_text(encoding="utf-8"))
-        return float(result["analyzed_at"]), result
-    except (OSError, ValueError, KeyError, TypeError):
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return None
 
 
-def _save_analysis(state_dir: Path, key: Any, result: dict[str, Any]) -> None:
+def _write_json(path: Path, data: Any) -> None:
     import json
     import os
 
-    path = _analysis_path(state_dir, key)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
     except (OSError, TypeError, ValueError) as e:  # 残せなくても、この起動の間は覚えている
         log.debug("分析の結果を残せませんでした: %s", e)
 
 
+def _load_analysis(state_dir: Path, key: Any) -> tuple[float, dict[str, Any]] | None:
+    """起動し直したあと: 前に数えた結果をファイルから読む (古ければ、それを出して裏で数え直す)。"""
+    result = _read_json(_analysis_path(state_dir, key))
+    try:
+        return float(result["base_at"]), result
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _get_base(state_dir: Path) -> list[Any] | None:
+    """いちばん新しい土台 ([確かめた時刻, 土台])。起動し直したあとは、ファイルに残したものを使う。"""
+    sd = str(Path(state_dir).resolve())
+    hit = _bases.get(sd)
+    if hit is None:
+        base = _read_json(_base_path(state_dir))
+        if not isinstance(base, dict) or not (Path(state_dir) / "cache" / str(base.get("db", ""))).is_file():
+            return None
+        hit = _bases[sd] = [float(base["at"]), base]
+    return hit
+
+
 def analyze(state_dir: Path, support: list[str], limit: int = 300, max_age: float = ANALYSIS_TTL) -> dict[str, Any]:
     """集めた情報をギフターとルームの両方から分析する。
 
-    応援ルームがあれば、それを基準に誘導の候補・応援ルームのギフター・似ているルームを出す。
+    見るルーム (support) を選べば、それを基準に誘導の候補・そのルームのギフター・似ているルームを出す。
     無ければ (mode "all")、ギフター一覧 (分かったポイントの多い順)・ルーム同士の重なり・ルームごとのまとめを出す。
-    全ルーム分だと重い (サーバーで 2 分ほど) ので、結果は max_age 秒使い回し、古くなったら前の結果をすぐ返して裏で数え直す
-    (前は、古くなったあとに開いた人が 2 分待っていた。2026-10-19)。結果はファイルにも残し、起動し直したあとも使う。
-    max_age=0 (「集計し直す」) の時だけ、数え終わるまで待つ。
+
+    2 段に分けて数える (2026-10-20)。
+    - 土台: 全ルームの「誰がどのルームにいくら送ったか」を全部読む重い集計 (サーバーで数分)。見るルームに関係ないので、
+      1 つだけ作って max_age 秒使い回す。古くなったら前の土台をすぐ使い、裏で数え直す。結果はファイルにも残す。
+    - 見るルームごとの集計: 土台に、そのルームのギフター (索引で読む) を当てはめるだけの軽い集計。
+    前は見るルームの組み合わせごとに全部を読み直していて、見るルームを切り替えるたびに数分かかっていた。
+    max_age=0 (「集計し直す」) の時だけ、土台を数え終わるまで待つ。
     """
-    key = (str(Path(state_dir).resolve()), tuple(support), limit)
+    sd = Path(state_dir)
+    key = (str(sd.resolve()), tuple(support), limit)
+    if max_age <= 0:
+        base = _run_base(sd, limit, max_age)
+    else:
+        b = _get_base(sd)
+        if b is None:
+            base = _run_base(sd, limit, max_age)
+        else:
+            base = b[1]
+            if time.time() - b[0] >= max_age:
+                with _analysis_guard:
+                    # メモリの空きが少ない時 (視聴のブラウザと重なった時) は数え直さず、前の結果を出す (次に開いた時にまた確かめる)
+                    if sd.resolve() not in _analysis_running and not memory.tight():
+                        _analysis_running.add(sd.resolve())
+                        threading.Thread(target=_refresh_analysis, args=(sd, limit), name="analysis", daemon=True).start()
+                return {**_view(sd, base, support, limit, key), "stale": True}
+    return _view(sd, base, support, limit, key)
+
+
+def _view(state_dir: Path, base: dict[str, Any], support: list[str], limit: int, key: Any) -> dict[str, Any]:
+    """土台に見るルームを当てはめた結果 (同じ土台から作ったものがあれば、それを使う)。"""
     hit = _analysis.get(key)
     if hit is None:
         hit = _load_analysis(state_dir, key)
         if hit is not None:
             _analysis[key] = hit
-    if hit and time.time() - hit[0] < max_age:
+    if hit and hit[0] == base["at"]:
         return hit[1]
-    if hit and max_age > 0:
-        with _analysis_guard:
-            # メモリの空きが少ない時 (視聴のブラウザと重なった時) は数え直さず、前の結果を出す (次に開いた時にまた確かめる)
-            if key not in _analysis_running and not memory.tight():
-                _analysis_running.add(key)
-                threading.Thread(target=_refresh_analysis, args=(Path(state_dir), list(support), limit, key),
-                                 name="analysis", daemon=True).start()
-        return {**hit[1], "stale": True}
-    return _run_analysis(Path(state_dir), support, limit, key, max_age)
+    with _view_lock:
+        hit = _analysis.get(key)
+        if hit and hit[0] == base["at"]:  # 待っている間に、ほかが作り終えた
+            return hit[1]
+        started = time.time()
+        result = _analyze_view(state_dir, base, support, limit)
+        result["base_at"] = base["at"]
+        result["analyzed_at"] = base["at"]
+        result["analysis_seconds"] = base["seconds"]
+        result["view_seconds"] = round(time.time() - started, 1)
+        _analysis[key] = (base["at"], result)
+        _write_json(_analysis_path(state_dir, key), result)
+    memory.release()
+    return result
 
 
-def _refresh_analysis(state_dir: Path, support: list[str], limit: int, key: Any) -> None:
+def _refresh_analysis(state_dir: Path, limit: int) -> None:
     try:
-        _run_analysis(state_dir, support, limit, key, ANALYSIS_TTL)
+        _run_base(state_dir, limit, ANALYSIS_TTL)
     except Exception as e:  # noqa: BLE001 - 数え直せなくても、前の結果を使い続ける
         log.warning("分析を数え直せませんでした: %s", e)
     finally:
         with _analysis_guard:
-            _analysis_running.discard(key)
+            _analysis_running.discard(Path(state_dir).resolve())
 
 
-def _run_analysis(state_dir: Path, support: list[str], limit: int, key: Any, max_age: float) -> dict[str, Any]:
+def _run_base(state_dir: Path, limit: int, max_age: float) -> dict[str, Any]:
     with _analysis_lock:  # 同時に何本も数えない
-        hit = _analysis.get(key)
-        if hit and max_age > 0 and time.time() - hit[0] < max_age:  # 待っている間に、ほかが数え終えた
-            return hit[1]
+        b = _get_base(state_dir)
+        if b and max_age > 0 and time.time() - b[0] < max_age:  # 待っている間に、ほかが数え終えた
+            return b[1]
         started = time.time()
         with memory.heavy():
-            result = _analyze(state_dir, support, limit)
-        result["analyzed_at"] = time.time()
-        result["analysis_seconds"] = round(result["analyzed_at"] - started, 1)
-        _analysis[key] = (result["analyzed_at"], result)
-        _save_analysis(state_dir, key, result)
+            base = _analyze_base(state_dir, limit)
+        base["at"] = time.time()
+        base["seconds"] = round(base["at"] - started, 1)
+        cache = Path(state_dir) / "cache"
+        _write_json(_base_path(state_dir), base)
+        _bases[str(Path(state_dir).resolve())] = [base["at"], base]
+        for old in cache.glob("analysis-base-*.db"):  # 前の土台 (読んでいる最中でも、消してよい。読み終わるまでは残る)
+            if old.name != base["db"]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
     memory.release()  # 数えるのに使った一時のメモリを OS に返す (数十 MB 増えたままにしない)
-    return result
+    return base
 
 
 class _PairScan:
@@ -973,77 +1035,190 @@ class _PairScan:
         self.batch = []
 
 
-def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
+def _name_sql(table: str) -> str:
+    """ギフターの名前 (記録したギフトの名前 → research.db の名前)。退会したユーザーを除くのに使う。"""
+    return (f"COALESCE((SELECT name FROM rname r WHERE r.user_id={table}.user_id),"
+            f" (SELECT name FROM users n WHERE n.user_id={table}.user_id), '')")
+
+
+def _rec_names(s: Store, rec: _Recorded) -> None:
+    s.conn.execute("CREATE TEMP TABLE IF NOT EXISTS rname (user_id INTEGER PRIMARY KEY, name TEXT)")
+    s.conn.executemany("INSERT OR REPLACE INTO rname VALUES (?, ?)", list(rec.names.items()))
+
+
+def _analyze_base(state_dir: Path, limit: int) -> dict[str, Any]:
+    """土台: 全ルームの「誰がどのルームにいくら送ったか」を 1 回だけ読んで、見るルームに関係ない集計を作る。
+
+    人ごとのまとめ (u) とルームごとのまとめ (rs) は、見るルームごとの集計が読むので、cache の小さな DB に残す
+    (research.db には入れない。写しやバックアップを大きくしないため)。
+    """
     rec = _Recorded(state_dir)
+    cache = Path(state_dir) / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    db_name = f"analysis-base-{time.time_ns()}.db"
     with Store(state_dir) as s:
         rooms = _Rooms(s, state_dir)
-        sup_ids = list(dict.fromkeys(rooms.id(k) for k in support))
         c = s.conn
         merged: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))  # 記録したギフト: 人 → ルーム → pt
         for (uid, key), pt in rec.points.items():
             if pt:
                 merged[uid][rooms.id(key)] += pt
-        c.execute("CREATE TEMP TABLE sup (room_id INTEGER PRIMARY KEY)")
-        c.executemany("INSERT INTO sup VALUES (?)", [(r,) for r in sup_ids])
-        c.execute("CREATE TEMP TABLE rname (user_id INTEGER PRIMARY KEY, name TEXT)")
-        c.executemany("INSERT INTO rname VALUES (?, ?)", list(rec.names.items()))
+        _rec_names(s, rec)
         # この接続の作業用のメモリ (メモリの空きが少ない時は、空きの 8 分の 1 まで。ブラウザを追い出さない)
         free = memory.free_mb()
         c.execute(f"PRAGMA cache_size=-{ANALYSIS_CACHE_KB if free is None else max(8192, min(ANALYSIS_CACHE_KB, int(free * 1024 / 8)))}")
-        c.execute("""CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)""")
-        scan = _PairScan(s, merged, set(sup_ids))
-        del merged
-        c.execute("CREATE TEMP TABLE fan (user_id INTEGER PRIMARY KEY)")
-        c.execute("INSERT INTO fan SELECT user_id FROM u WHERE support > 0")
-        fan_count = s.scalar("SELECT COUNT(*) FROM fan")
-        fan_ids = [r[0] for r in s.all("SELECT user_id FROM u WHERE support > 0 ORDER BY support DESC, user_id LIMIT ?", (limit,))]
-        name = ("COALESCE((SELECT name FROM rname r WHERE r.user_id=u.user_id),"
-                " (SELECT name FROM users n WHERE n.user_id=u.user_id), '')")
-        left = tuple(LEFT_NAMES)
-        where = f"support = 0 AND total > 0 AND {name} NOT IN ({','.join('?' * len(left))})"
-        candidate_count = s.scalar(f"SELECT COUNT(*) FROM u WHERE {where}", left)
-        cand_ids = [r[0] for r in s.all(f"SELECT user_id FROM u WHERE {where} ORDER BY total DESC, user_id LIMIT ?",
-                                        (*left, limit))]
-        signup = _Signup.build(s, rec)
-        with s.tx():
-            s.set_meta(SIGNUP_META, signup.steps)
-        signup_years, extra_ids = [], []
-        overall = set(cand_ids)
-        for year, lo, hi, rough in signup.years():
-            band = (*left, lo, hi)
-            n = s.scalar(f"SELECT COUNT(*) FROM u WHERE {where} AND user_id BETWEEN ? AND ?", band)
-            if n:
-                signup_years.append({"year": year, "count": n, "rough": rough})
-                extra_ids += [r[0] for r in s.all(f"""SELECT user_id FROM u WHERE {where} AND user_id BETWEEN ? AND ?
-                                                     ORDER BY total DESC, user_id LIMIT ?""", (*band, SIGNUP_YEAR_LIMIT))
-                              if r[0] not in overall]
-        gifter_count = s.scalar("SELECT COUNT(*) FROM u")
-        # ルームごとのまとめ (ギフターの数・分かったポイント・複数のルームに送る人・いちばん送っている人)。上の 1 回の読み込みで数えたもの
-        c.execute("""CREATE TEMP TABLE rs (room_id INTEGER PRIMARY KEY, gifters INTEGER, points INTEGER, multi INTEGER,
-                                           top_user INTEGER, top_points INTEGER)""")
-        c.executemany("INSERT INTO rs VALUES (?, ?, ?, ?, ?, ?)", [(rid, *v) for rid, v in scan.rooms.items()])
-        # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか (ギフターの数は rs から)
-        similar = []
-        for rid, shared in sorted(scan.fan_rooms.items(), key=lambda kv: (
-                -kv[1], -kv[1] / (scan.rooms[kv[0]][0] + fan_count - kv[1]), kv[0]))[:100]:
-            gifters = scan.rooms[rid][0]
-            key, label = rooms.label(rid)
-            similar.append({"key": key, "name": label, "gifters": gifters, "shared": shared,
-                            "overlap": round(shared / (gifters + fan_count - shared), 3), "candidates": gifters - shared})
-        givers = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM rs")} if sup_ids else {}
-        room_count = s.scalar("SELECT COUNT(*) FROM rs")
-        multi_count = s.scalar(f"SELECT COUNT(*) FROM u WHERE n > 1 AND {name} NOT IN ({','.join('?' * len(left))})", left)
-        room_rows = s.all("SELECT * FROM rs ORDER BY points DESC LIMIT 200")
-        pairs = _room_pairs(s, rooms, scan)
-        del scan
+        c.execute("ATTACH DATABASE ? AS b", (str(cache / db_name),))
+        try:
+            c.execute("PRAGMA b.journal_mode=OFF")
+            c.execute("PRAGMA b.synchronous=OFF")
+            c.execute("CREATE TABLE b.u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)")
+            scan = _PairScan(s, merged, set())
+            del merged
+            c.execute("CREATE INDEX b.u_total ON u(total)")
+            c.execute("""CREATE TABLE b.rs (room_id INTEGER PRIMARY KEY, gifters INTEGER, points INTEGER, multi INTEGER,
+                                            top_user INTEGER, top_points INTEGER)""")
+            c.executemany("INSERT INTO b.rs VALUES (?, ?, ?, ?, ?, ?)", [(rid, *v) for rid, v in scan.rooms.items()])
+            c.commit()
+            left = tuple(LEFT_NAMES)
+            alive = f"total > 0 AND {_name_sql('u')} NOT IN ({','.join('?' * len(left))})"
+            signup = _Signup.build(s, rec)
+            with s.tx():
+                s.set_meta(SIGNUP_META, signup.steps)
+            # 登録した年ごとの人数と上位 (見るルームのギフターは、見るルームごとの集計で除く)
+            signup_years = []
+            for year, lo, hi, rough in signup.years():
+                band = (*left, lo, hi)
+                n = s.scalar(f"SELECT COUNT(*) FROM b.u WHERE {alive} AND user_id BETWEEN ? AND ?", band)
+                if n:
+                    top = [r[0] for r in s.all(f"""SELECT user_id FROM b.u WHERE {alive} AND user_id BETWEEN ? AND ?
+                                                   ORDER BY total DESC, user_id LIMIT ?""", (*band, SIGNUP_BASE_LIMIT))]
+                    signup_years.append({"year": year, "count": n, "rough": rough, "lo": lo, "hi": hi, "top": top})
+            alive_count = s.scalar(f"SELECT COUNT(*) FROM b.u WHERE {alive}", left)
+            gifter_count = s.scalar("SELECT COUNT(*) FROM b.u")
+            room_count = s.scalar("SELECT COUNT(*) FROM b.rs")
+            multi_count = s.scalar(f"SELECT COUNT(*) FROM b.u WHERE n > 1 AND {_name_sql('u')} NOT IN ({','.join('?' * len(left))})", left)
+            room_rows = s.all("SELECT * FROM b.rs ORDER BY points DESC LIMIT 200")
+            pairs = _room_pairs(s, rooms, scan)
+            del scan
+        finally:
+            c.commit()
+            c.execute("DETACH DATABASE b")
 
         cov = coverage(state_dir)  # 古ければ前の結果 (裏で数え直す)。数えるのに 20 秒かかるので、分析のたびに数え直さない
         trend = _trend(s, cov, left)
-        trend_ids = [r["user_id"] for kind in ("falling", "rising", "hidden") for r in trend[kind]]
+        top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
+        room_list = []
+        for r in room_rows:
+            key, label = rooms.label(r["room_id"])
+            info = s.room(room_id=r["room_id"]) if r["room_id"] > 0 else None
+            room_list.append({"room_id": r["room_id"], "key": key, "name": label, "gifters": r["gifters"], "points": r["points"],
+                              "multi": r["multi"],
+                              "events": s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=?", (r["room_id"],)),
+                              "researched": bool(info is not None and info["collected_at"]),
+                              "top": {"user_id": r["top_user"], "name": top_names.get(r["top_user"]) or "(名前なし)",
+                                      "points": r["top_points"]}})
+        # 記録したギフトにだけ出てくるルームの仮の番号 (見るルームごとの集計でも同じ番号を使う)
+        temp_ids = {key: rid for key, rid in rooms.ids.items() if rid < 0}
+    return {"db": db_name, "limit": limit, "temp_ids": temp_ids, "alive_count": alive_count, "gifter_count": gifter_count,
+            "room_count": room_count, "multi_count": multi_count, "rooms": room_list, "pairs": pairs, "coverage": cov,
+            "trend": trend, "signup_years": signup_years}
 
+
+def _support_points(s: Store, rooms: _Rooms, rec: _Recorded, sup: set[int]) -> dict[int, int]:
+    """見るルームに送ったポイント (人ごと)。ルームごとに、累計ランキング・貢献ランキング・記録したギフトの大きい方を足す。"""
+    pts: dict[tuple[int, int], int] = {}
+    for part in _chunks(sorted(sup)):
+        for uid, rid, pt in s.conn.execute(f"""SELECT user_id, room_id, MAX(cumulative, events) FROM user_room
+                                               WHERE room_id IN ({','.join('?' * len(part))}) AND MAX(cumulative, events) > 0""",
+                                           part):
+            pts[(uid, rid)] = pt
+    for (uid, key), pt in rec.points.items():
+        if pt:
+            rid = rooms.id(key)
+            if rid in sup:
+                pts[(uid, rid)] = max(pts.get((uid, rid), 0), pt)
+    out: dict[int, int] = defaultdict(int)
+    for (uid, _), pt in pts.items():
+        out[uid] += pt
+    return dict(out)
+
+
+def _fan_rooms(s: Store, rooms: _Rooms, rec: _Recorded, fans: list[int], sup: set[int]) -> dict[int, int]:
+    """見るルームのギフターが送っている、見るルームでないルーム → 人数。"""
+    out: dict[int, int] = defaultdict(int)
+    for part in _chunks(fans):
+        mine: dict[int, set[int]] = defaultdict(set)
+        for uid, rid in s.conn.execute(f"""SELECT user_id, room_id FROM user_room WHERE user_id IN ({','.join('?' * len(part))})
+                                           AND MAX(cumulative, events) > 0""", part):
+            mine[uid].add(rid)
+        for uid in part:
+            for key, pt in rec.by_user.get(uid, {}).items():
+                if pt:
+                    mine[uid].add(rooms.id(key))
+        for rids in mine.values():
+            for rid in rids - sup:
+                out[rid] += 1
+    return out
+
+
+def _analyze_view(state_dir: Path, base: dict[str, Any], support: list[str], limit: int) -> dict[str, Any]:
+    """見るルームごとの集計: 土台に、見るルームのギフターを当てはめる (索引で読む分だけ。全部は読まない)。"""
+    rec = _Recorded(state_dir)
+    with Store(state_dir) as s:
+        rooms = _Rooms(s, state_dir)
+        for key, rid in base["temp_ids"].items():  # 記録にだけ出てくるルームは、土台と同じ番号にする
+            if s.room(key=key) is not None or (rooms.known.get(key) or {}).get("room_id"):
+                continue  # そのあと room_id が分かった
+            rooms.ids[key] = rid
+            rooms.labels[rid] = (key, (rooms.known.get(key) or {}).get("name") or key)
+        sup_ids = list(dict.fromkeys(rooms.id(k) for k in support))
+        sup = set(sup_ids)
+        c = s.conn
+        c.execute("ATTACH DATABASE ? AS b", (str(Path(state_dir) / "cache" / base["db"]),))
+        try:
+            _rec_names(s, rec)
+            points = _support_points(s, rooms, rec, sup) if sup else {}
+            fan_order = sorted(points, key=lambda u: (-points[u], u))
+            fan_count = len(fan_order)
+            fan_ids = fan_order[:limit]
+            c.execute("CREATE TEMP TABLE fan (user_id INTEGER PRIMARY KEY)")
+            c.executemany("INSERT INTO fan VALUES (?)", [(u,) for u in fan_order])
+            left = tuple(LEFT_NAMES)
+            alive = f"{_name_sql('u')} NOT IN ({','.join('?' * len(left))})"
+            # 誘導の候補: 見るルームに送っていない人 (ポイントの多い順。total の索引を上から読んで、見るルームのギフターを飛ばす)
+            fans_alive = s.scalar(f"SELECT COUNT(*) FROM b.u WHERE user_id IN (SELECT user_id FROM fan) AND total > 0 AND {alive}",
+                                  left) if fan_order else 0
+            candidate_count = base["alive_count"] - fans_alive
+            cand_ids = [r[0] for r in s.all(f"""SELECT user_id FROM b.u INDEXED BY u_total WHERE total > 0
+                                               AND user_id NOT IN (SELECT user_id FROM fan) AND {alive}
+                                               ORDER BY total DESC, user_id LIMIT ?""", (*left, limit))]
+            overall = set(cand_ids)
+            signup_years, extra_ids = [], []
+            for y in base["signup_years"]:
+                band_fans = s.scalar("SELECT COUNT(*) FROM fan WHERE user_id BETWEEN ? AND ?", (y["lo"], y["hi"])) if fan_order else 0
+                n = y["count"] - (s.scalar(f"""SELECT COUNT(*) FROM b.u WHERE user_id IN (SELECT user_id FROM fan
+                                                WHERE user_id BETWEEN ? AND ?) AND total > 0 AND {alive}""",
+                                           (y["lo"], y["hi"], *left)) if band_fans else 0)
+                if n:
+                    signup_years.append({"year": y["year"], "count": n, "rough": y["rough"]})
+                    extra_ids += [u for u in [u for u in y["top"] if u not in points][:SIGNUP_YEAR_LIMIT] if u not in overall]
+            fan_rooms = _fan_rooms(s, rooms, rec, fan_order, sup) if fan_order else {}
+            gifters = {r[0]: r[1] for part in _chunks(list(fan_rooms) + sup_ids)
+                       for r in s.all(f"SELECT room_id, gifters FROM b.rs WHERE room_id IN ({','.join('?' * len(part))})", part)}
+        finally:
+            c.execute("DETACH DATABASE b")
+        # 似ているルーム: 見るルームのギフターが、ほかにどのルームに送っているか
+        similar = []
+        for rid, shared in sorted(((r, n) for r, n in fan_rooms.items() if r in gifters), key=lambda kv: (
+                -kv[1], -kv[1] / (gifters[kv[0]] + fan_count - kv[1]), kv[0]))[:100]:
+            key, label = rooms.label(rid)
+            similar.append({"key": key, "name": label, "gifters": gifters[rid], "shared": shared,
+                            "overlap": round(shared / (gifters[rid] + fan_count - shared), 3), "candidates": gifters[rid] - shared})
+        trend = base["trend"]
+        trend_ids = [r["user_id"] for kind in ("falling", "rising", "hidden") for r in trend[kind]]
         uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids + trend_ids))
         evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
-        sup = set(sup_ids)
+        signup = _signup(s, rec)
         # ルームごとの内訳は SUMMARY_STEP 人ずつまとめて読み、まとめを作ったら捨てる
         # (前は 1 人ずつ読んでいて、サーバーで 1,400 回・24 秒。全員を一度に読むと、数万ルームに出てくる人もいてメモリが足りなくなる)
         summary = {}
@@ -1052,24 +1227,16 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
             summary.update({u: _summary(u, names.get(u), slots.get(u, {}), evs.get(u), rec.gifts.get(u, []),
                                         rooms, sup, signup.guess(u)) for u in part})
             del slots
-        top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
-        room_list = []
-        for r in room_rows:
-            key, label = rooms.label(r["room_id"])
-            info = s.room(room_id=r["room_id"]) if r["room_id"] > 0 else None
-            room_list.append({"key": key, "name": label, "gifters": r["gifters"], "points": r["points"], "multi": r["multi"],
-                              "events": s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=?", (r["room_id"],)),
-                              "researched": bool(info is not None and info["collected_at"]), "support": r["room_id"] in sup,
-                              "top": {"user_id": r["top_user"], "name": top_names.get(r["top_user"]) or "(名前なし)",
-                                      "points": r["top_points"]}})
+        rec.gifts.close()
+        room_list = [{**{k: v for k, v in r.items() if k != "room_id"}, "support": r["room_id"] in sup} for r in base["rooms"]]
         return {"mode": "support" if sup_ids else "all",
-                "support": [{"key": k, "name": rooms.label(rooms.id(k))[1], "gifters": givers.get(rooms.id(k), 0)}
+                "support": [{"key": k, "name": rooms.label(rooms.id(k))[1], "gifters": gifters.get(rooms.id(k), 0)}
                             for k in support],
                 "candidates": [summary[u] for u in cand_ids], "candidate_count": candidate_count,
                 "signup_candidates": [summary[u] for u in extra_ids], "signup_years": signup_years,
                 "fans": [summary[u] for u in fan_ids], "fan_count": fan_count, "similar": similar,
-                "pairs": pairs, "rooms": room_list, "room_count": room_count, "multi_count": multi_count,
-                "gifter_count": gifter_count, "coverage": cov,
+                "pairs": base["pairs"], "rooms": room_list, "room_count": base["room_count"], "multi_count": base["multi_count"],
+                "gifter_count": base["gifter_count"], "coverage": base["coverage"],
                 "trend": {**trend, **{kind: [{**summary[r["user_id"]], **r} for r in trend[kind]]
                                       for kind in ("falling", "rising", "hidden")}}}
 

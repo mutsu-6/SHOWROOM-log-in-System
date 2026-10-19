@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .config import SETTINGS_KEYS, normalize_room_key, save_settings
+from .config import SETTINGS_KEYS, fold_support, normalize_room_key, save_settings
 from .status import LOGIN_KEY, fetch, read_live_stats
 
 log = logging.getLogger("web")
@@ -488,9 +488,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         return bool(keys) and research.JOB.start(self._state_dir(), keys, "管理画面から", force=force)
 
     def _support(self, q: dict[str, str]) -> list[str]:
-        if q.get("support"):
-            return [normalize_room_key(k) for k in q["support"].split(",") if k.strip()]
-        return list(self.keeper.cfg.support_rooms)
+        """分析で見るルーム。画面で選んだもの (support=、空なら選ばない) を使う。
+        指定が無い時 (お知らせなど) は、調べるルーム (前の応援しているルームも入っている)。"""
+        if "support" in parse_qs(urlparse(self.path).query, keep_blank_values=True):
+            return [normalize_room_key(k) for k in q.get("support", "").split(",") if k.strip()]
+        return list(self.keeper.cfg.research_rooms)
 
     def do_POST(self) -> None:  # noqa: N802 - 標準の名前
         if not self._allowed():
@@ -509,6 +511,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 log.info("管理画面からルーム設定が変更されました")
                 # 応援ルーム・調べるルームは視聴に関係しないので、すぐ反映して新しいルームを集め始める
                 cfg.support_rooms, cfg.research_rooms = values["support_rooms"], values["research_rooms"]
+                fold_support(cfg)
                 if any(values.get(k, before[k]) != before[k] for k in WATCH_KEYS):
                     self.keeper.request_reload()
                 self._start_research(only_new=True)

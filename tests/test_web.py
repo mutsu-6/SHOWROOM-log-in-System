@@ -220,10 +220,13 @@ def test_research_endpoints(admin, monkeypatch):
     monkeypatch.setattr(research.JOB, "start", lambda state_dir, keys, reason, force=False: started.append((keys, force)) or True)
     monkeypatch.setattr(research, "analyze", lambda state_dir, support, max_age=600: {
         "candidates": [], "support_arg": support, "max_age": max_age})
-    keeper.cfg.support_rooms = ["sup"]
-    code, body = call(base + "/api/research")
+    keeper.cfg.research_rooms = ["sup"]
+    code, body = call(base + "/api/research")  # 見るルームを指定しない時は、調べるルーム
     data = json.loads(body)
     assert code == 200 and data["support_arg"] == ["sup"] and data["job"]["running"] is False and data["max_age"] == research.ANALYSIS_TTL
+    # 画面で選んだ見るルーム (空なら選ばない)
+    assert json.loads(call(base + "/api/research?support=")[1])["support_arg"] == []
+    assert json.loads(call(base + "/api/research?support=other")[1])["support_arg"] == ["other"]
     assert json.loads(call(base + "/api/research?refresh=1")[1])["max_age"] == 0  # 「集計し直す」
     code, body = call(base + "/api/research/status")  # 集めている間の進み具合 (分析はしない)
     data = json.loads(body)
@@ -233,6 +236,7 @@ def test_research_endpoints(admin, monkeypatch):
     # 応援ルームだけ変えた時は、視聴をやり直さず、まだ集めていないルームを集める
     code, _ = call(base + "/api/settings", {"rooms": ["a", "b"], "support_rooms": ["sup", "new"]}, POST)
     assert code == 200 and keeper.reloads == 0 and keeper.cfg.support_rooms == ["sup", "new"]
+    assert keeper.cfg.research_rooms == ["sup", "new"]  # 前の応援ルームは、調べるルームに移す
     assert started[-1] == (["sup", "new"], False)
     # 視聴のルームと一緒に変えた時も、新しい応援ルームをすぐ集める (視聴のやり直しを待たない)
     code, _ = call(base + "/api/settings", {"rooms": ["c"], "support_rooms": ["sup", "new", "newer"]}, POST)
