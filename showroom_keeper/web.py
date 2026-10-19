@@ -423,6 +423,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self._json(explore.event_list(state_dir, q.get("state", "ongoing")))
                 else:
                     self._json(explore.event_detail(state_dir, q.get("event", ""), self._support(q)))
+            elif url.path == "/api/event_live":
+                from . import live_contrib
+
+                self._json(live_contrib.event_live(self._state_dir(), q.get("event", "")))
             elif url.path == "/api/feed":
                 from . import feed
 
