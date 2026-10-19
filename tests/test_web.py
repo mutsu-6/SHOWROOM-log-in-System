@@ -223,7 +223,7 @@ def test_research_endpoints(admin, monkeypatch):
     keeper.cfg.support_rooms = ["sup"]
     code, body = call(base + "/api/research")
     data = json.loads(body)
-    assert code == 200 and data["support_arg"] == ["sup"] and data["job"]["running"] is False and data["max_age"] == 600
+    assert code == 200 and data["support_arg"] == ["sup"] and data["job"]["running"] is False and data["max_age"] == research.ANALYSIS_TTL
     assert json.loads(call(base + "/api/research?refresh=1")[1])["max_age"] == 0  # 「集計し直す」
     code, body = call(base + "/api/research/status")  # 集めている間の進み具合 (分析はしない)
     data = json.loads(body)

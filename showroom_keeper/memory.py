@@ -10,7 +10,10 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import logging
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +35,21 @@ def tight(need_mb: float = HEAVY_MIN_FREE_MB) -> bool:
     """メモリの空きが need_mb より少ないか (分からなければ False = 気にせず数える)。"""
     free = free_mb()
     return free is not None and free < need_mb
+
+
+_heavy = threading.RLock()
+
+
+@contextmanager
+def heavy(wait: bool = True) -> Iterator[bool]:
+    """重い集計を 1 つずつ行う (同時に読むと、ディスクの読み出しを取り合って、どれも何倍も遅くなる。2026-10-19 にサーバーで
+    analyze と集まり具合の数え直しが重なっていた)。wait=False なら、ほかが数えている時は待たずに False を返す (裏の数え直しは次の機会に)。"""
+    got = _heavy.acquire(blocking=wait)
+    try:
+        yield got
+    finally:
+        if got:
+            _heavy.release()
 
 
 _libc = None
