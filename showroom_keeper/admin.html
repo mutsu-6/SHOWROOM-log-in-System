@@ -1712,6 +1712,23 @@ function gifterStates(st) {
       { label: "直近 12 か月の pt", num: true, value: (r) => r.points, html: (r) => num(r.points) },
     ], lf.rooms, { sort: 2, limit: 10, csvName: "ギフター_段階と寿命", note: `${STAGE_NOTE}。見えた月は上位 100 人に入った月なので、小さく送る人は段が低く出ます。線はどれも仮の値です` }) : "");
   }
+  const pw = st.power;
+  if (pw) {
+    const POWER_NOTE = { "上り調子": "直近 3 か月が、その前の 3 か月の 1.5 倍以上", "安定": "大きく増えても減ってもいない",
+      "温存中": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下なのに、アクティブファンには残っている (出せるのに今は出していない)",
+      "枯れている": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下で、アクティブファンからも消えた" };
+    const yen = (pt) => `約 ${shortNum(Math.round(pt * pw.yen_per_pt))} 円`;
+    h += `<h3>戦力 <small class="muted">次の勝負でいくら出せるか。直近 12 か月の貢献ランキングから (上位 100 人までなので「少なくとも」の量)</small></h3>
+      <div class="tiles">
+        ${tile("1 イベントの上限", `${shortNum(pw.cap)} <small>pt</small>`, `${yen(pw.cap)}${pw.cap2 ? ` ・ 2 番目 ${shortNum(pw.cap2)} pt` : ""} ・ ${num(pw.events)} 回出た`)}
+        ${tile("月の予算", `${shortNum(pw.budget)} <small>pt</small>`, `送った ${num(pw.active_months)} か月の中ほど ・ ${yen(pw.budget)}`)}
+        ${tile("状態", `<b title="${esc(POWER_NOTE[pw.state])}">${esc(pw.state)}</b>`, `直近 3 か月 ${shortNum(pw.recent)} pt ・ その前 ${shortNum(pw.before)} pt`, pw.state === "温存中" ? "warn" : "")}
+        ${tile(`${ym(pw.month)} ここまで`, `${shortNum(pw.spent)} <small>pt</small>`, `${pw.now_tier ? `今月のクラス <b>${esc(pw.now_tier)}</b> ・ ` : ""}残り (予算から) ${shortNum(pw.left)} pt`)}
+        ${tile("今月の予想", `${shortNum(pw.forecast)} <small>pt</small>`, `${pw.forecast_tier ? `<b>${esc(pw.forecast_tier)}</b> の見込み ・ ` : ""}先月 ${pw.last_tier ? esc(pw.last_tier) : "—"} ・ 大きな勝負なら ${shortNum(pw.upper)} pt まで`)}
+      </div>
+      <div class="hint">円は、大きな有料ギフトの 1 SG = 3 pt (2.5 倍 × 1.2 倍) で割ったおよその額 (無料の星が多い人は少なく出ます)。今月の分は終わったイベントだけで、開催中のイベントは入っていません。
+        アプリの累計のクラスとちがい、直近の量だけを見ます。線はどれも仮の値です</div>`;
+  }
   const en = st.engage;
   if (en) {
     const dp = en.dependency;

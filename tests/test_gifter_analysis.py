@@ -243,3 +243,31 @@ def test_gifter_page_names_rooms_first_seen_late(tmp_path):
             s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (99, ?, 1, 15)", (ym,))
     d = research.gifter_detail(tmp_path, 1, [])
     assert d["found"] and any(r["name"] == "ルーム99" for r in d["states"]["engage"]["rooms"])
+
+
+def test_power_cap_budget_state_and_forecast(tmp_path):
+    """パワーギフターの戦力: 1 イベントの上限・月の予算・今月の残り・状態・クラスと予想。"""
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        eid = 0
+        for i, m in enumerate(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]):
+            eid += 1
+            rows = {10: {}}
+            rows[10][1] = [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 400][i]  # 1: 安定。今月は 400 まで
+            rows[10][2] = [0, 0, 0, 100, 100, 100, 400, 500, 600, 0][i] or None  # 2: 上り調子
+            rows[10][3] = [0, 0, 0, 5000, 6000, 5000, 100, 0, 0, 0][i] or None  # 3: 大きく出したあと少ない (アクティブファンに残る = 温存中)
+            rows[10][4] = [0, 0, 0, 5000, 6000, 5000, 100, 0, 0, 0][i] or None  # 4: 同じだがアクティブファンにもいない = 枯れている
+            rows[10].update({100 + k: 10 for k in range(20)})
+            _event(s, eid, m, {10: {u: p for u, p in rows[10].items() if p}})
+        eid += 1
+        _event(s, eid, "2026-05", {20: {1: 3000}})  # 1 の 1 回だけの大きな勝負
+        s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (10, '202609', 3, 20)")
+        p = {u: ga.gifter_states(s, u, NOW)["power"] for u in (1, 2, 3, 4)}
+    assert p[1]["state"] == "安定" and p[1]["cap"] == 3000 and p[1]["cap2"] == 1000
+    assert p[1]["budget"] == 1000 and p[1]["month"] == "2026-10" and p[1]["spent"] == 400 and p[1]["left"] == 600
+    assert p[1]["forecast"] == 1000 and p[1]["upper"] == 3000 and p[1]["now_tier"] and p[1]["last_tier"]
+    assert p[2]["state"] == "上り調子"
+    assert p[3]["state"] == "温存中" and p[3]["cap"] == 6000
+    assert p[4]["state"] == "枯れている"
+    assert ga.gifter_states(s := Store(tmp_path), 999, NOW)["power"] is None
+    s.close()

@@ -57,6 +57,11 @@ COOL_LEVEL = 0.7  # 冷めかけ: 直近 3 か月のファンレベルが前の 
 COOL_POINTS = 0.5  # 直近 3 か月のポイントが前の 3 か月のこれだけ以下
 ENGAGE_ROOMS = 10  # 見守り・冷めかけを出すルームの数
 PER_VISIT_MIN = 8  # 1 来場あたりの少なさは、そのルームの累計ランキングにこれだけの人がいる時だけくらべる
+# パワーギフターの戦力 (docs/ギフターの分類.md の「パワーギフターの戦力分析」・docs/戦術メモ.md の 3)。線はどれも仮の値
+POWER_MONTHS = 12  # 上限・月の予算を見る月数
+RISING = 1.5  # 直近 3 か月の量が、その前の 3 か月のこれだけ倍以上なら「上り調子」
+LOW = 0.3  # 直近 3 か月の量が、いちばん多かった 3 か月のこれだけ以下なら、「温存中」(アクティブファンに残っている) か「枯れている」
+PT_PER_YEN = 3  # 大きな有料ギフトは 1 SG (1 円) = 3 pt (2.5 倍 × 1.2 倍)。貢献ポイント ÷ 3 = 使ったお金のおよその額
 CUT_TTL = 86400  # 月ごとの区切りを覚えておく時間 (古い月も集め直しで増えるので、1 日で読み直す)
 
 _cuts: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
@@ -165,7 +170,54 @@ def gifter_states(s: Store, uid: int, now: float | None = None) -> dict[str, Any
     seen = visibility(s, uid, first, month)
     return {"month": month, "rooms": rooms, "switch": switch, "tiers": tiers, "visibility": seen["visibility"],
             "pillars": seen["pillars"], "focus": focus(s, uid, per, month, seen["visibility"]),
-            "life": life(s, uid, per, month), "engage": engage(s, uid, per, month)}
+            "life": life(s, uid, per, month), "engage": engage(s, uid, per, month), "power": power(s, uid, month, now)}
+
+
+def power(s: Store, uid: int, month: str, now: float) -> dict[str, Any] | None:
+    """パワーギフターの戦力: 1 イベントの上限・月の予算・今月の残り・状態 (上り調子・安定・温存中・枯れている)・
+    今月ここまでのクラスと先月のクラス・今月の予想。
+
+    - 上限 = 直近 POWER_MONTHS か月の、1 イベント × 1 ルームの貢献ポイントの最大と、上から 2 番目 (1 回だけの無理を除いた目安)
+    - 月の予算 = 送った月の、月ごとの量の中ほど (中央値)。今月の残り = 予算 − 今月ここまで (終わったイベントの分)
+    - 温存中 = 直近 3 か月が少ないのに、アクティブファンには残っている。枯れている = 少なくなり、アクティブファンからも消えた
+    - アプリの累計のクラスは、長くいる人ほど高く、今の戦力の目安にならないので、ここでは直近の量だけを見る
+    貢献ランキングは上位 100 人までなので、どれも「少なくとも」の量。
+    """
+    cur = _add(month, 1)  # 今の (途中の) 月
+    since = datetime.strptime(_add(month, -(POWER_MONTHS - 1)) + "-01", "%Y-%m-%d").replace(tzinfo=JST).timestamp()
+    events = sorted((r[0] for r in s.all("""SELECT c.point FROM contributions c JOIN events e USING(event_id)
+                                            WHERE c.user_id=? AND e.end >= ? AND c.point > 0""", (int(uid), since))), reverse=True)
+    totals = {r["month"]: r["points"] for r in s.all("SELECT month, points FROM user_month WHERE user_id=? AND month>=?",
+                                                       (int(uid), _add(month, -(POWER_MONTHS - 1))))}
+    months = [totals.get(_add(month, -k), 0) for k in range(POWER_MONTHS - 1, -1, -1)]  # 古い順、month まで
+    if not events and not any(months) and not totals.get(cur):
+        return None
+    active = sorted(v for v in months if v)
+    budget = (active[len(active) // 2] if len(active) % 2 else (active[len(active) // 2 - 1] + active[len(active) // 2]) / 2) if active else 0
+    recent, before = sum(months[-3:]), sum(months[-6:-3])
+    peak3 = max((sum(months[i:i + 3]) for i in range(len(months) - 2)), default=0)
+    fan = s.one("SELECT 1 FROM active_fans WHERE user_id=? AND ym >= ? LIMIT 1",
+                (int(uid), _add(month, -2).replace("-", ""))) is not None
+    if before and recent >= RISING * before:
+        state = "上り調子"
+    elif peak3 and recent <= LOW * peak3:
+        state = "温存中" if fan else "枯れている"
+    elif not before and recent:
+        state = "上り調子"  # 直近で出始めた
+    else:
+        state = "安定"
+    spent = totals.get(cur, 0)
+    base = sorted(v for v in months[-3:] if v)
+    base_pt = base[len(base) // 2] if base else budget
+    forecast = max(spent, base_pt)
+    full = month_cuts(s, month)  # 今月の予想は、集め終わった先月の区切りでくらべる
+    return {"cap": events[0] if events else 0, "cap2": events[1] if len(events) > 1 else None, "events": len(events),
+            "budget": budget, "active_months": len(active), "spent": spent, "left": max(0, budget - spent),
+            "recent": recent, "before": before, "peak3": peak3, "fan": fan, "state": state,
+            "month": cur, "now_tier": tier(spent, month_cuts(s, cur)) if spent else None,
+            "last_tier": tier(totals.get(month, 0), full) if totals.get(month) else None,
+            "forecast": forecast, "forecast_tier": tier(forecast, full) if forecast else None,
+            "upper": max(forecast, events[0] if events else 0), "yen_per_pt": 1 / PT_PER_YEN}
 
 
 def _months_between(a: str, b: str) -> int:
