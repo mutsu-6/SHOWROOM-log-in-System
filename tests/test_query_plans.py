@@ -32,16 +32,44 @@ ALLOWED = [
 ]
 
 
+DML = re.compile(r"\s*(SELECT|UPDATE|DELETE|INSERT|WITH)", re.I)
+
+
+def _plan(conn: sqlite3.Connection, seen: list, sql: str, params) -> None:
+    """流れる直前に、同じ接続で読み方を確かめる (一時表を使う SQL も、その接続なら確かめられる)。"""
+    if DML.match(sql):
+        try:
+            steps = [r[3] for r in sqlite3.Connection.execute(conn, "EXPLAIN QUERY PLAN " + sql, params)]
+        except sqlite3.Error:
+            return  # 確かめられない SQL は、流しても同じエラーになる
+        seen.append((sql, steps))
+
+
 @pytest.fixture
 def traced(tmp_path, monkeypatch):
-    """実際に流れた SQL を拾う。"""
-    seen: list[str] = []
+    """実際に流れた SQL と、その読み方を拾う。
+
+    前は、流れた SQL を後から別の接続で確かめていたので、一時表 (TEMP TABLE) を使う SQL は「表が無い」で黙って飛ばされていた
+    (2026-10-19 に Cursor が見つけた)。今は、流れる直前に同じ接続で確かめる。
+    """
+    seen: list = []
     connect = sqlite3.connect
 
+    class Cursor(sqlite3.Cursor):
+        def execute(self, sql, params=()):
+            _plan(self.connection, seen, sql, params)
+            return super().execute(sql, params)
+
+    class Connection(sqlite3.Connection):
+        def execute(self, sql, params=()):
+            _plan(self, seen, sql, params)
+            return super().execute(sql, params)
+
+        def cursor(self, factory=Cursor):
+            return super().cursor(factory)
+
     def tracing(*a, **k):
-        c = connect(*a, **k)
-        c.set_trace_callback(seen.append)
-        return c
+        return connect(*a, factory=Connection, **k)
 
     monkeypatch.setattr(research_store.sqlite3, "connect", tracing)
     with Store(tmp_path) as s:
@@ -60,24 +88,17 @@ def traced(tmp_path, monkeypatch):
     return tmp_path, seen
 
 
-def full_scans(state_dir, seen: list[str]) -> list[tuple[str, str]]:
+def full_scans(state_dir, seen: list) -> list[tuple[str, str]]:
     bad = []
-    with Store(state_dir) as s:
-        for q in dict.fromkeys(seen):
-            if not re.match(r"\s*(SELECT|UPDATE|DELETE|INSERT|WITH)", q, re.I):
+    for q, plan in {q: plan for q, plan in seen}.items():
+        for step in plan:
+            m = re.match(r"SCAN (\w+)", step)
+            if not m:
                 continue
-            try:
-                plan = [r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + q)]
-            except sqlite3.Error:
-                continue
-            for step in plan:
-                m = re.match(r"SCAN (\w+)", step)
-                if not m:
-                    continue
-                name = m.group(1)
-                table = name if name in BIG else next((t for t in BIG if re.search(rf"\b{t}\s+(AS\s+)?{name}\b", q)), None)
-                if table and not any(a in step and b in q for a, b, _ in ALLOWED):
-                    bad.append((step, " ".join(q.split())[:200]))
+            name = m.group(1)
+            table = name if name in BIG else next((t for t in BIG if re.search(rf"\b{t}\s+(AS\s+)?{name}\b", q)), None)
+            if table and not any(a in step and b in q for a, b, _ in ALLOWED):
+                bad.append((step, " ".join(q.split())[:200]))
     return bad
 
 
@@ -231,3 +252,17 @@ def test_search_uses_the_name_index(traced):
     traced[1].clear()
     check(traced, lambda d: explore.search(d, "ルーム1"))
     check(traced, lambda d: explore.search(d, "ーム"))  # 2 文字は 2 文字ずつの索引で
+
+
+def test_listener_lists_read_the_tables_as_intended(traced, monkeypatch):
+    """ギフターの一覧 (すべての期間・期間を決めた時) と、ギフターのページの記録したギフト。一時表を使う SQL も確かめる。"""
+    from showroom_keeper import listing
+    from showroom_keeper.gifts import record_gift
+
+    monkeypatch.setattr(listing, "gift_catalog", lambda state_dir, rooms=None: {1: {"point": 1, "free": True}, 100: {"point": 100, "free": False}})
+    for k in range(3):
+        record_gift(traced[0], f"k{k + 1}", 1, {"u": 100 + k, "ac": "a", "g": 100, "n": 1, "created_at": NOW - 60 * k})
+    check(traced, lambda d: listing.list_listeners(d, days=7))
+    check(traced, lambda d: listing.listener_detail(d, 100))
+    check(traced, lambda d: listing.list_listeners(d))
+    assert any("sender_done" in q and "gift_senders" in q for q, _ in traced[1])  # 一時表を使う SQL も確かめた
