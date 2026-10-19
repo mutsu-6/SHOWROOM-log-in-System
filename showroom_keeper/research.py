@@ -494,9 +494,9 @@ class _Recorded:
 
     def __init__(self, state_dir: Path, store: Store | None = None, user: int | None = None):
         self.state_dir = Path(state_dir)
-        self.points: dict[tuple[int, str], int] = defaultdict(int)
-        self.free: dict[tuple[int, str], int] = defaultdict(int)  # そのうち無料のギフトのポイント
         self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self.points = _PairPoints(self.by_user)  # (人, ルーム) → pt (by_user と同じものを、別の形で見る。メモリを 2 重に使わない)
+        self.free: dict[tuple[int, str], int] = defaultdict(int)  # そのうち無料のギフトのポイント (無料の分がある組だけ)
         self.names: dict[int, str] = {}
         self.first_at: dict[int, float] = {}
         from .explore import update_all_gift_senders
@@ -516,8 +516,8 @@ class _Recorded:
         last: dict[int, float] = {}
         for r in rows:
             uid, key = int(r["user_id"]), r["room_key"]
-            self.points[(uid, key)] += r["points"] or 0
-            self.free[(uid, key)] += r["free_points"] or 0
+            if r["free_points"]:
+                self.free[(uid, key)] += r["free_points"]
             self.by_user[uid][key] += r["points"] or 0
             if r["first_at"] is not None and r["first_at"] < self.first_at.get(uid, float("inf")):
                 self.first_at[uid] = r["first_at"]
@@ -526,44 +526,88 @@ class _Recorded:
         self.gifts = _RecordedGifts(self)
 
 
+class _PairPoints:
+    """by_user ({人: {ルーム: pt}}) を、{(人, ルーム): pt} のように読むもの。"""
+
+    def __init__(self, by_user: dict[int, dict[str, int]]):
+        self._by_user = by_user
+
+    def get(self, pair: tuple[int, str], default: Any = None) -> Any:
+        u = self._by_user.get(pair[0])
+        return u.get(pair[1], default) if u is not None else default
+
+    def items(self) -> Any:
+        return (((u, k), pt) for u, rooms in self._by_user.items() for k, pt in rooms.items())
+
+    def __iter__(self) -> Any:
+        return ((u, k) for u, rooms in self._by_user.items() for k in rooms)
+
+    def __bool__(self) -> bool:
+        return bool(self._by_user)
+
+
+def _no_file() -> Any:
+    import io
+
+    return io.StringIO("")
+
+
 class _RecordedGifts:
-    """1 人のギフト 1 件ずつ [(時刻, pt, ルーム)] を、その人が送ったルームのファイルだけから読む (dict の get のように使う)。"""
+    """1 人のギフト 1 件ずつ [(時刻, pt, ルーム)] を、その人が送ったルームのファイルだけから読む (dict の get のように使う)。
+
+    読んだファイルは、(時刻, 人, ギフト, 個数) の小さな形でこの問い合わせの間だけ持つ (listing の、ずっと残る読み込みの控えは使わない)。
+    """
 
     def __init__(self, rec: _Recorded):
         self.rec = rec
-        self._files: dict[str, list[dict[str, Any]]] = {}
+        self._paths: dict[str, Path] | None = None
+        self._files: dict[str, list[tuple[float, int, Any, int]]] = {}
         self._catalog: dict[int, dict[str, Any]] | None = None
         self._done: dict[int, list[tuple[float, int, str]]] = {}
 
-    def _room(self, key: str) -> list[dict[str, Any]]:
-        from .listing import _load_file, _record_files
+    def _room(self, key: str) -> list[tuple[float, int, Any, int]]:
+        import json
+
+        from .listing import _record_files
 
         if key not in self._files:
-            path = _record_files(self.rec.state_dir).get(key)
-            self._files[key] = _load_file(path) if path is not None else []
+            if self._paths is None:
+                self._paths = _record_files(self.rec.state_dir)  # 1 回だけ探す
+            rows = []
+            path = self._paths.get(key)
+            try:
+                with path.open(encoding="utf-8") if path is not None else _no_file() as f:
+                    for line in f:
+                        try:
+                            g = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(g, dict) and g.get("user_id") is not None and "at" in g:
+                            rows.append((g["at"], int(g["user_id"]), g.get("gift_id"), int(g.get("num") or 1)))
+            except OSError:
+                rows = []
+            self._files[key] = rows
         return self._files[key]
 
-    def _points(self, g: dict[str, Any]) -> int:
+    def _points(self, gift_id: Any, num: int) -> int:
         from .listing import _points, gift_catalog
 
         if self._catalog is None:
             self._catalog = gift_catalog(self.rec.state_dir, sorted({k for _, k in self.rec.points}))
-        return _points(self._catalog, g)[0]
+        return _points(self._catalog, {"gift_id": gift_id, "num": num})[0]
 
     def get(self, uid: int, default: Any = None) -> list[tuple[float, int, str]]:
         uid = int(uid)
         if uid not in self._done:
             out = []
             for key in self.rec.by_user.get(uid, {}):
-                for g in self._room(key):
-                    if g.get("user_id") is not None and int(g["user_id"]) == uid:
-                        out.append((g["at"], self._points(g), key))
+                out += [(at, self._points(gid, n), key) for at, u, gid, n in self._room(key) if u == uid]
             self._done[uid] = sorted(out)
         return self._done[uid]
 
     def room(self, key: str) -> list[tuple[float, int]]:
         """そのルームの、記録した全員のギフト [(時刻, 人)]。"""
-        return [(g["at"], int(g["user_id"])) for g in self._room(key) if g.get("user_id") is not None]
+        return [(at, u) for at, u, _, _ in self._room(key)]
 
 
 class _Rooms:

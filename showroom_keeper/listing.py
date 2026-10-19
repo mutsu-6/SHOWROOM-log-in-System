@@ -50,7 +50,7 @@ _name_misses: dict[str, float] = {}  # {room_url_key: 次に問い合わせて�
 _file_cache: dict[Path, tuple[float, int, list[dict[str, Any]]]] = {}
 # 記録を覚えておく行数の上限 (グリッターのルームまで記録するとファイルが多いので、メモリ 2GB を使い切らないように。
 # 超えたら、長く使っていないファイルから忘れ、次に要る時に読み直す)
-FILE_CACHE_ROWS = 600_000
+FILE_CACHE_ROWS = 200_000  # (2026-10-19 に 60 万行から下げた。1 行が 0.5KB ほどになるので、60 万行で 300MB を超える)
 _event_cache: tuple[float, list[dict[str, Any]]] | None = None
 _live_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
 _search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
