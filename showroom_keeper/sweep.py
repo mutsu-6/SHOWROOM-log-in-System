@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from . import research, room_analysis, series
+from . import onlives, research, room_analysis, series
 from .recorder import next_page_number
 from .status import JST
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
@@ -217,7 +217,7 @@ class Sweeper:
     def _onlives(self, now: float) -> bool:
         self.doing = "配信中のルーム"
         self.store.set_meta("live_at", now)  # 失敗しても次は LIVE_EVERY 秒後 (続けて問い合わせない)
-        data = self.c.get("/api/live/onlives") or {}
+        data = onlives.get(lambda: self.c.get(onlives.PATH)) or {}  # 入室・ギフトの記録が取ったばかりなら使い回す
         lives = [x for g in data.get("onlives") or [] for x in g.get("lives") or [] if isinstance(x, dict)]
         rooms = [{"room_id": x.get("room_id"), "key": x.get("room_url_key"), "name": x.get("main_name"),
                   "followers": x.get("follower_num"), "live_at": now, "viewers": x.get("view_num"),

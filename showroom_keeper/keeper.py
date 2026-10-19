@@ -14,7 +14,7 @@ from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
-from .api import BASE_URL, ShowroomAPI
+from .api import BASE_URL, ShowroomAPI, public_get
 from .config import Config, apply_settings, settings_path
 from .comments import CommentDispatcher, queue_dir
 from .entrance import AllRoomsEntrance, RoomEntrance
@@ -587,7 +587,8 @@ class Keeper:
         disconnected = asyncio.Event()
         browser.on("disconnected", lambda _: disconnected.set())
         ctx = await new_context(browser, self.cfg)
-        api = ShowroomAPI(ctx.request)
+        # プロキシはブラウザだけに効くので、使う時は配信状況もブラウザを通して問い合わせる
+        api = ShowroomAPI(ctx.request, public=None if self.cfg.proxy else public_get)
         try:
             # ログインはアカウント単位なので、確認は 1 ルームで足りる
             room_ids = await self._login_rooms(api, (await self._room_ids(api, required=True))[:1])

@@ -18,6 +18,7 @@ def no_gift_updates(monkeypatch):
     # 管理画面のテストで、GitHub に最新の版を問い合わせない
     import time
 
-    from showroom_keeper import version
+    from showroom_keeper import onlives, version
 
     monkeypatch.setitem(version._latest, "at", time.time())
+    onlives.clear()  # 配信中の一覧の使い回しを、前のテストから持ち込まない

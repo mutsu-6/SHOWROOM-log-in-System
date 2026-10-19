@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import comment_counts, live_events, stage_ranks
+from . import comment_counts, live_events, onlives, stage_ranks
 from .activity import parse_message
 from .api import BASE_URL
 from .config import Config
@@ -190,7 +190,10 @@ class GiftRecorder:
     async def _add_glitter(self, cookie: str | None, watched: set[str], live: dict[str, dict[str, Any]], now: float) -> None:
         """配信中の全ルーム (1 回の問い合わせ) から、グリッターのバッジのあるルームを覚え、
         GLITTER_KEEP のあいだに見たルームが配信していれば記録の対象にする。"""
-        data = await self._fetch("/api/live/onlives", cookie)
+        data = onlives.fresh()
+        if data is None:
+            data = await self._fetch(onlives.PATH, cookie)
+            onlives.remember(data)
         if not isinstance(data, dict):
             raise RuntimeError("配信中のルームの一覧の形式が不正です")
         lives = {x["room_url_key"]: x for g in data.get("onlives") or [] if isinstance(g, dict)
