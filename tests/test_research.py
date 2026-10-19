@@ -1089,20 +1089,44 @@ def test_old_analysis_waits_while_memory_is_tight(collected, monkeypatch):
     assert started  # 空きが戻れば、次に開いた時に数え直す
 
 
-def test_pair_scan_merges_recorded_gifts_in_one_pass(tmp_path):
-    """user_room を 1 回だけ読み、記録したギフト (人 → ルーム → pt) と大きい方を取って、人ごと・ルームごとにまとめる。"""
+@pytest.mark.parametrize("chunk", [1, 2, 3, 1000])
+def test_pair_scan_merges_recorded_gifts_in_one_pass(tmp_path, chunk):
+    """user_room を 1 回だけ読み、記録したギフト (人 → ルーム → pt) と大きい方を取って、人ごと・ルームごとにまとめる。
+    chunk 行ずつ区切って読んでも (1 人の行が区切りより多くても) 同じになる。"""
     with Store(tmp_path) as s:
         s.conn.executemany("INSERT INTO user_room(user_id, room_id, cumulative, events) VALUES (?, ?, ?, ?)",
-                           [(2, 10, 50, 0), (2, 11, 0, 30), (4, 10, 0, 0), (6, 11, 5, 0)])
+                           [(2, 10, 50, 0), (2, 11, 0, 30), (4, 10, 0, 0), (6, 11, 5, 0), (8, 10, 1, 0), (8, 11, 1, 0), (8, 13, 1, 0)])
         s.conn.execute("CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)")
-        # 1: 記録だけの人 (user_room より前)、2: 記録の方が大きい、5: 記録だけの人 (間)、7: 記録だけの人 (後)
-        scan = research._PairScan(s, {1: {10: 7}, 2: {11: 40}, 5: {12: 3}, 7: {10: 50, 11: 1}}, {10})
+        # 1: 記録だけの人 (user_room より前)、2: 記録の方が大きい、5: 記録だけの人 (間)、7: 記録だけの人 (間)、9: 記録だけの人 (後)
+        scan = research._PairScan(s, {1: {10: 7}, 2: {11: 40}, 5: {12: 3}, 7: {10: 50, 11: 1}, 9: {12: 2}}, {10}, chunk=chunk)
         u = {r[0]: tuple(r[1:]) for r in s.all("SELECT * FROM u")}
-    assert u == {1: (7, 7, 1), 2: (90, 50, 2), 5: (3, 0, 1), 6: (5, 0, 1), 7: (51, 50, 2)}
-    assert scan.rooms[10] == [3, 107, 2, 2, 50]  # 50 pt は 2 と 7 が同じ。先 (ID の小さい 2) を取る
-    assert scan.rooms[11] == [3, 46, 2, 2, 40]
-    assert dict(scan.fan_rooms) == {11: 2}
-    assert list(scan.user_ends) == [2, 4] and sorted(scan.user_rooms) == [10, 10, 11, 11]
+    assert u == {1: (7, 7, 1), 2: (90, 50, 2), 5: (3, 0, 1), 6: (5, 0, 1), 7: (51, 50, 2), 8: (3, 1, 3), 9: (2, 0, 1)}
+    assert scan.room(10) == [4, 108, 3, 2, 50]  # 50 pt は 2 と 7 が同じ。先 (ID の小さい 2) を取る
+    assert scan.room(11) == [4, 47, 3, 2, 40]
+    assert dict(scan.fan_rooms) == {11: 3, 13: 1}
+    assert list(scan.user_ends) == [2, 4, 7] and sorted(scan.user_rooms) == [10, 10, 10, 11, 11, 11, 13]
+
+
+def test_old_user_room_is_read_by_a_covering_index(tmp_path):
+    """前の形 (WITHOUT ROWID でない) の user_room には、読む欄を全部入れた索引を作り、土台はそれだけで読む (表の本体を飛び飛びに読まない)。"""
+    import sqlite3
+
+    from showroom_keeper import research_store
+
+    path = research_store.db_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(path)) as c:
+        c.execute("""CREATE TABLE user_room (user_id INTEGER, room_id INTEGER, cumulative INTEGER DEFAULT 0, cumulative_rank INTEGER,
+                     visits INTEGER DEFAULT 0, events INTEGER DEFAULT 0, PRIMARY KEY (user_id, room_id))""")
+    research_store._ready.discard(str(path))
+    with Store(tmp_path) as s:
+        plan = " ".join(r[3] for r in s.conn.execute("""EXPLAIN QUERY PLAN SELECT user_id, room_id, MAX(cumulative, events) FROM user_room
+                                                         WHERE user_id >= ? AND MAX(cumulative, events) > 0
+                                                         ORDER BY user_id, room_id LIMIT ?""", (0, 10)))
+    assert "COVERING INDEX user_room_scan" in plan, plan
+    research_store._ready.discard(str(path))
+    with Store(tmp_path / "new") as s:  # 今の形の表には作らない
+        assert s.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='user_room_scan'") == 0
 
 
 def test_cumulative_from_is_remembered(tmp_path):
