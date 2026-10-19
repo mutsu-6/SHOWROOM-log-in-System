@@ -68,6 +68,26 @@ def test_listener_detail_shows_every_room(tmp_path, monkeypatch):
     assert listing.listener_detail(tmp_path, "999")["found"] is False
 
 
+def test_listener_pages_read_only_the_needed_files(tmp_path, monkeypatch):
+    """ギフターのページは、その人が送ったルームのファイルだけ、ギフターの一覧 (すべての期間) は送り主の表だけを読む
+    (前は開くたびに記録のファイル全部を読んでいた)。送り主の表にまだ足していないルームは、ファイルを読む。"""
+    now = _setup(tmp_path, monkeypatch)
+    record_gift(tmp_path, "room_c", 3, {"t": 2, "u": 8, "ac": "はなこ", "g": 100, "n": 1, "created_at": now - 30})
+    read = []
+    real = listing._load_file
+    monkeypatch.setattr(listing, "_load_file", lambda path: read.append(path.stem) or real(path))
+    assert listing.listener_detail(tmp_path, "7")["total"]["points"] == 205
+    assert sorted(set(read)) == ["room_a", "room_b"]
+    read.clear()
+    every = {u["user_id"]: u for u in listing.list_listeners(tmp_path)["listeners"]}
+    assert read == [] and every[8]["points"] == 110 and every[8]["room_count"] == 2
+    # 新しく増えたルーム (まだ表に足していない) は、ファイルを読んで出す
+    monkeypatch.setattr("showroom_keeper.explore.update_all_gift_senders", lambda *a, **k: None)
+    record_gift(tmp_path, "room_d", 4, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now - 10})
+    assert listing.listener_detail(tmp_path, "7")["total"]["points"] == 305
+    assert {u["user_id"]: u for u in listing.list_listeners(tmp_path)["listeners"]}[7]["points"] == 305
+
+
 def test_listener_detail_charts_show_when_where_and_how_much(tmp_path, monkeypatch):
     from datetime import datetime
 

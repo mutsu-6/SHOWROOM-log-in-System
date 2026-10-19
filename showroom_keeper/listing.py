@@ -573,8 +573,9 @@ def _points(catalog: dict[int, dict[str, Any]], g: dict[str, Any]) -> tuple[int,
 
 
 # ------------------------------------------------------------------ リスナー一覧・履歴
-def _records(state_dir: Path, room: str | None, since: float | None) -> list[tuple[str, dict[str, Any]]]:
-    files = _record_files(state_dir)
+def _records(state_dir: Path, room: str | None, since: float | None,
+             files: dict[str, Path] | None = None) -> list[tuple[str, dict[str, Any]]]:
+    files = files if files is not None else _record_files(state_dir)  # files: 何ルームも続けて読む時に、一度だけ探したもの
     keys = [room] if room else list(files)
     out = []
     for key in keys:
@@ -586,39 +587,119 @@ def _records(state_dir: Path, room: str | None, since: float | None) -> list[tup
     return out
 
 
+TOP_ROOMS = 5  # ギフターの一覧に出す、人ごとの多いルームの数
+
+
+def _sender_rooms(state_dir: Path, user: int | None = None, since: float | None = None,
+                  table: bool = False) -> tuple[list[str], list[Any], list[Any]]:
+    """記録のファイルのうち、読む必要のあるルーム (送り主の表 gift_senders から選ぶ。ファイル全部を読まないため)。
+
+    戻り値は (読むルーム, 表の行, 表の名前の行)。user なら、その人が送ったルーム。since なら、その時刻のあとに送りのあったルーム。
+    table なら、表に足し終えたルームはファイルを読まず、表の行 ([人ごとの合計, 人ごとの多いルーム TOP_ROOMS 個]) を返す。
+    表にまだ足し終えていないルーム (ギフトの一覧がまだ無い時など) は、いつもファイルを読む。
+    前は、ギフターのページ・ギフターの一覧を開くたびに、記録のファイル全部 (サーバーで 66MB) を読んでいた (2026-10-19)。
+    """
+    from .explore import update_all_gift_senders
+    from .research_store import Store
+
+    files = _record_files(state_dir)
+    with Store(state_dir) as s:
+        update_all_gift_senders(state_dir, s)  # 前に足したあとの新しい分だけ
+        pos = {r[0]: r[1] for r in s.all("SELECT room_key, pos FROM gift_sender_pos")}
+        done = {k for k, p in files.items() if _size(p) is not None and pos.get(k) == _size(p)}
+        rows: list[Any] = []
+        names: list[Any] = []
+        if user is not None:
+            picked = {r[0] for r in s.all("SELECT room_key FROM gift_senders WHERE user_id=?", (int(user),))}
+        elif since is not None:
+            picked = {r[0] for r in s.all("SELECT room_key FROM gift_senders GROUP BY room_key HAVING MAX(last_at) >= ?", (since,))}
+        else:
+            picked = set(done)
+        if table and since is None:
+            # 人ごとの合計は SQL でまとめる (ルーム × 人の行は何十万にもなり、Python で 1 行ずつ足すと遅い)
+            cur = s.conn.cursor()
+            cur.row_factory = None
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sender_done (room_key TEXT PRIMARY KEY)")
+            cur.execute("DELETE FROM sender_done")
+            cur.executemany("INSERT INTO sender_done VALUES (?)", [(k,) for k in done])
+            # name は、last_at が一番新しい行のもの (SQLite は MAX() と一緒に選んだ列を、その行から返す)
+            totals = cur.execute("""SELECT user_id, SUM(times), SUM(points), SUM(free_points), MIN(COALESCE(first_at, last_at)),
+                                           MAX(last_at), name, COUNT(*) FROM gift_senders
+                                    WHERE room_key IN (SELECT room_key FROM sender_done) GROUP BY user_id""").fetchall()
+            top = cur.execute(f"""SELECT user_id, room_key, points FROM (
+                                     SELECT user_id, room_key, points, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY points DESC) AS n
+                                     FROM gift_senders WHERE room_key IN (SELECT room_key FROM sender_done)) WHERE n <= {TOP_ROOMS}""").fetchall()
+            rows = [totals, top]
+            names = cur.execute("SELECT user_id, name, at FROM gift_sender_names").fetchall()
+            picked = set()
+    return sorted((picked & set(files)) | (set(files) - done)), rows, names
+
+
+def _size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
-    """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。"""
+    """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。
+
+    全ルーム・すべての期間なら送り主の表 (gift_senders) から、期間を決めたら、その間に送りのあったルームのファイルだけを読む。
+    個数 (count) は表に無いので、表から出した人は None。
+    """
     since = time.time() - days * 86400 if days else None
-    records = _records(state_dir, room, since)
-    catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in records)))
+    rows: list[Any] = []
+    sender_names: list[Any] = []
+    if room:
+        records = _records(state_dir, room, since)
+    else:
+        keys, rows, sender_names = _sender_rooms(state_dir, since=since, table=True)
+        files = _record_files(state_dir)
+        records = [kg for key in keys for kg in _records(state_dir, key, since, files)]
+    catalog = gift_catalog(state_dir, list(dict.fromkeys([key for key, _ in records] + [r[1] for r in (rows[1] if rows else [])])))
     names = room_names(state_dir)
     users: dict[Any, dict[str, Any]] = {}
+    totals, top = rows or ([], [])
+    for uid, times, pt, free, first, last, name, n in totals:  # 表から (人ごとの合計)
+        pt, free = pt or 0, free or 0
+        users[uid] = {"user_id": uid, "name": name, "names": {}, "points": pt, "paid_points": pt - free, "free_points": free,
+                      "count": None, "times": times or 0, "rooms": defaultdict(int), "room_count": n, "first_at": first, "last_at": last}
+    for uid, key, pt in top:
+        users[uid]["rooms"][key] = pt or 0
+    for uid, name, at in sender_names:
+        u = users.get(uid)
+        if u is not None:
+            u["names"][name] = max(u["names"].get(name, 0), at or 0)
     for key, g in records:
         uid = g.get("user_id")
         if uid is None:
             continue
         u = users.setdefault(uid, {"user_id": uid, "name": g.get("name"), "names": {}, "points": 0, "paid_points": 0,
-                                   "free_points": 0, "count": 0, "times": 0, "rooms": defaultdict(int),
+                                   "free_points": 0, "count": 0, "times": 0, "rooms": defaultdict(int), "room_count": 0,
                                    "first_at": g["at"], "last_at": g["at"]})
+        if key not in u["rooms"]:
+            u["room_count"] += 1  # ファイルから読むルームは、表に入っていないルームなので、重ならない
         pt, free = _points(catalog, g)
         u["points"] += pt
         u["free_points" if free else "paid_points"] += pt
-        u["count"] += int(g.get("num") or 1)
+        if u["count"] is not None:
+            u["count"] += int(g.get("num") or 1)
         u["times"] += 1
         u["rooms"][key] += pt
         if g.get("name"):
             u["names"][g["name"]] = max(u["names"].get(g["name"], 0), g["at"])
-        if g["at"] >= u["last_at"]:
+        if g["at"] >= (u["last_at"] or 0):
             u["last_at"], u["name"] = g["at"], g.get("name") or u["name"]
-        u["first_at"] = min(u["first_at"], g["at"])
+        u["first_at"] = min(u["first_at"] or g["at"], g["at"])
     out = []
     for u in users.values():
         rooms = sorted(u["rooms"].items(), key=lambda kv: -kv[1])
         out.append({**{k: u[k] for k in ("user_id", "name", "points", "paid_points", "free_points", "count", "times",
                                           "first_at", "last_at")},
                     "names": [n for n, _ in sorted(u["names"].items(), key=lambda kv: -kv[1])],
-                    "room_count": len(rooms),
-                    "rooms": [{"key": k, "name": (names.get(k) or {}).get("name") or k, "points": p} for k, p in rooms[:5]]})
+                    "room_count": u["room_count"],
+                    "rooms": [{"key": k, "name": (names.get(k) or {}).get("name") or k, "points": p} for k, p in rooms[:TOP_ROOMS]]})
     out.sort(key=lambda u: (u["points"], u["times"]), reverse=True)
     return {"listeners": out, "total": len(out), "catalog": bool(catalog)}
 
@@ -630,7 +711,9 @@ def listener_detail(state_dir: Path, user_id: Any, days: float | None = None) ->
     except (TypeError, ValueError):
         raise ValueError("ユーザー ID は数字で指定してください") from None
     since = time.time() - days * 86400 if days else None
-    hits = [(key, g) for key, g in _records(state_dir, None, since) if g.get("user_id") == uid]
+    keys = _sender_rooms(state_dir, user=uid)[0]  # この人が送ったルーム (と、送り主の表にまだ足し終えていないルーム) のファイルだけ
+    files = _record_files(state_dir)
+    hits = [(key, g) for key in keys for key, g in _records(state_dir, key, since, files) if g.get("user_id") == uid]
     if not hits:
         return {"user_id": uid, "found": False}
     catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in hits)))
