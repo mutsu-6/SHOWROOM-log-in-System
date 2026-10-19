@@ -22,3 +22,7 @@ def no_gift_updates(monkeypatch):
 
     monkeypatch.setitem(version._latest, "at", time.time())
     onlives.clear()  # 配信中の一覧の使い回しを、前のテストから持ち込まない
+    from showroom_keeper import memory
+
+    # テストを動かす機械のメモリの空きで、重い集計の後回しが変わらないようにする (後回しは、それを確かめるテストで決める)
+    monkeypatch.setattr(memory, "free_mb", lambda: None)

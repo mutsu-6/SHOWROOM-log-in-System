@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import memory
 from .gifts import contribution_cache, fetch_catalog, gift_dir, gift_label
 from .schedule import parse_slots, previous_time
 from .status import JST
@@ -693,6 +694,8 @@ _listeners_running: set[tuple[str, Any, Any]] = set()
 def warm_listeners(state_dir: Path) -> None:
     """収集の合間に、ギフターの一覧 (すべての期間) を先に数えておく (開いた人を待たせない)。"""
     key = (str(state_dir), None, None)
+    if key in _listeners_cache and memory.tight():
+        return  # メモリの空きが少ない時 (視聴のブラウザと重なった時) は、前の結果のまま次の機会に
     with _listeners_lock:
         if key in _listeners_running:
             return
@@ -709,7 +712,7 @@ def list_listeners(state_dir: Path, days: float | None = None, room: str | None 
     if hit and LISTENERS_TTL > 0 and time.time() - hit[0] < LISTENERS_STALE:
         # 古ければ、前の結果をすぐ返して、裏で数え直す (サーバーで 1 回目 11.8 秒かかっていた。2026-10-19)
         with _listeners_lock:
-            if key not in _listeners_running:
+            if key not in _listeners_running and not memory.tight():  # 空きが少なければ前の結果のまま
                 _listeners_running.add(key)
                 threading.Thread(target=_refresh_listeners, args=(state_dir, days, room, key), name="listeners", daemon=True).start()
         return hit[1]
@@ -726,6 +729,7 @@ def _refresh_listeners(state_dir: Path, days: float | None, room: str | None, ke
     finally:
         with _listeners_lock:
             _listeners_running.discard(key)
+        memory.release()
 
 
 def _from_table(rows: list[Any], sender_names: list[Any], names: dict[str, Any], catalog: dict[int, Any]) -> dict[str, Any]:

@@ -140,6 +140,20 @@ def test_room_analysis_does_not_read_whole_tables(traced):
     check(traced, analyze)
 
 
+def test_room_analysis_step_reads_only_the_todo_events(traced):
+    """収集の仕事のたびに探す「走り方を作っていない・間引いていないイベント」は、まだのイベントだけの索引で探す
+    (events は BIG に入れていないので、終わった全部のイベントを順に見ても上のテストでは気づけない。サーバーで 1 回 0.1〜0.15 秒)。"""
+    state_dir, seen = traced
+    with Store(state_dir) as s:
+        s.set_meta("room_stats_upto", True)
+        seen.clear()
+        ra.step(s, NOW)
+        while ra.step(s, NOW):
+            pass
+    plans = [" ".join(plan) for q, plan in seen if "FROM events WHERE" in q and ("style_at IS NULL" in q or "thinned_at IS NULL" in q)]
+    assert plans and all("events_style_todo" in p or "events_thin_todo" in p for p in plans), plans
+
+
 def test_sweep_jobs_do_not_read_whole_tables(traced):
     def run(d):
         c = research.Collector(d, get=lambda path: {}, throttle=research.Throttle(0.0, sleep=lambda x: None))
