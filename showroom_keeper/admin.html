@@ -613,7 +613,7 @@ td a.name-link, td a { word-break: break-word; }
       <div class="hint" id="r-version"></div>
     </div>
     <div class="section-title"><h3>自己点検</h3></div>
-    <p class="sub" style="margin:0">5 分ごとに、これまでに起きた困りごと (エラー・メモリの不足・書き込み待ちのふくらみ・止まった収集・残ったファイル) が起きていないかを確かめ、サーバーを起動し直さず・集めたデータを消さずに直せるものは自分で直します。</p>
+    <p class="sub" style="margin:0">5 分ごとに、これまでに起きた困りごと (エラー・重い処理・メモリの不足・書き込み待ちのふくらみ・止まった収集・残ったファイル) が起きていないかを確かめ、サーバーを起動し直さず・集めたデータを消さずに直せるものは自分で直します。</p>
     <div id="r-health"><div class="hint">まだ点検していません (起動して 1 分後に始めます)。</div></div>
     <h3>月ごとの集まり具合</h3>
     <div id="c-coverage"><div class="loading"><span class="spinner"></span>数えています…</div></div>
@@ -2048,10 +2048,17 @@ function renderHealth(h) {
   const fixes = (h.fixes || []).map((f) => `<li><span class="t">${tm(f.at, true).slice(0, 11)}</span><span class="ok">✔</span><span>${esc(f.what)}</span></li>`).join("");
   const errs = (h.errors || []).map((e) => `<tr><td>${e.level === "error" ? "エラー" : "注意"}</td><td class="num">${num(e.day)}${e.more ? "+" : ""}</td>
     <td><code>${esc(e.where)}</code></td><td>${esc(e.sample)}</td></tr>`).join("");
+  const ld = h.load || {}, pct = (v) => v == null ? "—" : `${Math.round(v * 100)}%`;
+  const kinds = { page: "管理画面", sql: "SQL の読み込み", heavy: "重い集計", loop: "視聴の処理の待ち" };
+  const slow = (h.slow || []).map((e) => `<tr><td>${esc(kinds[e.kind] || e.kind)}</td><td class="num">${num(e.count)}</td>
+    <td class="num">${num(e.max)} 秒</td><td class="num">${num(e.avg)} 秒</td><td><code>${esc(e.name)}</code></td></tr>`).join("");
   box.innerHTML = `<div class="hint">最後の点検: ${tm(h.at, true).slice(0, 11)}
-      ・ Python ${num(m.rss_mb)} MB (swap ${num(m.swap_mb)} MB) ・ メモリの空き ${num(m.free_mb)} MB ・ スレッド ${num(m.threads)} 本</div>
+      ・ Python ${num(m.rss_mb)} MB (swap ${num(m.swap_mb)} MB) ・ メモリの空き ${num(m.free_mb)} MB ・ スレッド ${num(m.threads)} 本
+      ・ ディスク待ち ${pct(ld.iowait)} ・ Python の CPU ${pct(ld.cpu)}${ld.holding ? ` ・ <b>サーバーが重いので裏の数え直しを後回し中 (あと ${durationText(ld.holding)})</b>` : ""}</div>
     ${found ? `<ul class="history">${found}</ul>` : `<div class="hint"><span style="color:var(--ok)">✔</span> 問題は見つかっていません</div>`}
     ${fixes ? `<h4 style="margin:14px 0 0">自分で直したこと (7 日)</h4><ul class="history">${fixes}</ul>` : ""}
+    ${slow ? `<details class="more"><summary>24 時間に時間のかかった処理 (遅い順)</summary><div class="table-wrap"><table>
+      <thead><tr><th>種類</th><th class="num">回数</th><th class="num">最大</th><th class="num">平均</th><th>どこ</th></tr></thead><tbody>${slow}</tbody></table></div></details>` : ""}
     ${errs ? `<details class="more"><summary>24 時間に出たエラーと注意 (出た場所ごと)</summary><div class="table-wrap"><table>
       <thead><tr><th>種類</th><th class="num">回数</th><th>場所</th><th>最後の文</th></tr></thead><tbody>${errs}</tbody></table></div></details>` : ""}`;
 }

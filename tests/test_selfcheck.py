@@ -226,3 +226,91 @@ def test_one_failing_check_does_not_stop_others(checker, monkeypatch):
     monkeypatch.setattr(selfcheck, "_proc_mb", lambda: (None, None))
     found = checker.run_once()
     assert any("自己点検の一部" in f["title"] for f in found)
+
+
+# ---------------------------------------------------------------- 重い処理
+@pytest.fixture
+def slow(monkeypatch):
+    log = selfcheck.SlowLog()
+    monkeypatch.setattr(selfcheck, "SLOW", log)
+    monkeypatch.setattr(memory, "_hold_until", 0.0)
+    monkeypatch.setattr(memory, "runs", __import__("collections").deque(maxlen=50))
+    return log
+
+
+def test_slow_page_sql_and_heavy_are_reported(checker, slow, monkeypatch):
+    monkeypatch.setattr(checker, "_cpu_share", lambda now: (None, None))
+    selfcheck.note_page("/api/listeners", 12.0)
+    selfcheck.note_page("/api/overview", 0.1)  # 速いものは数えない
+    selfcheck._note_sql("SELECT * FROM   contributions WHERE x", 7.0)
+    memory.runs.append({"name": "analysis", "at": time.time(), "seconds": 900.0})
+    found = []
+    checker._heavy_work(time.time(), found)
+    titles = " / ".join(f["title"] for f in found)
+    assert "管理画面が遅くなっています: /api/listeners" in titles
+    assert "SQL の読み込みが遅くなっています: SELECT * FROM contributions" in titles
+    assert "重い集計が遅くなっています: analysis" in titles
+    assert len(slow.summary(time.time())) == 3
+    checker._heavy_work(time.time(), [])
+    assert slow.summary(time.time())[0]["count"] == 1  # 同じ集計を 2 回数えない
+
+
+def test_slow_sql_hook(tmp_path, slow, monkeypatch):
+    from showroom_keeper import research_store
+
+    monkeypatch.setattr(research_store, "SLOW_SQL", 0.0)
+    monkeypatch.setattr(research_store, "slow_hooks", [selfcheck._note_sql])
+    with Store(tmp_path) as s:
+        s.scalar("SELECT COUNT(*) FROM events")
+    assert "SELECT COUNT(*) FROM events" in [r["name"] for r in slow.summary(time.time(), limit=50)]
+
+
+def test_loop_lag_holds_off_background_recounts(checker, slow, monkeypatch):
+    monkeypatch.setattr(checker, "_cpu_share", lambda now: (None, None))
+    slow.note("loop", "視聴の処理", 8.0)
+    found = []
+    checker._heavy_work(time.time(), found)
+    assert "視聴の処理が最大 8 秒" in found[0]["title"]
+    assert memory.holding() > 0 and memory.tight()
+    assert "後回し" in checker.fixes[0]["what"]
+    n = len(checker.fixes)
+    checker._heavy_work(time.time(), [])
+    assert len(checker.fixes) == n  # 続けては後回しにしない
+
+
+def test_iowait_and_cpu(checker, slow, monkeypatch):
+    monkeypatch.setattr(checker, "_cpu_share", lambda now: (0.6, 0.95))
+    found = []
+    checker._heavy_work(time.time(), found)
+    assert any("ディスク待ちが 60%" in f["title"] for f in found)
+    assert any("CPU" in f["title"] for f in found)
+    assert memory.holding() > 0
+
+
+def test_cpu_share_reads_proc(checker):
+    if not Path("/proc/stat").exists():
+        pytest.skip("Linux だけ")
+    assert checker._cpu_share(time.time() - 1) == (None, None)  # 1 回目は比べるものが無い
+    io, cpu = checker._cpu_share(time.time())
+    assert io is None or 0 <= io <= 1
+
+
+def test_watch_loop_notes_lag(slow):
+    import asyncio
+
+    async def run():
+        task = asyncio.ensure_future(selfcheck.watch_loop(every=0.01))
+        await asyncio.sleep(0.02)
+        time.sleep(selfcheck.LOOP_LAG_WARN / 2 + 0.05)  # 視聴の処理を止めてしまう重い処理
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+    asyncio.run(run())
+    assert slow.summary(time.time())[0]["kind"] == "loop"
+
+
+def test_heavy_runs_are_kept(monkeypatch):
+    monkeypatch.setattr(memory, "runs", __import__("collections").deque(maxlen=50))
+    with memory.heavy():
+        pass
+    assert len(memory.runs) == 1 and memory.runs[0]["seconds"] >= 0

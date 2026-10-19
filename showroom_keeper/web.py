@@ -338,6 +338,13 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ GET
     def do_GET(self) -> None:  # noqa: N802 - 標準の名前
+        started = time.monotonic()
+        try:
+            self._get()
+        finally:
+            selfcheck.note_page(urlparse(self.path).path, time.monotonic() - started)  # 開くのが遅い画面を、自己点検で見つける
+
+    def _get(self) -> None:
         if not self._allowed():
             return
         url = urlparse(self.path)

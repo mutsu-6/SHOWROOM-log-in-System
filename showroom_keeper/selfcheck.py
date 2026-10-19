@@ -10,6 +10,8 @@ keeper の中で 5 分ごとに、これまでサーバーで実際に起きた�
 - 裏で動く仕事: 全ルームの収集・Internet Archive のスレッドが止まっていないか、重い集計が長く続いていないか
 - 記録が止まっていないか: 配信中のルームの一覧と、開催中のイベントの 1 時間ごとのポイント
 - スレッドの数・開いているファイルの数 (増え続けるなら、閉じ忘れのバグ)
+- 重い処理 (これもバグとして数える): 管理画面の開くのが遅い要求・時間のかかった重い集計・遅い SQL・
+  視聴の処理 (asyncio) が待たされた時間・ディスク待ちと Python の CPU・長く続く収集の仕事
 
 自分で直すこと (自浄)
 - 期限の切れた使い回しの結果を捨て、使い終えたメモリを OS に返す (次に開く時は、どのみち数え直すものだけ)
@@ -17,6 +19,7 @@ keeper の中で 5 分ごとに、これまでサーバーで実際に起きた�
 - research.db-wal が大きい時は、本体に移して縮める
 - 止まった収集のスレッドを、もう一度動かす (1 日 3 回まで)
 - 途中で止まって残った作業用のファイル (分析の古い土台・.tmp) を消す (集めたデータではないもの)
+- サーバーが重い時 (視聴の処理が待たされた・ディスク待ちが多い) は、前の結果がある裏の数え直しを 10 分後回しにする
 
 ここで直さないもの (利用者に知らせるだけ): サーバーの起動し直し・集めたデータを消すこと・止まったまま戻らないスレッド。
 """
@@ -57,6 +60,18 @@ REPEAT_WARN = 60  # 同じ注意が 1 時間にこれより多く出たら知ら
 ERROR_KINDS = 200  # 覚えておくエラーの種類の上限
 FIX_KEEP = 50  # 覚えておく自浄の記録の数
 STATE_FILE = "selfcheck.json"
+SLOW_PAGE = 5.0  # 管理画面の要求がこれより長くかかったら知らせる (秒)
+SLOW_HEAVY = 600  # 重い集計 1 回がこれより長くかかったら知らせる (秒。analyze はサーバーで 2 分ほど)
+SLOW_SQL_WARN = 5.0  # 読み込みの SQL 1 回がこれより長くかかったら知らせる (秒。2 秒から記録する)
+SLOW_STEP = 900  # 全ルームの収集の 1 つの仕事がこれより長く続いたら知らせる (秒)
+LOOP_LAG_WARN = 2.0  # 視聴の処理 (asyncio) がこれより長く待たされたら知らせる (秒)
+LOOP_LAG_HOLD = 5.0  # これより長く待たされたら、裏の数え直しを後回しにする (秒)
+IOWAIT_WARN = 0.3  # 点検の間のディスク待ちの割合がこれより多ければ知らせる
+IOWAIT_HOLD = 0.5  # これより多ければ、裏の数え直しを後回しにする
+CPU_WARN = 0.9  # Python が点検の間に使った CPU (1 つ分を 1) がこれより多ければ知らせる
+HOLD_FOR = 600  # 後回しにする時間 (秒)
+HOLD_GAP = 1200  # 後回しが終わってから、次に後回しにできるまでの時間 (秒。数え直しがずっとできなくならないように)
+SLOW_WINDOW = 3600  # 遅い処理を知らせる期間 (秒。表には 24 時間分を出す)
 
 
 # ---------------------------------------------------------------- エラーを数える
@@ -119,6 +134,66 @@ class ErrorLog(logging.Handler):
 
 
 ERRORS = ErrorLog()
+
+
+# ---------------------------------------------------------------- 遅い処理を数える
+class SlowLog:
+    """時間のかかった処理を、種類と名前 (画面の要求の道・SQL の頭・集計の名前) ごとに数える。"""
+
+    def __init__(self, kinds: int = ERROR_KINDS) -> None:
+        self.kinds = kinds
+        self._lock = threading.Lock()
+        self.items: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def note(self, kind: str, name: str, seconds: float, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        key = (kind, " ".join(str(name).split())[:120])
+        with self._lock:
+            it = self.items.get(key)
+            if it is None:
+                if len(self.items) >= self.kinds:
+                    self.items.pop(min(self.items, key=lambda k: self.items[k]["times"][-1][0]))
+                it = self.items[key] = {"times": deque(maxlen=100)}
+            it["times"].append((now, float(seconds)))
+
+    def summary(self, now: float, window: float = ERROR_WINDOW, limit: int = 15) -> list[dict[str, Any]]:
+        """window 秒のうちに出たものを、いちばん遅かった順に。"""
+        out = []
+        with self._lock:
+            for (kind, name), it in self.items.items():
+                recent = [sec for t, sec in it["times"] if t > now - window]
+                if recent:
+                    out.append({"kind": kind, "name": name, "count": len(recent), "max": round(max(recent), 1),
+                                "avg": round(sum(recent) / len(recent), 1), "last": it["times"][-1][0]})
+        out.sort(key=lambda r: -r["max"])
+        return out[:limit]
+
+
+SLOW = SlowLog()
+SLOW_LABELS = {"page": "管理画面", "sql": "SQL の読み込み", "heavy": "重い集計", "loop": "視聴の処理の待ち"}
+
+
+def note_page(path: str, seconds: float) -> None:
+    """管理画面の要求にかかった時間 (web.py が呼ぶ。速いものは数えない)。"""
+    if seconds >= SLOW_PAGE / 2:
+        SLOW.note("page", path, seconds)
+
+
+def _note_sql(sql: str, seconds: float) -> None:
+    SLOW.note("sql", sql, seconds)
+
+
+async def watch_loop(every: float = 1.0) -> None:
+    """視聴の処理 (asyncio) が、ほかの重い処理に待たされていないかを測る (1 秒ごとに起きて、遅れた分を数える)。
+    keeper が別の仕事として動かす。"""
+    import asyncio
+
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(every)
+        lag = time.monotonic() - started - every
+        if lag >= LOOP_LAG_WARN / 2:
+            SLOW.note("loop", "視聴の処理", lag)
 
 
 def _thread_died(args: Any) -> None:
@@ -237,6 +312,10 @@ class Checker:
         self._down: dict[str, int] = {}  # 続けて止まっていた点検の回数
         self._waiting = 0  # 続けて視聴のページを開けていなかった点検の回数
         self._heavy_told: float | None = None
+        self._runs_seen = 0.0  # 自己点検が見終えた重い集計の終わりの時刻
+        self._cpu: tuple[float, float, float, float] | None = None  # 前の点検の (時刻, Python の CPU 秒, CPU 全体, ディスク待ち)
+        self.load: dict[str, Any] = {}
+        self._held_at = 0.0  # 最後に後回しにした時刻
         self._load()
 
     @property
@@ -268,7 +347,8 @@ class Checker:
     def run_once(self) -> list[dict[str, Any]]:
         now = self._clock()
         found: list[dict[str, Any]] = []
-        for step in (self._errors, self._memory, self._wal, self._workers, self._freshness, self._leaks, self._leftovers):
+        for step in (self._errors, self._memory, self._wal, self._workers, self._freshness, self._leaks, self._leftovers,
+                     self._heavy_work):
             try:
                 step(now, found)
             except Exception as e:  # noqa: BLE001 - 1 つの点検の失敗で、ほかの点検を止めない
@@ -442,6 +522,61 @@ class Checker:
         if removed:
             self._fixed(f"途中で止まって残った作業用のファイルを {removed} 個 ({size / 2**20:.0f}MB) 消しました", now)
 
+    def _heavy_work(self, now: float, found: list[dict[str, Any]]) -> None:
+        """重い処理を見つける。サーバーが重い時は、裏の数え直しを後回しにする。"""
+        from . import sweep
+
+        for r in list(memory.runs):  # 終わった重い集計
+            if r["at"] > self._runs_seen:
+                SLOW.note("heavy", r["name"] or "?", r["seconds"], r["at"])
+        if memory.runs:
+            self._runs_seen = max(r["at"] for r in list(memory.runs))
+        lag_max = 0.0
+        for e in SLOW.summary(now, SLOW_WINDOW, limit=ERROR_KINDS):
+            label = SLOW_LABELS.get(e["kind"], e["kind"])
+            if e["kind"] == "loop":
+                lag_max = e["max"]
+                if e["max"] >= LOOP_LAG_WARN:
+                    found.append({"level": "warn", "title": f"視聴の処理が最大 {e['max']:.0f} 秒待たされました",
+                                  "detail": f"1 時間に {e['count']} 回。ほかの重い処理が、視聴と同じ所で動いています"})
+            elif (e["kind"] == "page" and e["max"] >= SLOW_PAGE) or (e["kind"] == "sql" and e["max"] >= SLOW_SQL_WARN) \
+                    or (e["kind"] == "heavy" and e["max"] >= SLOW_HEAVY):
+                found.append({"level": "warn", "title": f"{label}が遅くなっています: {e['name'][:60]}",
+                              "detail": f"1 時間に {e['count']} 回・最大 {e['max']:.0f} 秒・平均 {e['avg']:.0f} 秒"})
+        busy = (sweep.state() or {}).get("busy_seconds") or 0
+        if busy > SLOW_STEP:
+            found.append({"level": "warn", "title": f"全ルームの収集の仕事が {busy // 60:.0f} 分続いています",
+                          "detail": f"「{sweep.state().get('doing') or ''}」。どこで止まっているかはログにあります"})
+        iowait, cpu = self._cpu_share(now)
+        self.load = {"iowait": None if iowait is None else round(iowait, 2), "cpu": None if cpu is None else round(cpu, 2),
+                     "holding": round(memory.holding())}
+        if iowait is not None and iowait > IOWAIT_WARN:
+            found.append({"level": "warn", "title": f"ディスク待ちが {iowait:.0%} あります",
+                          "detail": "大きな表を読む処理が重なっているかもしれません。CPU の時間の多くが、ディスクを待っています"})
+        if cpu is not None and cpu > CPU_WARN:
+            found.append({"level": "warn", "title": f"Python が CPU 1 つ分の {cpu:.0%} を使っています",
+                          "detail": "5 分のあいだずっと、何かを数え続けています"})
+        if (lag_max >= LOOP_LAG_HOLD or (iowait is not None and iowait > IOWAIT_HOLD)) \
+                and not memory.holding() and now - self._held_at > HOLD_FOR + HOLD_GAP:
+            memory.hold_off(HOLD_FOR)
+            self._held_at = now
+            why = f"視聴の処理が {lag_max:.0f} 秒待たされた" if lag_max >= LOOP_LAG_HOLD else f"ディスク待ちが {iowait:.0%} ある"
+            self._fixed(f"サーバーが重い ({why}) ので、前の結果がある裏の数え直しを {HOLD_FOR // 60} 分後回しにしました", now)
+
+    def _cpu_share(self, now: float) -> tuple[float | None, float | None]:
+        """前の点検からの、ディスク待ちの割合 (CPU 全体の時間のうち) と、Python が使った CPU (1 つ分を 1)。"""
+        try:
+            fields = [float(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+            total, iowait = sum(fields[:8]), fields[4]
+            parts = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+            mine = (float(parts[11]) + float(parts[12])) / os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError, IndexError):
+            return None, None
+        prev, self._cpu = self._cpu, (now, mine, total, iowait)
+        if prev is None or total <= prev[2] or now <= prev[0]:
+            return None, None
+        return (iowait - prev[3]) / (total - prev[2]), (mine - prev[1]) / (now - prev[0])
+
     @staticmethod
     def _remove_old(p: Path, keep: str | None, age: float, now: float, removed: int, size: int) -> tuple[int, int]:
         try:
@@ -458,7 +593,8 @@ class Checker:
         now = self._clock()
         return {"at": self.at, "every": CHECK_EVERY, "findings": list(self.findings),
                 "fixes": [f for f in self.fixes if f["at"] > now - 7 * 86400][:20], "restarts": self.restarts,
-                "errors": ERRORS.summary(now), "memory": dict(self.memory), "pruned": self.pruned}
+                "errors": ERRORS.summary(now), "memory": dict(self.memory), "pruned": self.pruned,
+                "slow": SLOW.summary(now), "load": dict(self.load)}
 
     def run_forever(self, stop: threading.Event) -> None:
         if stop.wait(FIRST_CHECK):
@@ -483,6 +619,9 @@ def install() -> None:
     if _installed:
         return
     _installed = True
+    from . import research_store
+
+    research_store.slow_hooks.append(_note_sql)
     logging.getLogger().addHandler(ERRORS)
     threading.excepthook = _thread_died
 
