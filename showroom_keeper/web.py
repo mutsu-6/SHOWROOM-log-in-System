@@ -423,6 +423,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self._json(explore.event_list(state_dir, q.get("state", "ongoing")))
                 else:
                     self._json(explore.event_detail(state_dir, q.get("event", ""), self._support(q)))
+            elif url.path == "/api/feed":
+                from . import feed
+
+                self._json(feed.build(self._state_dir(), self._support(q), list(self.keeper.cfg.rooms),
+                                      float(q.get("hours") or 24), int(q.get("min_point") or feed.DEFAULT_MIN_POINT)))
             elif url.path == "/api/lookup/user":
                 from .listing import lookup_user
 

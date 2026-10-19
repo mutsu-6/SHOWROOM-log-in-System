@@ -252,6 +252,9 @@ def test_explore_endpoints(admin):
     assert json.loads(call(base + "/api/series?id=5")[1])["found"] is False
     assert call(base + "/api/series/link", {"event_id": "5"}, POST)[0] == 400  # つなぐ先が無い
     assert call(base + "/api/series/link", {"event_id": "5", "detach": True}, POST)[0] == 400  # イベントが無い
+    feed = json.loads(call(base + "/api/feed?hours=48&min_point=5000")[1])
+    assert (feed["items"], feed["hours"], feed["min_point"]) == ([], 48, 5000)
+    assert call(base + "/api/feed?hours=abc")[0] == 400
 
 
 def test_alerts_for_login_disk_and_backup(tmp_path, monkeypatch):

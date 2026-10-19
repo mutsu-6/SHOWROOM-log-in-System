@@ -266,3 +266,20 @@ def test_listener_lists_read_the_tables_as_intended(traced, monkeypatch):
     check(traced, lambda d: listing.listener_detail(d, 100))
     check(traced, lambda d: listing.list_listeners(d))
     assert any("sender_done" in q and "gift_senders" in q for q, _ in traced[1])  # 一時表を使う SQL も確かめた
+
+
+def test_feed_does_not_read_whole_tables(traced):
+    import json
+
+    from showroom_keeper import feed
+
+    d = traced[0]
+    (d / "cache").mkdir(exist_ok=True)
+    (d / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"gift_name": "大", "point": 10000, "free": False}}}))
+    with Store(d) as s:
+        s.conn.executemany("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (?, ?, ?, 1, 1)",
+                           [(u, NOW - u * 60, f"k{u % 5 + 1}") for u in range(1, 50)])
+        s.conn.executemany("INSERT INTO gift_event_pos(room_key, pos, size, at) VALUES (?, 0, 0, ?)", [(f"k{r}", NOW) for r in range(1, 6)])
+        s.set_watch(101, True, "", NOW)
+        s.add_progress(1, [{"room_id": 2, "point": 5}], NOW)
+    check(traced, lambda d: feed.build(d, ["k2"], ["k1"], now=NOW))
