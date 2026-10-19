@@ -193,7 +193,7 @@ DISK_FILE = "disk_history.json"  # ディスクの空きを 1 日 1 回残した
 
 
 # 大きさを見張る記録 (state_dir の中)。増え方の大きいものを、ディスクの知らせに出す
-WATCHED = ("research.db", "gifts", "live_events", "backup")
+WATCHED = ("research.db", "gifts", "live_events", "comment_counts", "backup")
 
 
 def _size(path: Path) -> int:
