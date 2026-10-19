@@ -1137,3 +1137,12 @@ def test_cumulative_from_is_remembered(tmp_path):
         assert research._cumulative_from(s) == NOW - 86400
         s.conn.execute("DELETE FROM cumulative_history")
         assert research._cumulative_from(s) == NOW - 86400
+
+
+def test_store_limits_wal_size(tmp_path):
+    # research.db-wal は本体に移し終えたら縮める (無いと、たまった大きさのまま残る。サーバーで 607MB)
+    from showroom_keeper.research_store import JOURNAL_SIZE_LIMIT
+
+    for _ in range(2):  # 1 本目 (表を作る接続) も、2 本目からの接続も
+        with Store(tmp_path) as s:
+            assert s.scalar("PRAGMA journal_size_limit") == JOURNAL_SIZE_LIMIT
