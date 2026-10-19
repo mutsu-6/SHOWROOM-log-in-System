@@ -337,6 +337,23 @@ td a.name-link, td a { word-break: break-word; }
   .tile .v { font-size: 17px; }
 }
 .chart-head { flex-wrap: wrap; }
+/* スマホの幅の表: 主な列だけを出し、文字を小さく・詰めて、名前を 2 行までにする (2026-10-20) */
+.ph-only { display: none !important; }
+@media (max-width: 640px) {
+  .table-wrap:not(.dt-full) .ph-hide { display: none; }
+  .ph-only { display: inline-flex !important; }
+  th, td { padding: 7px 8px; }
+  td { font-size: 13px; }
+  th { font-size: 11px; }
+  th.sortable .arr { margin-left: 1px; }
+  td .uid-id { display: none; }
+  td.name { max-width: none; min-width: 8em; }
+  td.name > a:first-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .table-wrap:not(.dt-full) td { word-break: break-word; }
+  .dt-full td { white-space: nowrap; }
+  .dt-full td.name { white-space: normal; min-width: 9em; }
+  .dt-foot .grow { flex-basis: 100%; }
+}
 /* お知らせ */
 .nbadge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px; background: var(--accent); color: #fff;
   font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -766,10 +783,11 @@ const period = (e) => e.start || e.end ? `${e.start ? ymd(e.start) : "?"} 〜 ${
 
 /* ------------------------------------------------------------ 並べ替えと CSV ができる表 */
 // cols: [{label, value: (r) => 並べ替え・CSV の値, html: (r) => セルの中身, num: 数字の列か, sort: false で並べ替えない}]
+// スマホの幅では、主な列 (o.phone の列の番号。指定がなければ左から 3 列) と並べ替えている列だけを出す。「全部の列」で残りも出せる
 const DT = {};
 function dataTable(id, cols, rows, o = {}) {
   const prev = DT[id];
-  DT[id] = { cols, rows, o, sort: prev ? prev.sort : (o.sort ?? null), desc: prev ? prev.desc : (o.desc ?? true), shown: o.limit || 100 };
+  DT[id] = { cols, rows, o, sort: prev ? prev.sort : (o.sort ?? null), desc: prev ? prev.desc : (o.desc ?? true), shown: o.limit || 100, full: prev ? prev.full : false };
   return `<div data-dt="${esc(id)}">${dtInner(id)}</div>`;
 }
 function dtRows(t) {
@@ -786,10 +804,14 @@ function dtRows(t) {
 function dtInner(id) {
   const t = DT[id], rows = dtRows(t);
   if (!t.rows.length) return `<div class="empty">${esc(t.o.empty || "まだありません")}</div>`;
-  const head = t.cols.map((c, i) => `<th class="${c.num ? "num " : ""}${c.sort === false ? "" : "sortable"}${t.sort === i ? " on" : ""}" ${c.sort === false ? "" : `data-dt-sort="${i}" title="クリックで並べ替え"`}>${esc(c.label)}${c.sort === false ? "" : `<span class="arr">${t.sort === i ? (t.desc ? "▼" : "▲") : "↕"}</span>`}</th>`).join("");
-  const body = rows.slice(0, t.shown).map((r, n) => `<tr ${t.o.rowAttr ? t.o.rowAttr(r) : ""}>${t.cols.map((c) => `<td class="${c.num ? "num" : c.cls || ""}">${c.html ? c.html(r, n) : esc(c.value(r) ?? "")}</td>`).join("")}</tr>`).join("");
-  return `<div class="table-wrap" ${t.o.maxHeight ? `style="max-height:${t.o.maxHeight}px;overflow-y:auto"` : ""}><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
+  const main = new Set(t.o.phone || [0, 1, 2]);
+  if (t.sort !== null) main.add(t.sort);
+  const minor = t.cols.map((c, i) => !t.full && !main.has(i)), hidden = minor.filter(Boolean).length;
+  const head = t.cols.map((c, i) => `<th class="${c.num ? "num " : ""}${minor[i] ? "ph-hide " : ""}${c.sort === false ? "" : "sortable"}${t.sort === i ? " on" : ""}" ${c.sort === false ? "" : `data-dt-sort="${i}" title="クリックで並べ替え"`}>${esc(c.label)}${c.sort === false ? "" : `<span class="arr">${t.sort === i ? (t.desc ? "▼" : "▲") : "↕"}</span>`}</th>`).join("");
+  const body = rows.slice(0, t.shown).map((r, n) => `<tr ${t.o.rowAttr ? t.o.rowAttr(r) : ""}>${t.cols.map((c, i) => `<td class="${c.num ? "num" : c.cls || ""}${minor[i] ? " ph-hide" : ""}">${c.html ? c.html(r, n) : esc(c.value(r) ?? "")}</td>`).join("")}</tr>`).join("");
+  return `<div class="table-wrap${t.full ? " dt-full" : ""}" ${t.o.maxHeight ? `style="max-height:${t.o.maxHeight}px;overflow-y:auto"` : ""}><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
     <div class="dt-foot"><span class="grow">${num(rows.length)} 件${t.o.total && t.o.total > rows.length ? ` (全 ${num(t.o.total)} 件のうち)` : ""}${t.o.note ? ` ・ ${t.o.note}` : ""}</span>
+      ${hidden || t.full ? `<button type="button" class="btn small ph-only" data-dt-cols>${t.full ? "主な列だけ" : `全部の列 (+${hidden})`}</button>` : ""}
       ${rows.length > t.shown ? `<button type="button" class="btn small" data-dt-more>さらに表示 (${num(rows.length - t.shown)} 件)</button>` : ""}
       <button type="button" class="btn small" data-dt-csv title="表を CSV で書き出す (Excel・スプレッドシートで開けます)">CSV</button></div>`;
 }
@@ -803,6 +825,8 @@ document.addEventListener("click", (ev) => {
     const i = Number(th.dataset.dtSort);
     if (t.sort === i) t.desc = !t.desc; else { t.sort = i; t.desc = !!t.cols[i].num; }
     box.innerHTML = dtInner(id);
+  } else if (ev.target.closest("[data-dt-cols]")) {
+    t.full = !t.full; box.innerHTML = dtInner(id);
   } else if (ev.target.closest("[data-dt-more]")) {
     t.shown += t.o.limit || 100; box.innerHTML = dtInner(id);
   } else if (ev.target.closest("[data-dt-csv]")) {
@@ -986,19 +1010,27 @@ const splitBar = (u) => {
   if (!t) return "";
   return `<div class="splitbar" title="有料 ${num(u.paid_points)} / 無料 ${num(u.free_points)}"><div class="p" style="width:${(u.paid_points / t) * 100}%"></div><div class="f" style="width:${(u.free_points / t) * 100}%"></div></div>`;
 };
-const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="この人のページを開く">ページ ›</button></td>`;
+const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid uid-id">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="この人のページを開く">ページ ›</button></td>`;
+// 手で組んだ表の「全部の列」 (スマホの幅で ph-hide の列を隠している時だけ出る)
+const colsBtn = `<div class="dt-foot ph-only"><button type="button" class="btn small" data-cols-toggle>全部の列</button></div>`;
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-cols-toggle]");
+  const wrap = b && b.parentElement.previousElementSibling;
+  if (!wrap) return;
+  b.textContent = wrap.classList.toggle("dt-full") ? "主な列だけ" : "全部の列";
+});
 const legend = `<div class="legend"><span><i style="background:var(--accent)"></i>有料</span><span><i style="background:var(--info)"></i>無料 (星・種など)</span></div>`;
 
 function rankingTable(rows, opts = {}) {
   if (!rows.length) return `<div class="empty">ギフトはありません</div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">個数</th><th class="num">回数</th><th>${opts.rooms ? "ルーム" : "内訳"}</th></tr></thead>
+    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num ph-hide">有料</th><th class="num ph-hide">無料</th><th class="num ph-hide">個数</th><th class="num ph-hide">回数</th><th class="ph-hide">${opts.rooms ? "ルーム" : "内訳"}</th></tr></thead>
     <tbody>${rows.map((u, i) => `<tr>
       <td class="rank">${i + 1}</td>${userCell(u)}
-      <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num">${num(u.paid_points)}</td><td class="num">${num(u.free_points)}</td>
-      <td class="num">${num(u.count)}</td><td class="num">${num(u.times)}</td>
-      <td>${opts.rooms ? esc(roomsText(u.rooms)) : esc((u.items || []).slice(0, 3).map(([k, v]) => `${k}×${v}`).join("、"))}</td>
-    </tr>`).join("")}</tbody></table></div>`;
+      <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num ph-hide">${num(u.paid_points)}</td><td class="num ph-hide">${num(u.free_points)}</td>
+      <td class="num ph-hide">${num(u.count)}</td><td class="num ph-hide">${num(u.times)}</td>
+      <td class="ph-hide">${opts.rooms ? esc(roomsText(u.rooms)) : esc((u.items || []).slice(0, 3).map(([k, v]) => `${k}×${v}`).join("、"))}</td>
+    </tr>`).join("")}</tbody></table></div>${colsBtn}`;
 }
 const roomsText = (rooms) => (rooms || []).slice(0, 3).join("、") + ((rooms || []).length > 3 ? ` ほか ${rooms.length - 3}` : "");
 
@@ -1090,13 +1122,13 @@ function renderEventGifts(r) {
   }
   if (r.official_enabled) {
     html += `<h3>公式の貢献ランキング (イベント全体)</h3><div class="hint" style="margin:-6px 0 8px">SHOWROOM 発表の各ルーム上位 100 人の合計です。記録を始める前の分も含みます。</div>`;
-    html += `<div class="table-wrap"><table><thead><tr><th>#</th><th>リスナー</th><th class="num">公式 pt</th><th class="num">うち記録</th><th>ルーム</th></tr></thead>
-      <tbody>${r.official_ranking.slice(0, 100).map((u, i) => `<tr><td class="rank">${i + 1}</td>${userCell(u)}<td class="num"><b>${num(u.points)}</b></td><td class="num">${u.recorded == null ? "—" : num(u.recorded)}</td><td>${esc(roomsText(u.rooms))}</td></tr>`).join("")}</tbody></table></div>`;
+    html += `<div class="table-wrap"><table><thead><tr><th>#</th><th>リスナー</th><th class="num">公式 pt</th><th class="num">うち記録</th><th class="ph-hide">ルーム</th></tr></thead>
+      <tbody>${r.official_ranking.slice(0, 100).map((u, i) => `<tr><td class="rank">${i + 1}</td>${userCell(u)}<td class="num"><b>${num(u.points)}</b></td><td class="num">${u.recorded == null ? "—" : num(u.recorded)}</td><td class="ph-hide">${esc(roomsText(u.rooms))}</td></tr>`).join("")}</tbody></table></div>${colsBtn}`;
   }
   if (r.recorded) {
     html += `<div class="row"><h3 style="flex:1">ルーム別 (記録)</h3>${legend}</div><div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>ルーム</th><th class="num">合計 pt</th><th class="num">有料</th><th class="num">無料</th><th class="num">リスナー</th></tr></thead>
-      <tbody>${r.room_ranking.slice(0, 100).map((x, i) => `<tr><td class="rank">${i + 1}</td><td class="name">${esc(x.room)}</td><td class="num"><b>${num(x.points)}</b>${splitBar(x)}</td><td class="num">${num(x.paid_points)}</td><td class="num">${num(x.free_points)}</td><td class="num">${num(x.listeners)}</td></tr>`).join("")}</tbody></table></div>`;
+      <thead><tr><th>#</th><th>ルーム</th><th class="num">合計 pt</th><th class="num ph-hide">有料</th><th class="num ph-hide">無料</th><th class="num">リスナー</th></tr></thead>
+      <tbody>${r.room_ranking.slice(0, 100).map((x, i) => `<tr><td class="rank">${i + 1}</td><td class="name">${esc(x.room)}</td><td class="num"><b>${num(x.points)}</b>${splitBar(x)}</td><td class="num ph-hide">${num(x.paid_points)}</td><td class="num ph-hide">${num(x.free_points)}</td><td class="num">${num(x.listeners)}</td></tr>`).join("")}</tbody></table></div>${colsBtn}`;
     html += `<h3>リスナー別 (記録・イベント全体)</h3>` + rankingTable(r.listener_ranking.slice(0, 100), { rooms: true });
   } else if (!r.official_enabled) {
     html += `<div class="empty">記録されたギフトはまだありません (記録は設定後に配信したルームから始まります)</div>`;
@@ -1948,14 +1980,14 @@ function trendSection(d) {
   const list = (rows, kind) => rows.length ? table(rows.slice(0, 10), kind)
     + (rows.length > 10 ? `<details class="more"><summary>さらに表示 (${num(rows.length - 10)} 人)</summary>${table(rows.slice(10), kind)}</details>` : "")
     : `<div class="empty">当てはまる人はいません</div>`;
-  const table = (rows, kind) => `<div class="table-wrap"><table><thead><tr><th>ギフター</th><th class="num">前の ${t.period} か月</th><th class="num">最近 ${t.period} か月</th><th class="num">増え減り</th>${kind === "rising" ? "" : `<th class="num" title="101 位より下に落ちて見えなくなった分を、100 位の人のポイントまで足した、最近の期間の多くても">見えない分を足すと</th>`}${kind === "falling" ? "<th>理由</th>" : ""}<th>主なルーム</th></tr></thead>
+  const table = (rows, kind) => `<div class="table-wrap"><table><thead><tr><th>ギフター</th><th class="num ph-hide">前の ${t.period} か月</th><th class="num">最近 ${t.period} か月</th><th class="num">増え減り</th>${kind === "rising" ? "" : `<th class="num ph-hide" title="101 位より下に落ちて見えなくなった分を、100 位の人のポイントまで足した、最近の期間の多くても">見えない分を足すと</th>`}${kind === "falling" ? "<th>理由</th>" : ""}<th class="ph-hide">主なルーム</th></tr></thead>
     <tbody>${rows.map((u) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
-      <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
-      <td class="num">${num(u.before)} pt</td><td class="num"><b>${num(u.recent)}</b> pt</td>
+      <td class="name"><b>${esc(u.name)}</b> <span class="uid uid-id">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
+      <td class="num ph-hide">${num(u.before)} pt</td><td class="num"><b>${num(u.recent)}</b> pt</td>
       <td class="num" style="color:${kind === "rising" ? "var(--ok)" : "var(--accent)"}">${u.before ? `${u.recent >= u.before ? "+" : ""}${num(Math.round((u.recent / u.before - 1) * 100))}%` : "新しく"}</td>
-      ${kind === "rising" ? "" : `<td class="num">${u.recent_upper == null ? "-" : `${num(u.recent_upper)} pt まで`}</td>`}
+      ${kind === "rising" ? "" : `<td class="num ph-hide">${u.recent_upper == null ? "-" : `${num(u.recent_upper)} pt まで`}</td>`}
       ${kind === "falling" ? `<td>${u.reason ? `<span class="tag ${u.reason === "本人が減った" ? "warn" : "info"}">${esc(u.reason)}</span>` : ""}</td>` : ""}
-      <td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td></tr>`).join("")}</tbody></table></div>`;
+      <td class="ph-hide">${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td></tr>`).join("")}</tbody></table></div>${colsBtn}`;
   return html + `<div class="hint" style="margin-top:0">イベントの貢献ポイントを、最近 ${t.period} か月 (${range(t.recent)}) とその前の ${t.period} か月 (${range(t.before)}) で比べます。どちらも集め終わった月です。
       離れつつある人: 前の期間に ${num(t.min)} pt 以上送り、最近は半分以下。伸びている人: 最近 ${num(t.min)} pt 以上送り、前の期間の 2 倍以上。</div>
     <div>
@@ -1976,12 +2008,12 @@ function watchSection() {
   const w = research.watch || [];
   if (!w.length) return "";
   return `<h3>気になるギフター <small class="muted">${num(w.length)} 人</small></h3>
-    <div class="table-wrap"><table><thead><tr><th>ギフター</th><th>メモ</th><th class="num">分かった pt</th><th>主なルーム</th><th class="num">イベント</th><th>よく送る時間</th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>ギフター</th><th>メモ</th><th class="num">分かった pt</th><th class="ph-hide">主なルーム</th><th class="num ph-hide">イベント</th><th class="ph-hide">よく送る時間</th></tr></thead>
     <tbody>${w.map((u) => `<tr class="clickable ${research.selected == u.user_id ? "selected" : ""}" data-ruid="${esc(u.user_id)}">
-      <td class="name"><b>${esc(u.name)}</b> <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
+      <td class="name"><b>${esc(u.name)}</b> <span class="uid uid-id">ID ${esc(u.user_id)}</span>${signupCell(u)}</td>
       <td style="max-width:22em;white-space:pre-wrap">${esc(u.memo) || '<span class="uid">メモなし</span>'}</td>
-      <td class="num"><b>${num(u.total_points)}</b> pt</td><td>${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td>
-      <td class="num">${eventCell(u)}</td><td>${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>`;
+      <td class="num"><b>${num(u.total_points)}</b> pt</td><td class="ph-hide">${u.top_rooms.length ? roomsCell(u) : '<span class="uid">-</span>'}</td>
+      <td class="num ph-hide">${eventCell(u)}</td><td class="ph-hide">${habitCell(u)}</td></tr>`).join("")}</tbody></table></div>${colsBtn}`;
 }
 
 /* ------------------------------------------------------------ 上の状態の表示と、つなぎ道 */
@@ -2180,7 +2212,7 @@ function gifterList(d, rec) {
   html += `<div class="row" style="margin:8px 0"><div class="filters grow" id="r-filters">${R_FILTERS.map(([f, l]) => `<button type="button" class="fchip ${research.filter === f ? "active" : ""}" data-rf="${f}">${l}</button>`).join("")}</div></div>
     <div class="row" style="margin:0 0 8px"><input type="search" id="r-q" class="grow" placeholder="この一覧を名前・ユーザー ID で絞り込む" value="${esc(research.q)}">${periodSelect}${signupSelect}</div>`;
   const cols = [
-    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${u.rec_only ? ' <span class="tag info" title="集めたランキング (上位 30 人・100 人) には出ていない、または上位に入っていない人">記録だけ</span>' : ""}`, cls: "name" },
+    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid uid-id">ID ${esc(u.user_id)}</span>${u.rec_only ? ' <span class="tag info" title="集めたランキング (上位 30 人・100 人) には出ていない、または上位に入っていない人">記録だけ</span>' : ""}`, cls: "name" },
     ...(all ? [{ label: "分かった pt", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]
       : [{ label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]),
     { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
@@ -2194,14 +2226,14 @@ function gifterList(d, rec) {
     { label: "登録 (推測)", value: (u) => u.signup_at || null, csv: (u) => u.signup_at ? signupText(u) : "", html: (u) => u.signup_at ? `<span title="${esc(signupRange(u))}">${esc(signupText(u))}</span>` : "-" },
     { label: "よく送る時間", sort: false, value: (u) => u.habits ? `${u.habits.top_weekday}曜 ${hourText(u.habits.top_hours)}` : "", html: habitCell },
   ];
-  html += dataTable("gifters", cols, rows, { sort: period ? 8 : 1, csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
+  html += dataTable("gifters", cols, rows, { sort: period ? 8 : 1, phone: [0, 1, 3], csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
     rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`,
     note: `集計で上位 ${num(d.candidates.length)} 人と、記録したギフトの送り主 ${num(recCount)} 人。記録 pt・有料・回数は、記録しているルームの分だけです${narrow
       ? `。${research.signup !== "all" ? "登録時期" : "この絞り込み"}は、集計で上位 ${num(d.candidates.length)} 人${research.signup !== "all" ? `と、登録した年ごとの上位 ${num(SIGNUP_YEAR_LIMIT)} 人` : ""}の中から選んでいます (記録したギフトだけで分かっている人は、登録時期・イベントの順位が分からないので入りません)` : ""}` });
   if (!all) {
     const fans = d.fans.filter((u) => signupMatch(u));
     html += `<h3>見るルームのギフター</h3>` + dataTable("fans", [
-      { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>`, cls: "name" },
+      { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid uid-id">ID ${esc(u.user_id)}</span>`, cls: "name" },
       { label: "見るルームへ", num: true, value: (u) => u.support_points, html: (u) => `<b>${num(u.support_points)}</b>` },
       { label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => num(u.other_points) },
       { label: "ほかの主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
@@ -2214,7 +2246,7 @@ function gifterList(d, rec) {
 }
 function watchTable(w) {
   return dataTable("watch", [
-    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
+    { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid uid-id">ID ${esc(u.user_id)}</span>${signupCell(u)}`, cls: "name" },
     { label: "メモ", value: (u) => u.memo, html: (u) => u.memo ? `<span style="white-space:pre-wrap">${esc(u.memo)}</span>` : '<span class="uid">メモなし</span>' },
     { label: "分かった pt", num: true, value: (u) => u.total_points, html: (u) => `<b>${num(u.total_points)}</b>` },
     { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
@@ -2971,7 +3003,7 @@ async function showRoom(key) {
     ], d.overlap, { sort: 1, csvName: `${d.key}_重なるルーム`, rowAttr: (o) => `class="clickable" data-go="#room/${esc(o.key || o.room_id)}"`, empty: "まだありません",
       note: "このルームの上位 300 人が、ほかに送っているルーム" })}</div></div>`;
   html += `<h3>このルームに送っているギフター</h3>` + dataTable("rp-gifters", [
-    { label: "ギフター", value: (g) => g.name, html: (g) => `${gifterLink(g.user_id, g.name)} <span class="uid">ID ${esc(g.user_id)}</span>`, cls: "name" },
+    { label: "ギフター", value: (g) => g.name, html: (g) => `${gifterLink(g.user_id, g.name)} <span class="uid uid-id">ID ${esc(g.user_id)}</span>`, cls: "name" },
     { label: "分かった pt", num: true, value: (g) => g.points, html: (g) => `<b>${num(g.points)}</b>` },
     { label: "累計ランキング", num: true, value: (g) => g.cumulative || 0, html: (g) => g.cumulative ? `${num(g.cumulative)}${g.cumulative_rank ? ` (${num(g.cumulative_rank)} 位)` : ""}` : "-" },
     { label: "イベント", num: true, value: (g) => g.events || 0, html: (g) => g.events ? num(g.events) : "-" },
@@ -2986,7 +3018,7 @@ async function showRoom(key) {
     { label: "参加ルーム", num: true, value: (e) => e.rooms, html: (e) => num(e.rooms) },
     { label: "貢献者", num: true, value: (e) => e.contributors, html: (e) => e.ranking ? `${num(e.contributors)} 人` : '<span class="uid">まだ</span>' },
     { label: "100 位より下", num: true, value: (e) => e.below, html: (e) => e.below == null ? "-" : `${num(e.below)} <span class="uid">(${pctText(e.point ? e.below / e.point : 0, 1)})</span>` },
-  ], d.events, { sort: 1, limit: 30, total: d.event_total, csvName: `${d.key}_イベント`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"` });
+  ], d.events, { sort: 1, phone: [0, 2, 3], limit: 30, total: d.event_total, csvName: `${d.key}_イベント`, rowAttr: (e) => `class="clickable" data-go="#event/${esc(e.event_id)}"` });
   box.innerHTML = html;
   renderFollowerTrend(d.followers_daily || []);
   loadRoomDash(d.key);
@@ -3030,7 +3062,7 @@ async function showEventChoice(box) {
       { label: "特典", num: true, value: (r) => r.reward_rank, html: (r) => r.reward_rank ? `${num(r.reward_rank)} 位まで${r.f.place && r.f.place <= r.reward_rank ? ' <span class="tag live">入れそう</span>' : ""}` : "-" },
       { label: "参加ルーム", num: true, value: (r) => r.rooms, html: (r) => `${num(r.rooms)}${r.unknown ? ` <span class="uid">(強さ不明 ${num(r.unknown)})</span>` : ""}` },
       { label: "いちばん強いルーム", num: true, value: (r) => r.top, html: (r) => r.top ? `${shortNum(r.top)} <small>pt/日</small>` : "-" },
-    ], rows, { sort: 3, desc: false, limit: 100, csvName: "見るルームに合うイベント", rowAttr: (r) => `class="clickable" data-go="#event/${esc(r.event_id)}"`,
+    ], rows, { sort: 3, desc: false, phone: [0, 4], limit: 100, csvName: "見るルームに合うイベント", rowAttr: (r) => `class="clickable" data-go="#event/${esc(r.event_id)}"`,
       empty: "参加ルームの分かった、開催中・これからのイベントがありません" });
 }
 function eventStrength(st) {
@@ -3049,7 +3081,7 @@ function eventStrength(st) {
     { label: "強さ (pt/日)", num: true, value: (r) => r.per_day, html: (r) => `<b>${num(Math.round(r.per_day))}</b>` },
     { label: "いちばん良かった回", num: true, value: (r) => r.best, html: (r) => num(Math.round(r.best)) },
     { label: "見たイベント", num: true, value: (r) => r.events, html: (r) => num(r.events) },
-  ], st.rooms, { sort: 0, desc: false, limit: 10, csvName: "参加ルームの強さ", rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
+  ], st.rooms, { sort: 0, desc: false, phone: [0, 1, 3], limit: 10, csvName: "参加ルームの強さ", rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
   return h;
 }
 const eventLists = {};
