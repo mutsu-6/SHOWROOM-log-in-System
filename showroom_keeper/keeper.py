@@ -403,6 +403,9 @@ class Keeper:
             from .web import start_admin
 
             admin = start_admin(self)
+        from . import selfcheck
+
+        selfcheck.start(self)  # 自己点検 (バグチェックと自浄)。5 分ごと
         gift_updates = asyncio.ensure_future(self._gift_updates())
         research = asyncio.ensure_future(self._research_updates())
         backups = asyncio.ensure_future(self._backup_updates())
@@ -420,6 +423,7 @@ class Keeper:
             gift_updates.cancel()
             research.cancel()
             backups.cancel()
+            selfcheck.stop()
             if admin is not None:
                 admin.shutdown()
 

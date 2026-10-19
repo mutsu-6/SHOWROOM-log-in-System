@@ -11,9 +11,10 @@ import ctypes
 import ctypes.util
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def tight(need_mb: float = HEAVY_MIN_FREE_MB) -> bool:
 
 
 _heavy = threading.RLock()
+_holder: dict[str, Any] = {}  # 今、重い集計をしているスレッド (自己点検が、長く続いていないかを見る)
 
 
 @contextmanager
@@ -45,11 +47,21 @@ def heavy(wait: bool = True) -> Iterator[bool]:
     """重い集計を 1 つずつ行う (同時に読むと、ディスクの読み出しを取り合って、どれも何倍も遅くなる。2026-10-19 にサーバーで
     analyze と集まり具合の数え直しが重なっていた)。wait=False なら、ほかが数えている時は待たずに False を返す (裏の数え直しは次の機会に)。"""
     got = _heavy.acquire(blocking=wait)
+    outer = got and not _holder  # 同じスレッドの中で重ねて使った時は、いちばん外側の始まりを覚える
+    if outer:
+        _holder.update(ident=threading.get_ident(), name=threading.current_thread().name, since=time.time())
     try:
         yield got
     finally:
         if got:
+            if outer:
+                _holder.clear()
             _heavy.release()
+
+
+def heavy_holder() -> dict[str, Any]:
+    """重い集計をしているスレッド {ident, name, since} (していなければ空)。"""
+    return dict(_holder)
 
 
 _libc = None

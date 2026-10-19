@@ -612,6 +612,9 @@ td a.name-link, td a { word-break: break-word; }
       <div class="hint" id="r-backup"></div>
       <div class="hint" id="r-version"></div>
     </div>
+    <div class="section-title"><h3>自己点検</h3></div>
+    <p class="sub" style="margin:0">5 分ごとに、これまでに起きた困りごと (エラー・メモリの不足・書き込み待ちのふくらみ・止まった収集・残ったファイル) が起きていないかを確かめ、サーバーを起動し直さず・集めたデータを消さずに直せるものは自分で直します。</p>
+    <div id="r-health"><div class="hint">まだ点検していません (起動して 1 分後に始めます)。</div></div>
     <h3>月ごとの集まり具合</h3>
     <div id="c-coverage"><div class="loading"><span class="spinner"></span>数えています…</div></div>
     <div class="section-title"><h3>ログ</h3><span class="grow"></span>
@@ -2031,6 +2034,27 @@ function renderVersion(v) {
       + (v.outdated === true ? ` ・ <b style="color:var(--warn)">更新が残っています。Mac の「サーバーを更新する.command」をダブルクリックしてください</b>`
         : v.outdated === false ? " ・ 最新です" : "");
 }
+// 自己点検 (バグチェックと自浄)
+function healthPill(h) {
+  if (!h || !h.problems) return "";
+  return `<a class="pill warn" href="#collect" title="${esc(h.first || "")}">自己点検: ${num(h.problems)} 件${h.errors ? ` (エラー ${num(h.errors)})` : ""}</a>`;
+}
+function renderHealth(h) {
+  const box = $("#r-health");
+  if (!box || !h || !h.at) return;
+  const m = h.memory || {};
+  const found = (h.findings || []).map((f) => `<li><span class="${f.level === "error" ? "ng" : ""}">${f.level === "error" ? "✖" : "⚠"}</span>
+    <span><b>${esc(f.title)}</b>${f.detail ? `<br><span class="t">${esc(f.detail)}</span>` : ""}</span></li>`).join("");
+  const fixes = (h.fixes || []).map((f) => `<li><span class="t">${tm(f.at, true).slice(0, 11)}</span><span class="ok">✔</span><span>${esc(f.what)}</span></li>`).join("");
+  const errs = (h.errors || []).map((e) => `<tr><td>${e.level === "error" ? "エラー" : "注意"}</td><td class="num">${num(e.day)}${e.more ? "+" : ""}</td>
+    <td><code>${esc(e.where)}</code></td><td>${esc(e.sample)}</td></tr>`).join("");
+  box.innerHTML = `<div class="hint">最後の点検: ${tm(h.at, true).slice(0, 11)}
+      ・ Python ${num(m.rss_mb)} MB (swap ${num(m.swap_mb)} MB) ・ メモリの空き ${num(m.free_mb)} MB ・ スレッド ${num(m.threads)} 本</div>
+    ${found ? `<ul class="history">${found}</ul>` : `<div class="hint"><span style="color:var(--ok)">✔</span> 問題は見つかっていません</div>`}
+    ${fixes ? `<h4 style="margin:14px 0 0">自分で直したこと (7 日)</h4><ul class="history">${fixes}</ul>` : ""}
+    ${errs ? `<details class="more"><summary>24 時間に出たエラーと注意 (出た場所ごと)</summary><div class="table-wrap"><table>
+      <thead><tr><th>種類</th><th class="num">回数</th><th>場所</th><th>最後の文</th></tr></thead><tbody>${errs}</tbody></table></div></details>` : ""}`;
+}
 function renderOverview() {
   const o = overview;
   const login = o.login || {};
@@ -2042,7 +2066,7 @@ function renderOverview() {
   const browserCls = o.browser === "動作中" ? "ok" : o.browser.startsWith("障害") ? "warn" : "";
   $("#badges").innerHTML = `${loginPill}
     <a class="pill ${liveCount ? "live" : ""}" href="#live">配信中 ${liveCount} / ${o.rooms.length}</a>
-    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>${pausePill(o.research_pause)}${versionPill(o.version)}`;
+    <span class="pill ${browserCls}" title="視聴用ブラウザの状態">ブラウザ: ${esc(o.browser)}</span>${pausePill(o.research_pause)}${versionPill(o.version)}${healthPill(o.health)}`;
   renderVersion(o.version);
   const alerts = o.alerts || [];
   $("#alerts").hidden = !alerts.length;
@@ -3430,6 +3454,7 @@ function renderCollect(d) {
     + (d.upload ? (d.upload.ok ? ` ・ サーバーの外: gs://${esc(d.upload.bucket)}/${esc(d.upload.name)} (${tm(d.upload.at, true).slice(0, 11)})`
       : ` ・ <b style="color:var(--accent)">サーバーの外に送れませんでした: ${esc(d.upload.reason || "")}</b>`) : "")
     + (pauses.length ? `<br>問い合わせを止めた記録: ${pauses.join(" / ")}` : "");
+  renderHealth(d.health);
   $("#c-coverage").innerHTML = d.coverage ? coverageBlock(d.coverage).replace('<details class="more">', '<details class="more" open>') : "";
 }
 $("#r-collect").addEventListener("click", async () => {
