@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS cumulative_history (
 CREATE TABLE IF NOT EXISTS contributions (
     event_id INTEGER, room_id INTEGER, user_id INTEGER, point INTEGER, rank INTEGER,
     PRIMARY KEY (event_id, room_id, user_id)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS contributions_user ON contributions(user_id);
+-- 人で引く索引。point・rank も入れて、表を引き直さずに読む (分析の人ごとのまとめ _event_stats が、サーバーで 34 秒かかっていた。2026-10-19)
+CREATE INDEX IF NOT EXISTS contributions_user_pt ON contributions(user_id, point, rank);
 CREATE TABLE IF NOT EXISTS user_room (
     user_id INTEGER, room_id INTEGER, cumulative INTEGER DEFAULT 0, cumulative_rank INTEGER,
     visits INTEGER DEFAULT 0, events INTEGER DEFAULT 0, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID;
@@ -283,6 +284,7 @@ class Store:
                             self.conn.execute("DELETE FROM gift_sender_pos")
                         if (table, col.split()[0]) == ("event_series", "route"):
                             self.conn.execute("DELETE FROM event_series WHERE how='auto'")  # 木の形でまとめ直す
+                self.conn.execute("DROP INDEX IF EXISTS contributions_user")  # 上の contributions_user_pt に替えた (人で引くのは同じ)
                 # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS contributions_guessed ON contributions(room_id, event_id)
                                      WHERE guessed IS NOT NULL""")

@@ -713,6 +713,9 @@ def _signup(s: Store, rec: _Recorded) -> _Signup:
     return _Signup(steps) if steps else _Signup.build(s, rec)
 
 
+SUMMARY_STEP = 50  # 分析で、ルームごとの内訳をまとめて読む人の数
+
+
 def _chunks(items: list[Any], n: int = 500) -> list[list[Any]]:
     return [items[i:i + n] for i in range(0, len(items), n)]
 
@@ -891,9 +894,14 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids + trend_ids))
         evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
         sup = set(sup_ids)
-        # ルームごとの内訳は 1 人ずつ読む (数万ルームに出てくる人もいて、まとめて読むとメモリが足りなくなる)
-        summary = {u: _summary(u, names.get(u), _slots(s, rooms, rec, [u]).get(u, {}), evs.get(u), rec.gifts.get(u, []),
-                               rooms, sup, signup.guess(u)) for u in uids}
+        # ルームごとの内訳は SUMMARY_STEP 人ずつまとめて読み、まとめを作ったら捨てる
+        # (前は 1 人ずつ読んでいて、サーバーで 1,400 回・24 秒。全員を一度に読むと、数万ルームに出てくる人もいてメモリが足りなくなる)
+        summary = {}
+        for part in _chunks(uids, SUMMARY_STEP):
+            slots = _slots(s, rooms, rec, part)
+            summary.update({u: _summary(u, names.get(u), slots.get(u, {}), evs.get(u), rec.gifts.get(u, []),
+                                        rooms, sup, signup.guess(u)) for u in part})
+            del slots
         top_names = _user_names(s, rec, list({r["top_user"] for r in room_rows}))
         room_list = []
         for r in room_rows:
