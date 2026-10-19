@@ -6,11 +6,14 @@
   受信するだけで、こちらからはコメント等を送らない (接続維持の PING のみ)。
 - イベントは終了日時を過ぎると自動で対象外になる。
 - 視聴中 (rooms) のルームはブラウザ側で記録しているため対象外にする (二重記録防止)。
+- SHOWROOM への問い合わせ (配信状況・live_info・観客席の一覧など) は、収集と同じ research.THROTTLE を通す
+  (research_gap 秒に 1 回まで)。止められて休んでいる時は、待たずにあきらめる (リアルタイム通信の受信は続ける)。
 """
 
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 import json
 import logging
@@ -40,6 +43,9 @@ STAGE_EVERY = 900  # 配信の順位 (ステージの上位 100 人。ポイン�
 LAG_EVERY = 600  # イベントの API の遅れを測る間隔 (1 ルームにつき。秒)
 GLITTER_KEEP = 7 * 86400  # グリッターを取ったルームを、この秒数のあいだ配信のたびに記録する
 GLITTER_FILE = "glitter_rooms.json"  # {room_url_key: 最後にグリッターのバッジを見た時刻} (起動し直しても続けるため)
+COUNT_LOG_EVERY = 3600  # SHOWROOM への問い合わせの回数をログに書く間隔 (秒)
+# 問い合わせは THROTTLE の順番を待つので、ほかの処理の共有のスレッドをふさがないように専用のスレッドで待つ
+_pool = ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY, thread_name_prefix="recorder")
 
 
 def glitter_badge(live: dict[str, Any]) -> bool:
@@ -104,8 +110,17 @@ def get_json(path: str, cookie: str | None = None) -> Any:
         return json.load(resp)
 
 
+class Paused(RuntimeError):
+    """SHOWROOM に止められて、収集の問い合わせを休んでいる。"""
+
+
 async def aget(path: str, cookie: str | None = None) -> Any:
-    return await asyncio.get_running_loop().run_in_executor(None, get_json, path, cookie)
+    """収集と同じ決まり (research.THROTTLE) を通して SHOWROOM に問い合わせる。休んでいる時は待たずにあきらめる。"""
+    from .research import THROTTLE
+
+    if THROTTLE.state()["paused"] > 0:
+        raise Paused("SHOWROOM への問い合わせを休んでいます")
+    return await asyncio.get_running_loop().run_in_executor(_pool, THROTTLE.call, lambda p: get_json(p, cookie), path)
 
 
 def ws_header_param(connect: Any) -> str:
@@ -165,6 +180,7 @@ class GiftRecorder:
         self._names: dict[str, str] = {}
         self._sources: dict[str, str] = {}
         self._fetch_slots: asyncio.Semaphore | None = None
+        self._requests, self._count_from = 0, time.time()  # SHOWROOM への問い合わせの回数 (1 時間ごとにログに書く)
         self._connect_slots: asyncio.Semaphore | None = None
         self._glitter: dict[str, float] = self._load_glitter()
         self._glitter_saved = 0.0
@@ -216,6 +232,11 @@ class GiftRecorder:
             if x is not None and key not in watched:
                 live.setdefault(key, {"room_id": x["room_id"], "live_id": x.get("live_id"), "source": "グリッター"})
 
+    def _log_count(self, now: float) -> None:
+        if now - self._count_from >= COUNT_LOG_EVERY:
+            log.info("ギフトの記録: この 1 時間に SHOWROOM へ %d 回問い合わせました (収集と同じ間隔の決まりの中)", self._requests)
+            self._requests, self._count_from = 0, now
+
     async def run(self) -> None:
         log.info("ギフト記録を開始します (ルーム %d 件、イベント %d 件%s)", len(self.cfg.record_rooms), len(self.cfg.events),
                  "、グリッターを取ったルーム" if self.cfg.record_glitter else "")
@@ -225,6 +246,7 @@ class GiftRecorder:
                     await self._refresh()
                 except Exception as e:  # noqa: BLE001
                     log.warning("配信状況の確認に失敗: %s", e)
+                self._log_count(time.time())
                 await asyncio.sleep(REFRESH_INTERVAL)
         finally:
             for task in self._tasks.values():
@@ -241,6 +263,7 @@ class GiftRecorder:
         self._limits()
         assert self._fetch_slots is not None
         async with self._fetch_slots:
+            self._requests += 1
             return await aget(path, cookie)
 
     def _cookie(self, key: str | None = None) -> str | None:
