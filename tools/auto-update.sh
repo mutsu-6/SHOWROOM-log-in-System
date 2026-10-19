@@ -10,6 +10,8 @@ set -u
 cd "$(dirname "$0")/.."
 BRANCH=claude/showroom-login-persistence-gfdxzo
 REPO=mutsu-6/SHOWROOM-log-in-System
+# 変わったら作り直して起動し直すファイル (イメージに入るもの・docker の設定。Dockerfile の COPY と合わせる)
+RESTART_FILES='^(showroom_keeper/|requirements\.txt$|Dockerfile$|docker-compose\.yml$|\.dockerignore$)'
 
 if [ -e .no-auto-update ]; then
   exit 0
@@ -52,6 +54,21 @@ case "$verdict" in
     fi
     exit 0 ;;
 esac
+# 動いているプログラムに関わるファイル (イメージに入るもの・docker の設定) が変わっていなければ、起動し直さない。
+# 起動し直すと視聴のアバターが 1 分半〜2 分ほどルームから抜ける (2026-10-19 は説明書だけの変更で 10 回ほど起動し直していた)。
+# 説明書・テスト・tools/ は取り込むだけにして、版の番号を進める。次にプログラムが変わった時に、まとめて作り直す
+if [ -n "$running" ] && changed=$(git -c core.quotepath=off diff --name-only "$running" "$latest" 2>/dev/null) && [ -n "$changed" ] \
+   && ! printf '%s\n' "$changed" | grep -qE "$RESTART_FILES"; then
+  if ! { git checkout -q "$BRANCH" && git pull -q --ff-only origin "$BRANCH"; }; then
+    echo "新しい版 $short を取り込めませんでした (次の回にもう一度試します)"
+    exit 0
+  fi
+  git log -1 --format='%h %ci' > showroom_keeper/VERSION
+  # 管理画面の「動いている版」も進める (中のプログラムは同じなので、作り直さない)
+  sudo docker compose exec -T showroom-keeper sh -c 'cat > /app/showroom_keeper/VERSION' < showroom_keeper/VERSION 2>/dev/null || true
+  echo "新しい版 $short はプログラムの変わらない変更 (説明書・テストなど) だけなので、起動し直さずに取り込みました"
+  exit 0
+fi
 echo "新しい版 $short の自動テストが通ったので、更新します"
 if ! bash tools/update.sh; then
   echo "$latest" > .auto-update-build-failed
