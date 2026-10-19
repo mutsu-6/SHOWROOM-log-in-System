@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import sqlite3
 import time
 import urllib.error
 from bisect import bisect_left
@@ -883,7 +884,7 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         room_rows = s.all("SELECT * FROM rs ORDER BY points DESC LIMIT 200")
         pairs = _room_pairs(s, rooms)
 
-        cov = coverage(state_dir, max_age=0)
+        cov = coverage(state_dir)  # 古ければ前の結果 (裏で数え直す)。数えるのに 20 秒かかるので、分析のたびに数え直さない
         trend = _trend(s, cov, left)
         trend_ids = [r["user_id"] for kind in ("falling", "rising", "hidden") for r in trend[kind]]
 
@@ -938,6 +939,12 @@ def coverage(state_dir: Path, max_age: float = ANALYSIS_TTL, now: float | None =
     """
     key = str(Path(state_dir).resolve())
     hit = _coverage_cache.get(key)
+    if hit is None and now is None:
+        # 起動し直したあと: 前に数えた結果を research.db から読む (古ければ下で裏で数え直す。数えるのに 20 秒かかり、ページを待たせていた)
+        with Store(state_dir) as s:
+            saved = s.meta("coverage_cache")
+        if saved and saved.get("result") is not None:
+            hit = _coverage_cache[key] = (float(saved["at"]), saved["result"])
     if hit and now is None:
         if time.time() - hit[0] < max_age:
             return hit[1]
@@ -950,8 +957,17 @@ def coverage(state_dir: Path, max_age: float = ANALYSIS_TTL, now: float | None =
             return hit[1]
     with Store(state_dir) as s:
         result = _coverage(s, time.time() if now is None else now)
+        if now is None:
+            _save_coverage(s, result)
     _coverage_cache[key] = (time.time(), result)
     return result
+
+
+def _save_coverage(s: Store, result: dict[str, Any]) -> None:
+    try:
+        s.set_meta("coverage_cache", {"at": time.time(), "result": result})
+    except (TypeError, ValueError, sqlite3.Error) as e:  # 残せなくても、この起動の間は覚えている
+        log.debug("集まり具合を残せませんでした: %s", e)
 
 
 _coverage_lock = threading.Lock()
@@ -961,7 +977,9 @@ _coverage_running: set[str] = set()
 def _refresh_coverage(state_dir: Path, key: str) -> None:
     try:
         with Store(state_dir) as s:
-            _coverage_cache[key] = (time.time(), _coverage(s, time.time()))
+            result = _coverage(s, time.time())
+            _save_coverage(s, result)
+            _coverage_cache[key] = (time.time(), result)
     except Exception as e:  # noqa: BLE001 - 数え直せなくても、前の結果を使い続ける
         log.debug("集まり具合を数え直せませんでした: %s", e)
     finally:
