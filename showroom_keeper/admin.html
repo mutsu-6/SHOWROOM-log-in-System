@@ -3128,6 +3128,78 @@ function eventDetails(x) {
   }
   return h;
 }
+function eventRoomsTable(d) {
+  return dataTable("ep-rooms", [
+      { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
+      { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
+      { label: "pt", num: true, value: (r) => r.point, html: (r) => `<b>${num(r.point)}</b>` },
+      ...(d.styled ? [{ label: "走り方", value: (r) => r.style || "", html: (r) => r.style ? esc(r.style) : '<span class="uid">-</span>' }] : []),
+      { label: "貢献者", num: true, value: (r) => r.final ? r.contributors : r.live, html: (r) => r.final ? `${num(r.contributors)} 人` : r.live != null ? `${num(r.live)} 人 <span class="uid">(今)</span>` : '<span class="uid">まだ</span>' },
+    ], d.rooms, { sort: 0, desc: false, limit: 50, total: d.room_total, csvName: `イベント_${d.event_id}_順位`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"` });
+}
+function eventContribTable(d, why) {
+  return `<h3>貢献者 <small class="muted">イベント全体の合計</small></h3>${dataTable("ep-contrib", [
+      { label: "ギフター", value: (c) => c.name, html: (c) => `${gifterLink(c.user_id, c.name)}${c.left ? ' <span class="tag">退会</span>' : ""}${c.guessed ? ' <span class="tag warn" title="名前だけで、この人と決めた分 (同じ名前の別の人のこともあります)">名前で推測</span>' : ""}`, cls: "name" },
+      { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
+      { label: "ルーム", num: true, value: (c) => c.rooms, html: (c) => num(c.rooms) },
+      { label: "最高順位", num: true, value: (c) => c.best_rank, html: (c) => c.best_rank ? `${num(c.best_rank)} 位` : "-" },
+      { label: "いちばん送ったルーム", value: (c) => c.top_room || "", html: (c) => esc(c.top_room || "") },
+    ], d.contributors, { sort: 1, limit: 30, total: d.contributor_total, csvName: `イベント_${d.event_id}_貢献者`, rowAttr: (c) => `class="clickable" data-go="#gifter/${esc(c.user_id)}"`,
+      empty: why || (d.state === "ended" ? "貢献ランキングをまだ取っていません" : "貢献ランキングは、イベントが終わってから取ります") })}`;
+}
+/* 開催中のイベントの「今の貢献者」: ページを開いている間だけ、サーバーが SHOWROOM から読む (上位のルームだけ・数分使い回す) */
+let liveTimer = null, liveData = null;
+async function loadLiveContrib(d) {
+  clearTimeout(liveTimer);
+  const id = page.arg;
+  const again = (sec) => { liveTimer = setTimeout(() => {
+    if (page.name !== "event" || page.arg !== id) return;
+    if (document.hidden) again(30); else loadLiveContrib(d);
+  }, sec * 1000); };
+  let x;
+  try { x = await api(`/api/event_live?event=${encodeURIComponent(d.event_id)}`); } catch (e) {
+    if (page.name === "event" && page.arg === id) { $("#ep-contrib-box").innerHTML = eventContribTable(d, `今の貢献ランキングを読めませんでした (${e.message})`); again(180); }
+    return;
+  }
+  if (page.name !== "event" || page.arg !== id) return;
+  if (!x.live) { $("#ep-contrib-box").innerHTML = eventContribTable(d, x.why); return; }
+  const counts = Object.fromEntries(x.rooms.filter((r) => r.contributors != null).map((r) => [r.room_id, r.contributors]));
+  d.rooms.forEach((r) => { if (counts[r.room_id] != null) r.live = counts[r.room_id]; });
+  $("#ep-rooms-box").innerHTML = eventRoomsTable(d);
+  liveData = x;
+  const pick = $("#ep-live-room") ? $("#ep-live-room").value : "";
+  const read = x.rooms.filter((r) => x.by_room[r.room_id]);
+  const rest = x.room_total - x.rooms.length;
+  const opts = [`<option value="">全部のルームの合計</option>`, ...read.map((r) => `<option value="${esc(r.room_id)}"${String(r.room_id) === pick ? " selected" : ""}>${esc(r.name)}</option>`)].join("");
+  $("#ep-contrib-box").innerHTML = `<h3>貢献者 <small class="muted">今 (${tm(x.at)} に SHOWROOM から読みました${x.stale ? "。問い合わせを休んでいるので前の分" : ""})</small></h3>
+    <div class="row" style="gap:6px;margin-bottom:6px"><select id="ep-live-room">${opts}</select>
+      <button type="button" class="btn small" id="ep-live-again" title="${Math.round(x.ttl / 60)} 分たつと読み直せます">読み直す</button></div>
+    <div id="ep-live-table">${liveTable(x, pick)}</div>
+    <div class="hint">開催中は、ポイントの多い ${num(x.rooms.length)} ルーム${rest > 0 ? ` (全 ${num(x.room_total)} ルームのうち)` : ""}の貢献ランキング (各 100 位まで) を、このページを開いている間だけ ${Math.round(x.ttl / 60)} 分ごとに読みます。${x.failed ? `<b>${num(x.failed)} ルームは読めませんでした。</b>` : ""}終わったあとは、全ルーム分を取り込みます</div>`;
+  $("#ep-live-room").addEventListener("change", (ev) => { $("#ep-live-table").innerHTML = liveTable(liveData, ev.target.value); });
+  $("#ep-live-again").addEventListener("click", () => { $("#ep-contrib-box").querySelector(".hint").textContent = "読んでいます…"; loadLiveContrib(d); });
+  again(x.ttl + 5);
+}
+function liveTable(x, roomId) {
+  const go = (c) => `class="clickable" data-go="#gifter/${esc(c.user_id)}"`;
+  if (roomId) {
+    const room = x.rooms.find((r) => String(r.room_id) === roomId);
+    return dataTable("ep-live-room-t", [
+      { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)} 位` : "-" },
+      { label: "ギフター", value: (c) => c.name, html: (c) => gifterLink(c.user_id, c.name), cls: "name" },
+      { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
+    ], x.by_room[roomId] || [], { sort: 0, desc: false, limit: 30, csvName: `イベント_${x.event_id}_${room ? room.name : roomId}_今の貢献者`, rowAttr: go,
+      empty: "このルームの貢献者はまだいません" });
+  }
+  return dataTable("ep-live", [
+    { label: "ギフター", value: (c) => c.name, html: (c) => gifterLink(c.user_id, c.name), cls: "name" },
+    { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
+    { label: "ルーム", num: true, value: (c) => c.rooms, html: (c) => num(c.rooms) },
+    { label: "最高順位", num: true, value: (c) => c.best_rank, html: (c) => c.best_rank ? `${num(c.best_rank)} 位` : "-" },
+    { label: "いちばん送ったルーム", value: (c) => c.top_room || "", html: (c) => esc(c.top_room || "") },
+  ], x.contributors, { sort: 1, limit: 30, total: x.contributor_total, csvName: `イベント_${x.event_id}_今の貢献者`, rowAttr: go,
+    empty: "まだ貢献者はいません" });
+}
 async function showEvent(id) {
   const box = $("#ep");
   box.innerHTML = loadingHtml();
@@ -3147,22 +3219,11 @@ async function showEvent(id) {
       ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
     </div>
     ${taikaiBox(d)}<div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
-  html += `<div class="cols"><div><h3>参加ルームの順位</h3>${dataTable("ep-rooms", [
-      { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
-      { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
-      { label: "pt", num: true, value: (r) => r.point, html: (r) => `<b>${num(r.point)}</b>` },
-      ...(d.styled ? [{ label: "走り方", value: (r) => r.style || "", html: (r) => r.style ? esc(r.style) : '<span class="uid">-</span>' }] : []),
-      { label: "貢献者", num: true, value: (r) => r.contributors, html: (r) => r.final ? `${num(r.contributors)} 人` : '<span class="uid">まだ</span>' },
-    ], d.rooms, { sort: 0, desc: false, limit: 50, total: d.room_total, csvName: `イベント_${d.event_id}_順位`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"` })}</div>
-    <div><h3>貢献者 <small class="muted">イベント全体の合計</small></h3>${dataTable("ep-contrib", [
-      { label: "ギフター", value: (c) => c.name, html: (c) => `${gifterLink(c.user_id, c.name)}${c.left ? ' <span class="tag">退会</span>' : ""}${c.guessed ? ' <span class="tag warn" title="名前だけで、この人と決めた分 (同じ名前の別の人のこともあります)">名前で推測</span>' : ""}`, cls: "name" },
-      { label: "pt", num: true, value: (c) => c.point, html: (c) => `<b>${num(c.point)}</b>` },
-      { label: "ルーム", num: true, value: (c) => c.rooms, html: (c) => num(c.rooms) },
-      { label: "最高順位", num: true, value: (c) => c.best_rank, html: (c) => c.best_rank ? `${num(c.best_rank)} 位` : "-" },
-      { label: "いちばん送ったルーム", value: (c) => c.top_room || "", html: (c) => esc(c.top_room || "") },
-    ], d.contributors, { sort: 1, limit: 30, total: d.contributor_total, csvName: `イベント_${d.event_id}_貢献者`, rowAttr: (c) => `class="clickable" data-go="#gifter/${esc(c.user_id)}"`,
-      empty: d.state === "ended" ? "貢献ランキングをまだ取っていません" : "貢献ランキングは、イベントが終わってから取ります" })}</div></div>`;
+  const live = d.state === "ongoing" && d.show_ranking;
+  html += `<div class="cols"><div><h3>参加ルームの順位</h3><div id="ep-rooms-box">${eventRoomsTable(d)}</div></div>
+    <div id="ep-contrib-box">${live ? `<h3>貢献者 <small class="muted">今</small></h3>${loadingHtml("SHOWROOM から今の貢献ランキングを読んでいます…")}` : eventContribTable(d)}</div></div>`;
   box.innerHTML = html;
+  if (live) loadLiveContrib(d);
   const chart = $("#ep-chart");
   if (p.times.length) {
     const full = Math.max(260, (chart.clientWidth || 720) - 30);

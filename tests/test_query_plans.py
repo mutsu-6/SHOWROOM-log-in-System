@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from showroom_keeper import explore, research, research_store, room_analysis as ra, series, sweep
+from showroom_keeper import explore, live_contrib, research, research_store, room_analysis as ra, series, sweep
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -117,6 +117,8 @@ def test_room_and_event_pages_do_not_read_whole_tables(traced):
     check(traced, lambda d: explore.event_detail(d, "1", ["k2"]))
     check(traced, lambda d: explore.event_choice(d, ["k2"]))
     check(traced, lambda d: explore.room_profiles(d))
+    live_contrib.forget()
+    check(traced, lambda d: live_contrib.event_live(d, "1", get=lambda p: {}, now=NOW - 12 * DAY, paused=lambda: False))
 
 
 def test_saving_does_not_read_whole_tables(traced):
