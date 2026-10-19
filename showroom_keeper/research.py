@@ -48,6 +48,8 @@ RECOVER_AFTER = 200  # 再開したあと、続けてこの回数成功したら
 PAUSE_LOG = 20  # 覚えておく、止めた記録の数
 PAST_EVENT_PAGES = 100  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
 ROOM_REFRESH = 20 * 3600  # 累計ランキングなどを取り直すまでの時間 (秒)
+HOLD_RANKINGS = 30  # 全ルームの収集で、貢献ランキングをこの件数までためてから、まとめて保存する (書く量を減らすため)
+HOLD_SECONDS = 120.0  # ためておく時間の上限 (秒)
 RANKING_RETRIES = 3  # 貢献ランキングの取得に続けて失敗したら、それ以上は自動で取り直さない
 ARCHIVE_HOLD = RANKING_RETRIES + 1  # Internet Archive で見つけたルームの貢献ランキング: ルームがあると分かるまで取りに行かない
 WEEKDAYS = "月火水木金土日"
@@ -216,6 +218,9 @@ class Collector:
         self._store: Store | None = None
         self.requests = 0
         self.failures = 0
+        # 貢献ランキングをためてから保存する時の、ためている分 (None なら 1 件ずつすぐ保存する)。全ルームの収集だけが使う
+        self.held: list[tuple[int, int, list[dict[str, Any]], bool]] | None = None
+        self._held_at = 0.0
 
     @property
     def store(self) -> Store:
@@ -225,8 +230,38 @@ class Collector:
 
     def close(self) -> None:
         if self._store is not None:
-            self._store.close()
-            self._store = None
+            try:
+                self.flush_rankings()
+            finally:
+                self._store.close()
+                self._store = None
+
+    def hold_rankings(self) -> None:
+        """これから取る貢献ランキングを、HOLD_RANKINGS 件か HOLD_SECONDS 秒ぶんためてから、まとめて保存する。
+
+        1 件ずつ保存すると、100 人分の人で引く表と索引のページを毎回書き直す (サーバーでは 1 件 500 か所ほど)。
+        まとめると、同じページは 1 回分で済む。ためている間に止まった分は、保存していないので、あとで取り直す。
+        """
+        if self.held is None:
+            self.held = []
+
+    def flush_rankings(self, due_only: bool = False) -> None:
+        """ためている貢献ランキングを保存する。due_only なら、ためる件数か時間を過ぎた時だけ。"""
+        if not self.held:
+            return
+        if due_only and len(self.held) < HOLD_RANKINGS and self._clock() - self._held_at < HOLD_SECONDS:
+            return
+        items, self.held = self.held, []
+        self.store.set_contributions_many(items, self._clock())
+
+    def _save_ranking(self, event_id: int, room_id: int, rows: list[dict[str, Any]], final: bool) -> None:
+        if self.held is None:
+            self.store.set_contributions(event_id, room_id, rows, self._clock(), final)
+            return
+        if not self.held:
+            self._held_at = self._clock()
+        self.held.append((event_id, room_id, rows, final))
+        self.flush_rankings(due_only=True)
 
     def get(self, path: str) -> Any:
         self.requests += 1
@@ -357,7 +392,7 @@ class Collector:
             self.store.conn.execute("UPDATE room_events SET final=1, ranking_at=?, failures=0 WHERE event_id=? AND room_id=?",
                                     (self._clock(), event_id, room_id))
             return True
-        self.store.set_contributions(event_id, room_id, rows, self._clock(), final)
+        self._save_ranking(event_id, room_id, rows, final)
         return True
 
 

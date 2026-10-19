@@ -512,20 +512,107 @@ def test_sweep_takes_turns_between_jobs(tmp_path):
     assert "profile" in kinds and "summary_ranking" in kinds and "room_list" in kinds
 
 
-def test_sweep_gives_rankings_every_other_turn(tmp_path):
-    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()))
-    done = []
+def _stub_jobs(sw, cost, done, rankings=True):
+    """収集の仕事を、問い合わせを cost[name] 回使ったことにする偽物に置き換える。"""
+    def job(name):
+        def run(now):
+            if name == "_next_progress" or (name == "_next_ranking" and not rankings):
+                return False
+            done.append(name)
+            sw.c.requests += cost.get(name, 1)
+            return True
+        return run
     for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_fans", "_next_event_history",
-                 "_next_owner", "_next_scan"):
-        setattr(sw, name, (lambda n: lambda now: done.append(n) or True)(name))
-    with Store(tmp_path) as s:
+                 "_next_owner", "_next_event_page", "_next_notices", "_next_fans_history", "_next_room_profile", "_next_scan"):
+        setattr(sw, name, job(name))
+    with Store(sw.state_dir) as s:
         s.set_meta("live_at", NOW)
         s.set_meta("events_at", NOW)
         s.set_meta("anchor_done_at", NOW)
     sw._clock = lambda: NOW
+
+
+def test_sweep_gives_rankings_a_share_of_requests(tmp_path):
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()))
+    done = []
+    # ほかの仕事は 1 つで 5 回問い合わせる (ルームの取り直し・参加ルームのページなど)
+    cost = {n: 5 for n in ("_next_room", "_next_event_rooms", "_next_fans", "_next_event_history", "_next_owner", "_next_scan")}
+    _stub_jobs(sw, cost, done)
+    for _ in range(400):
+        sw.step()
+    ranking = done.count("_next_ranking")
+    other = sum(cost.get(n, 1) for n in done if n != "_next_ranking")
+    assert 0.65 < ranking / (ranking + other) < 0.75  # 仕事の数ではなく、問い合わせの数で 7 割
+    assert {"_next_room", "_next_event_rooms", "_next_scan"} <= set(done)  # ほかの仕事も止まらない
+
+
+def test_sweep_runs_other_jobs_when_no_rankings_are_left(tmp_path):
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()))
+    done = []
+    _stub_jobs(sw, {}, done, rankings=False)
+    for _ in range(20):
+        assert sw.step()
+    assert len(done) == 20 and "_next_ranking" not in done
+
+
+def test_sweep_ranking_share_can_be_changed(tmp_path):
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: {}, throttle=quiet_throttle()),
+                       ranking_share=0.5)
+    done = []
+    _stub_jobs(sw, {}, done)
     for _ in range(10):
         sw.step()
-    assert done.count("_next_ranking") == 5 and done[1::2] == ["_next_ranking"] * 5  # ほかの仕事 1 つごとに 1 回
+    assert done.count("_next_ranking") == 5
+    assert Config().research_ranking_share == 0.7
+
+
+def test_sweep_saves_rankings_in_batches(tmp_path, monkeypatch):
+    ranking = {"ranking": [{"user_id": 10, "name": "ファン", "point": 300, "rank": 1}]}
+    c = research.Collector(tmp_path, get=lambda p: ranking, throttle=quiet_throttle(), clock=lambda: NOW)
+    c.hold_rankings()
+    saved = []
+    real = Store.set_contributions_many
+    monkeypatch.setattr(Store, "set_contributions_many", lambda self, items, now: saved.append(len(items)) or real(self, items, now))
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": e, "name": f"e{e}", "start": NOW - 9000, "end": NOW - 7200} for e in range(1, 41)])
+    for e in range(1, 41):
+        assert c.fetch_ranking(e, 1, final=True)
+    assert saved == [research.HOLD_RANKINGS]  # 30 件たまったら、1 回でまとめて保存する
+    assert len(c.held) == 10
+    c.close()  # 止める時は、ためている分を保存する
+    assert saved == [research.HOLD_RANKINGS, 10]
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT COUNT(*) FROM contributions") == 40
+        assert s.scalar("SELECT events FROM user_room WHERE user_id=10 AND room_id=1") == 300 * 40
+
+
+def test_held_rankings_are_saved_after_a_while(tmp_path):
+    now = [NOW]
+    c = research.Collector(tmp_path, get=lambda p: {"ranking": [{"user_id": 1, "point": 5}]}, throttle=quiet_throttle(),
+                           clock=lambda: now[0])
+    c.hold_rankings()
+    c.fetch_ranking(1, 1, final=True)
+    c.flush_rankings(due_only=True)
+    assert len(c.held) == 1
+    now[0] += research.HOLD_SECONDS
+    c.flush_rankings(due_only=True)
+    assert c.held == []
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT COUNT(*) FROM contributions") == 1
+
+
+def test_same_name_is_not_rewritten(tmp_path):
+    with Store(tmp_path) as s:
+        s.set_contributions(1, 1, [{"user_id": 7, "name": "同じ", "point": 1}], NOW, True)
+        s.conn.execute("DELETE FROM search_dirty")
+        changes = s.conn.total_changes
+        s.conn.execute("""INSERT INTO users(user_id, name) VALUES (7, '同じ')
+                          ON CONFLICT(user_id) DO UPDATE SET name=excluded.name WHERE users.name IS NOT excluded.name""")
+        assert s.conn.total_changes == changes  # 同じ名前なら書かない
+        s.set_contributions(2, 1, [{"user_id": 7, "name": "変えた", "point": 1}], NOW, True)
+        assert s.scalar("SELECT name FROM users WHERE user_id=7") == "変えた"
+        assert s.scalar("SELECT COUNT(*) FROM user_names WHERE user_id=7 AND name='同じ'") == 1  # 前の名前は残る
+        assert s.scalar("SELECT COUNT(*) FROM search_dirty WHERE kind='u' AND ref=7") == 1
 
 
 def test_job_runs_one_at_a_time(tmp_path):

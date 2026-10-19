@@ -453,7 +453,9 @@ class Store:
         c.executemany("""INSERT OR IGNORE INTO user_names(user_id, name, at, source)
                          SELECT user_id, name, ?, 'showroom' FROM users WHERE user_id=? AND name IS NOT NULL AND name != ?""",
                       [(now, u, n) for u, n in named])
-        c.executemany("INSERT INTO users(user_id, name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name",
+        # 名前が同じ人は書き換えない (貢献ランキング 1 件で 100 人分。書くと、人の番号で並んだ表と索引のページが毎回書き換わる)
+        c.executemany("""INSERT INTO users(user_id, name) VALUES (?, ?)
+                         ON CONFLICT(user_id) DO UPDATE SET name=excluded.name WHERE users.name IS NOT excluded.name""",
                       named)
 
     def set_cumulative(self, room_id: int, rows: list[dict[str, Any]], now: float) -> None:
@@ -477,42 +479,53 @@ class Store:
 
     def set_contributions(self, event_id: int, room_id: int, rows: list[dict[str, Any]], now: float, final: bool) -> None:
         """イベントの貢献ランキングを置き換える (取り直したときは前の分を user_room から引いてから足す)。"""
-        event_id, room_id = int(event_id), int(room_id)
+        self.set_contributions_many([(event_id, room_id, rows, final)], now)
+
+    def set_contributions_many(self, items: list[tuple[int, int, list[dict[str, Any]], bool]], now: float) -> None:
+        """いくつかの貢献ランキング (event_id, room_id, rows, final) を、1 回の書き込み (トランザクション) でまとめて置き換える。
+
+        同じ人・同じ索引のページを何度書いても、書き込み待ちのファイルには 1 回分しか入らないので、1 件ずつより書く量が減る。
+        """
         with self.tx() as c:
-            c.execute("""UPDATE user_room SET events = events - (SELECT point FROM contributions o
-                           WHERE o.event_id=? AND o.room_id=? AND o.user_id=user_room.user_id)
-                         WHERE room_id=? AND user_id IN (SELECT user_id FROM contributions WHERE event_id=? AND room_id=?)""",
-                      (event_id, room_id, room_id, event_id, room_id))
-            months = self._user_month_ready(c, event_id)
-            if months:
-                c.execute(f"""INSERT INTO user_month(user_id, month, points)
-                               SELECT o.user_id, {MONTH_SQL}, -o.point FROM contributions o JOIN events e USING(event_id)
-                               WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
-                               ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
-            c.execute("DELETE FROM contributions WHERE event_id=? AND room_id=?", (event_id, room_id))
-            c.executemany("""INSERT OR REPLACE INTO contributions(event_id, room_id, user_id, point, rank, guessed)
-                             VALUES (?, ?, ?, ?, ?, ?)""",
-                          [(event_id, room_id, r["user_id"], r["point"], r.get("rank"), 1 if r.get("guessed") else None) for r in rows])
-            c.executemany("""INSERT INTO user_room(user_id, room_id, events) VALUES (?, ?, ?)
-                             ON CONFLICT(user_id, room_id) DO UPDATE SET events = events + excluded.events""",
-                          [(r["user_id"], room_id, r["point"]) for r in rows])
-            if months:
-                c.execute(f"""INSERT INTO user_month(user_id, month, points)
-                               SELECT o.user_id, {MONTH_SQL}, o.point FROM contributions o JOIN events e USING(event_id)
-                               WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
-                               ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
-            # 名前で推測した分 (Internet Archive) は、分かった人だけの一部なので、ルームのタイプ分けの数字は作らない
-            stats = (None,) * 6 if any(r.get("guessed") for r in rows) else contribution_stats(r["point"] for r in rows)
-            c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final, c_count, c_sum, c_top1, c_top3, c_top10, c_p100)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                         ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
-                           failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
-                           c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
-            self._names(c, rows, now)
-            top = max((int(r["user_id"]) for r in rows if not r.get("guessed")), default=None)
-            if top is not None:
-                c.execute("""INSERT INTO event_max_user(event_id, uid) VALUES (?, ?)
-                             ON CONFLICT(event_id) DO UPDATE SET uid=MAX(COALESCE(uid, 0), excluded.uid)""", (event_id, top))
+            for event_id, room_id, rows, final in items:
+                self._set_contributions(c, int(event_id), int(room_id), rows, now, final)
+
+    def _set_contributions(self, c: sqlite3.Connection, event_id: int, room_id: int, rows: list[dict[str, Any]],
+                           now: float, final: bool) -> None:
+        c.execute("""UPDATE user_room SET events = events - (SELECT point FROM contributions o
+                       WHERE o.event_id=? AND o.room_id=? AND o.user_id=user_room.user_id)
+                     WHERE room_id=? AND user_id IN (SELECT user_id FROM contributions WHERE event_id=? AND room_id=?)""",
+                  (event_id, room_id, room_id, event_id, room_id))
+        months = self._user_month_ready(c, event_id)
+        if months:
+            c.execute(f"""INSERT INTO user_month(user_id, month, points)
+                           SELECT o.user_id, {MONTH_SQL}, -o.point FROM contributions o JOIN events e USING(event_id)
+                           WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
+                           ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
+        c.execute("DELETE FROM contributions WHERE event_id=? AND room_id=?", (event_id, room_id))
+        c.executemany("""INSERT OR REPLACE INTO contributions(event_id, room_id, user_id, point, rank, guessed)
+                         VALUES (?, ?, ?, ?, ?, ?)""",
+                      [(event_id, room_id, r["user_id"], r["point"], r.get("rank"), 1 if r.get("guessed") else None) for r in rows])
+        c.executemany("""INSERT INTO user_room(user_id, room_id, events) VALUES (?, ?, ?)
+                         ON CONFLICT(user_id, room_id) DO UPDATE SET events = events + excluded.events""",
+                      [(r["user_id"], room_id, r["point"]) for r in rows])
+        if months:
+            c.execute(f"""INSERT INTO user_month(user_id, month, points)
+                           SELECT o.user_id, {MONTH_SQL}, o.point FROM contributions o JOIN events e USING(event_id)
+                           WHERE o.event_id=? AND o.room_id=? AND e.end IS NOT NULL
+                           ON CONFLICT(user_id, month) DO UPDATE SET points = points + excluded.points""", (event_id, room_id))
+        # 名前で推測した分 (Internet Archive) は、分かった人だけの一部なので、ルームのタイプ分けの数字は作らない
+        stats = (None,) * 6 if any(r.get("guessed") for r in rows) else contribution_stats(r["point"] for r in rows)
+        c.execute("""INSERT INTO room_events(room_id, event_id, ranking_at, final, c_count, c_sum, c_top1, c_top3, c_top10, c_p100)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
+                       failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
+                       c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
+        self._names(c, rows, now)
+        top = max((int(r["user_id"]) for r in rows if not r.get("guessed")), default=None)
+        if top is not None:
+            c.execute("""INSERT INTO event_max_user(event_id, uid) VALUES (?, ?)
+                         ON CONFLICT(event_id) DO UPDATE SET uid=MAX(COALESCE(uid, 0), excluded.uid)""", (event_id, top))
 
     def build_event_max_user(self, step: int = 500) -> bool:
         """前に集めた貢献ランキングから、event_max_user を少しずつ作る (イベントごとに主キーで引く)。することが無ければ False。"""

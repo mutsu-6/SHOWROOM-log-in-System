@@ -286,6 +286,7 @@ SHOWROOM_EVENTS='https://www.showroom-live.com/event/イベント名'
 | `SHOWROOM_RESEARCH_SCAN` | 上と一緒に、ルーム番号を 1 から順に 1 回だけ調べて、配信もイベント参加もしていないルームも見つける (既定 `true`。約 58 万回、ほかの収集と順番に行うので 1〜4 週間)。フォロワー 0 人のルームは調べない |
 | `SHOWROOM_RESEARCH_ARCHIVE` | 上と一緒に、Internet Archive (web.archive.org) に残っている古いイベントのページ・貢献ランキングのページから、消えたルームと、退会したユーザーの前の名前を取り戻す (既定 `true`。SHOWROOM には問い合わせず、Internet Archive に 6 秒に 1 回 (`SHOWROOM_RESEARCH_ARCHIVE_GAP`)。数日かかる) |
 | `SHOWROOM_RESEARCH_GAP` | SHOWROOM への問い合わせの間隔 (秒、既定 `0.5`)。指定のルームの収集と全ルームの収集を合わせてこの間隔。混んでいる・止められている (403・429・5xx・通信の失敗) ときは自動で倍ずつ広げ (最大 60 秒)、5 回続けて失敗したら止める。止める時間は 1 時間・2 時間・4 時間… と続けて止めるたびに倍にし (最大 24 時間)、再開後 200 回続けて成功したら 1 時間に戻す。止めている時は管理画面の上に出る (視聴とログインの維持は止めない) |
+| `SHOWROOM_RESEARCH_RANKING_SHARE` | 全ルームの収集の問い合わせのうち、終わったイベントの貢献ランキングに回す割合 (0〜0.95、既定 `0.7`)。取る分が残っている間だけ。開催中のイベントの推移・終わる直前の推移・配信中のルーム・イベントの一覧は、割合に数えず先に行う。残りでルームの取り直し・過去のイベント・アクティブファン・ルーム番号の調べなどを回す。管理画面が遅くなった時は下げる (`0.3` で前とほぼ同じ) |
 | `SHOWROOM_HEADLESS` | `false` で画面表示 |
 | `SHOWROOM_STATE_FILE` | セッション保存先 |
 | `SHOWROOM_BROWSER_CHANNEL` | 使用ブラウザ (`chrome` / `msedge` / 空で付属 Chromium) |

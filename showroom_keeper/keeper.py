@@ -475,7 +475,7 @@ class Keeper:
         if self.cfg.research_all:
             from . import sweep
 
-            sweep.start(state_dir, scan=self.cfg.research_scan)
+            sweep.start(state_dir, scan=self.cfg.research_scan, ranking_share=self.cfg.research_ranking_share)
             if self.cfg.research_archive:
                 from . import archive
 
