@@ -290,6 +290,12 @@ class Store:
                                      WHERE guessed IS NOT NULL""")
                 # まだ貢献ランキングを取っていないルーム・イベントだけの索引 (次に取るものを選ぶ時に、取り終えた分を読まない)
                 self.conn.execute("CREATE INDEX IF NOT EXISTS room_events_pending ON room_events(event_id) WHERE final=0")
+                # 前に作った research.db の user_room は、WITHOUT ROWID になる前の形 (表の本体と、主キーの索引が別) のことがある。
+                # その形だと、分析の土台が人の順に全部読む時に、索引から本体を 1 行ずつ飛び飛びに探しに行く (サーバーで 204 万行・70 秒。
+                # 2026-10-20 に Cursor が測った)。索引だけで読めるように、読む欄を全部入れた索引を作る (今の形の表には要らない)
+                ur = self.conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_room'").fetchone()
+                if ur and "WITHOUT ROWID" not in (ur[0] or "").upper():
+                    self.conn.execute("CREATE INDEX IF NOT EXISTS user_room_scan ON user_room(user_id, room_id, cumulative, events)")
                 # 走り方をまだ作っていない・推移をまだ間引いていないイベントだけの索引 (room_analysis.step が収集の仕事のたびに探す。
                 # 前は終わった全部のイベント 3 万件を順に見ていて、ほとんど 0 件なのに 1 回 0.1〜0.15 秒かかっていた。2026-10-19 に Cursor が測った)
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS events_style_todo ON events(end)
