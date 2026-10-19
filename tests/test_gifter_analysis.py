@@ -186,6 +186,10 @@ def test_recorded_types_late_regular_star_and_hype():
     # ギフトの一覧に無いギフトを送っていたら (有料の分が 0 pt で抜けているかもしれない)、決めない
     r = ga.recorded_types(1, [(t0, 5000, "a")], pts, {(1, "a"): 4800}, others, {}, {"a": []}, {(1, "a"): 3})
     assert r["stars"][0]["star"] is None and r["stars"][0]["unknown"] == 3
+    # 大きなルームでは、上から 1 割でも 10 位より下なら大貢献にしない。順位はルームの全員 (room_users) でくらべる
+    big = {(1, "a"): 5000, **{(u, "a"): 10000 - u for u in range(2, 16)}, **{(u, "a"): 10 for u in range(16, 200)}}
+    r = ga.recorded_types(1, [(t0, 5000, "a")], big, {(1, "a"): 4800}, {}, {}, {"a": []}, None, {"a": list(range(1, 200))})
+    assert r["stars"][0]["place"] == 15 and r["stars"][0]["gifters"] == 199 and r["stars"][0]["star"] is False
     # 盛り上がり型: いつも他の人のギフトの 10 秒あと (他の人は 1 時間に 1 回)
     theirs = [t0 + h * 3600 for h in range(30)]
     mine = [(t + 10, 50, "a") for t in theirs[:25]]

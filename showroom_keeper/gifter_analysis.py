@@ -427,6 +427,7 @@ START_MINUTES = 30  # 配信が始まってからこの分数のうちに送っ�
 STAR_SHARE = 0.9  # そのルームで送ったポイントのうち無料がこれ以上で
 STAR_TOP = 0.1  # そのルームの記録したギフターの中で、ポイントの多い順に上からこれだけまでなら「星だけの大貢献」
 STAR_MIN_GIFTERS = 10  # ルームの記録したギフターがこれより少なければ決めない
+STAR_MAX_PLACE = 10  # 上から 1 割でも、この順位より下なら「大貢献」にしない (大きなルームで 36〜74 位まで当たっていた。2026-10-19 に Cursor が確かめた)
 HYPE_SECONDS = 60  # 他の人のギフトのあと、この秒数のうちに送ったら「続けて送った」
 HYPE_RATIO = 2.0  # 続けて送った割合 ÷ 偶然の期待値 がこれ以上なら「盛り上がり型」
 HYPE_MIN = 20  # 送った回数がこれより少なければ決めない
@@ -460,11 +461,13 @@ def _covered(times: list[float], width: float) -> float:
 def recorded_types(uid: int, gifts: list[tuple[float, int, str]], points: dict[tuple[int, str], int],
                    free: dict[tuple[int, str], int], others: dict[str, list[tuple[float, int]]],
                    events: dict[str, list[tuple[float, float]]], starts: dict[str, list[float]],
-                   unknown: dict[tuple[int, str], int] | None = None) -> dict[str, Any]:
+                   unknown: dict[tuple[int, str], int] | None = None,
+                   room_users: dict[str, list[int]] | None = None) -> dict[str, Any]:
     """記録しているルームのギフト 1 件ずつからの型。
 
     - gifts: その人のギフト (時刻, pt, ルーム)。points / free: (人, ルーム) ごとの記録したポイントと、そのうち無料
     - others: ルームごとの、記録した全員のギフト (時刻, 人)。events: ルームごとのイベントの (始まり, 終わり)。starts: ルームごとの配信の始まり
+    - room_users: ルームごとの、記録した全員 (星だけの大貢献の順位をくらべる。無ければ others の人)
     - unknown: (人, ルーム) ごとの、ギフトの一覧に無かったギフトの回数。ポイントを 0 で数えたので (有料の分が抜けているかもしれない)、
       1 回でもあれば星だけの大貢献は決めない
     """
@@ -508,14 +511,14 @@ def recorded_types(uid: int, gifts: list[tuple[float, int, str]], points: dict[t
         mine = points.get((uid, key), 0)
         if not mine:
             continue
-        everyone = sorted({u for _, u in others.get(key, [])})
+        everyone = sorted(set(room_users[key]) if room_users is not None and key in room_users else {u for _, u in others.get(key, [])})
         ranked = sorted((points.get((u, key), 0) for u in everyone), reverse=True)
         place = 1 + sum(1 for p in ranked if p > mine)
         share = free.get((uid, key), 0) / mine
         miss = (unknown or {}).get((uid, key), 0)
         stars.append({"key": key, "points": mine, "free_share": share, "place": place, "gifters": len(ranked), "unknown": miss,
                       "star": None if miss else
-                      len(ranked) >= STAR_MIN_GIFTERS and share >= STAR_SHARE and place <= max(1, STAR_TOP * len(ranked))})
+                      len(ranked) >= STAR_MIN_GIFTERS and share >= STAR_SHARE and place <= min(STAR_MAX_PLACE, max(1, STAR_TOP * len(ranked)))})
     out["stars"] = stars
     # 盛り上がり型: 他の人のギフトの HYPE_SECONDS 秒のうちに送った割合 ÷ 偶然の期待値 (その日のルームで、他の人のギフトの後の時間の割合)
     obs = exp_ = 0.0

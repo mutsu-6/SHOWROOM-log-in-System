@@ -369,3 +369,26 @@ def test_file_cache_forgets_old_files(tmp_path, monkeypatch):
     for p in paths:
         assert len(listing._load_file(p)) == 2  # 忘れても、読み直して返す
     assert list(listing._file_cache) == [paths[2]]  # 上限 3 行なので、最後に読んだ 1 ファイル (2 行) だけ覚える
+
+
+def test_gifter_page_reads_gifts_from_the_table_not_the_files(tmp_path, monkeypatch):
+    """ギフターのページは、ギフト 1 件ずつを表 (gift_events) から引き、記録のファイルを読み直さない (新しい分だけ足す)。"""
+    from pathlib import Path
+
+    from showroom_keeper import research
+    from showroom_keeper.research_store import Store
+
+    now = _setup(tmp_path, monkeypatch)
+    research.gifter_detail(tmp_path, 7, [])  # 表に足す
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT COUNT(*) FROM gift_events") == 3
+    opened = []
+    real = Path.open
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: opened.append(self.name) or real(self, *a, **k))
+    d = research.gifter_detail(tmp_path, 7, [])
+    assert not [n for n in opened if n.endswith(".jsonl") and n.startswith("room_")]
+    assert d["habits"] and sum(r["points"] for r in d["recorded_types"]["stars"]) == 205
+    # 新しく増えた分は、その分だけ足して出る
+    record_gift(tmp_path, "room_a", 1, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now})
+    d = research.gifter_detail(tmp_path, 7, [])
+    assert sum(r["points"] for r in d["recorded_types"]["stars"]) == 305

@@ -549,48 +549,28 @@ class _PairPoints:
         return bool(self._by_user)
 
 
-def _no_file() -> Any:
-    import io
-
-    return io.StringIO("")
-
-
 class _RecordedGifts:
-    """1 人のギフト 1 件ずつ [(時刻, pt, ルーム)] を、その人が送ったルームのファイルだけから読む (dict の get のように使う)。
+    """1 人のギフト 1 件ずつ [(時刻, pt, ルーム)] を、ギフト 1 件ずつの表 (gift_events) から人で引く (dict の get のように使う)。
 
-    読んだファイルは、(時刻, 人, ギフト, 個数) の小さな形でこの問い合わせの間だけ持つ (listing の、ずっと残る読み込みの控えは使わない)。
+    前は、その人が送ったルームの記録のファイルを読み直していた (送る量の多い人のページで 9.2 秒。2026-10-19 に Cursor が測った)。
+    表は、送り主の表 (gift_senders) と一緒に足すので、_Recorded を作った時には新しい分まで入っている。
     """
 
     def __init__(self, rec: _Recorded):
         self.rec = rec
-        self._paths: dict[str, Path] | None = None
-        self._files: dict[str, list[tuple[float, int, Any, int]]] = {}
+        self._store: Store | None = None
         self._catalog: dict[int, dict[str, Any]] | None = None
         self._done: dict[int, list[tuple[float, int, str]]] = {}
 
-    def _room(self, key: str) -> list[tuple[float, int, Any, int]]:
-        import json
+    def _s(self) -> Store:
+        if self._store is None:  # _Recorded の接続は閉じていることがあるので、自分の接続を使う
+            self._store = Store(self.rec.state_dir)
+        return self._store
 
-        from .listing import _record_files
-
-        if key not in self._files:
-            if self._paths is None:
-                self._paths = _record_files(self.rec.state_dir)  # 1 回だけ探す
-            rows = []
-            path = self._paths.get(key)
-            try:
-                with path.open(encoding="utf-8") if path is not None else _no_file() as f:
-                    for line in f:
-                        try:
-                            g = json.loads(line)
-                        except ValueError:
-                            continue
-                        if isinstance(g, dict) and g.get("user_id") is not None and "at" in g:
-                            rows.append((g["at"], int(g["user_id"]), g.get("gift_id"), int(g.get("num") or 1)))
-            except OSError:
-                rows = []
-            self._files[key] = rows
-        return self._files[key]
+    def close(self) -> None:
+        if self._store is not None:
+            self._store.close()
+            self._store = None
 
     def _points(self, gift_id: Any, num: int) -> int:
         from .listing import _points, gift_catalog
@@ -602,15 +582,15 @@ class _RecordedGifts:
     def get(self, uid: int, default: Any = None) -> list[tuple[float, int, str]]:
         uid = int(uid)
         if uid not in self._done:
-            out = []
-            for key in self.rec.by_user.get(uid, {}):
-                out += [(at, self._points(gid, n), key) for at, u, gid, n in self._room(key) if u == uid]
-            self._done[uid] = sorted(out)
+            rooms = self.rec.by_user.get(uid, {})
+            rows = self._s().conn.execute("SELECT at, gift_id, num, room_key FROM gift_events WHERE user_id=? ORDER BY at",
+                                          (uid,)).fetchall() if rooms else []
+            self._done[uid] = [(at, self._points(gid, n), key) for at, gid, n, key in rows if key in rooms]
         return self._done[uid]
 
     def room(self, key: str) -> list[tuple[float, int]]:
         """そのルームの、記録した全員のギフト [(時刻, 人)]。"""
-        return [(at, u) for at, u, _, _ in self._room(key)]
+        return [(r[0], r[1]) for r in self._s().conn.execute("SELECT at, user_id FROM gift_events WHERE room_key=? ORDER BY at", (key,))]
 
 
 class _Rooms:
@@ -1251,14 +1231,24 @@ def _recorded_types(s: Store, rooms: "_Rooms", rec: _Recorded, uid: int, gifts: 
     if not gifts:
         return None
     keys = {k for _, _, k in gifts}
-    others = {k: rec.gifts.room(k) for k in keys}
+    # ルーム全員のギフト 1 件ずつは、盛り上がり型を見るルーム (記録したポイントの多い HYPE_ROOMS 個) だけ読む。
+    # 星だけの大貢献の順位は、ルームごとの合計 (rec.points) でくらべる
+    from .gifter_analysis import HYPE_ROOMS
+
+    hype = sorted(keys, key=lambda k: -rec.points.get((uid, k), 0))[:HYPE_ROOMS]
+    others = {k: rec.gifts.room(k) for k in hype}
+    room_users: dict[str, list[int]] = {k: [] for k in keys}
+    for u, rm in rec.by_user.items():
+        for k in rm:
+            if k in room_users:
+                room_users[k].append(u)
     events, starts = {}, {}
     for k in keys:
         rid = rooms.id(k)
         events[k] = [(r[0], r[1]) for r in s.all("""SELECT e.start, e.end FROM room_events re JOIN events e USING(event_id)
                                                      WHERE re.room_id=? AND e.start IS NOT NULL AND e.end IS NOT NULL""", (rid,))]
         starts[k] = [r[0] for r in s.all("SELECT started_at FROM room_lives WHERE room_id=? ORDER BY started_at", (rid,))]
-    out = recorded_types(uid, gifts, rec.points, rec.free, others, events, starts, getattr(rec, "unknown", None))
+    out = recorded_types(uid, gifts, rec.points, rec.free, others, events, starts, getattr(rec, "unknown", None), room_users)
     for x in out.get("stars", []):
         x["name"] = rooms.label(rooms.id(x["key"]))[1]
     return out

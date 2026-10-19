@@ -156,6 +156,13 @@ CREATE INDEX IF NOT EXISTS gift_senders_user ON gift_senders(user_id);
 CREATE TABLE IF NOT EXISTS gift_sender_names (
     user_id INTEGER, name TEXT, folded TEXT, at REAL, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS gift_sender_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
+-- 記録したギフト 1 件ずつ (人・ルームで引けるように。explore.update_gift_events が、記録のファイルの新しい分だけ足す)。
+-- ギフターのページ・分析で、1 人のギフトや、1 つのルームの全員のギフトを、ファイルを読み直さずに引く
+-- (前は開くたびにファイルを読み直していた。送る量の多い人のページで 9.2 秒。2026-10-19 に Cursor が測った)
+CREATE TABLE IF NOT EXISTS gift_events (user_id INTEGER, at REAL, room_key TEXT, gift_id INTEGER, num INTEGER);
+CREATE INDEX IF NOT EXISTS gift_events_user ON gift_events(user_id, at);
+CREATE INDEX IF NOT EXISTS gift_events_room ON gift_events(room_key, at);
+CREATE TABLE IF NOT EXISTS gift_event_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
 -- イベントごとの、貢献ランキングに出たいちばん大きいユーザー ID (名前で推測した分を除く。uid が NULL なら、まだ出た人がいない)。
 -- 登録時期の目印に使う。前は分析のたびに貢献ランキングの表を全部読んでいた (サーバーで 27 秒。2026-10-19)
 CREATE TABLE IF NOT EXISTS event_max_user (event_id INTEGER PRIMARY KEY, uid INTEGER);

@@ -21,7 +21,7 @@ DAY = 86400
 # ルームの一覧で絞り込み・並べ替えのために全部読むので入れない
 BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "room_events", "user_month", "cumulative",
        "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives",
-       "gift_senders"}
+       "gift_senders", "gift_events"}
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
@@ -177,7 +177,7 @@ def test_recorded_types_do_not_read_whole_tables(traced):
             rooms = research._Rooms(s, d)
             gifts = [(NOW - 3600, 10, "k1"), (NOW - 60, 20, "k2")]
             rec = SimpleNamespace(gifts=SimpleNamespace(room=lambda key: [(at, 1) for at, _, k in gifts if k == key]),
-                                  points={(1, "k1"): 10, (1, "k2"): 20}, free={})
+                                  points={(1, "k1"): 10, (1, "k2"): 20}, free={}, by_user={1: {"k1": 10, "k2": 20}})
             assert research._recorded_types(s, rooms, rec, 1, gifts)["gifts"] == 2
     check(traced, run)
 
@@ -208,6 +208,7 @@ def test_search_uses_the_name_index(traced):
     from showroom_keeper import search_index
 
     with Store(traced[0]) as s:
-        assert search_index.refresh(s, budget=5)
+        assert search_index.refresh(s, budget=5) == {"three": True, "two": True}
     traced[1].clear()
     check(traced, lambda d: explore.search(d, "ルーム1"))
+    check(traced, lambda d: explore.search(d, "ーム"))  # 2 文字は 2 文字ずつの索引で

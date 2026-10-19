@@ -169,24 +169,36 @@ def test_search_index_fills_in_steps_and_follows_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(search_index, "FILL_STEP", 2)
     with Store(tmp_path) as s:
         s.set_cumulative(1, [{"user_id": u, "name": f"ながいなまえ{u}", "point": 10 * u, "visits": 1, "rank": u} for u in range(1, 6)], NOW)
-        assert search_index.refresh(s, budget=0) is False  # まだ入れていない
+        assert search_index.refresh(s, budget=0) == {"three": False, "two": False}  # まだ入れていない
         assert s.meta("search_index")["done"] == []
         # 入れている途中で名前が変わる (入れ終わった所と、まだの所)
-        while "u" not in s.meta("search_index")["done"] and s.meta("search_index")["u"] < 2:
-            search_index._fill(s, s.meta("search_index"), "u")
+        st = search_index._state(s)
+        while "u" not in st["done"] and st["u"] < 2:
+            search_index._fill(s, st, "u")
         s.set_cumulative(1, [{"user_id": 1, "name": "かわったなまえ", "point": 10, "visits": 1, "rank": 1},
                              {"user_id": 5, "name": "べつのなまえ", "point": 50, "visits": 1, "rank": 5}], NOW + 1)
-        assert search_index.refresh(s, budget=5) is True
+        assert search_index.refresh(s, budget=5) == {"three": True, "two": True}
         assert s.scalar("SELECT COUNT(*) FROM search_dirty") == 0
         # 前の名前は 1 つずつ (入れている途中に付いた印で、2 つ入らない)
-        assert sorted(r[0] for r in s.all("SELECT name FROM search_former")) == ["ながいなまえ1", "ながいなまえ5"]
+        for t in ("search_former", "search2_former"):
+            assert sorted(r[0] for r in s.all(f"SELECT name FROM {t}")) == ["ながいなまえ1", "ながいなまえ5"]
+        # 入れ終わったあとの名前の変わりも、両方の索引に 1 つずつ
+        s.set_cumulative(1, [{"user_id": 2, "name": "みじかい", "point": 20, "visits": 1, "rank": 2}], NOW + 2)
+        search_index.refresh(s, budget=5)
+        search_index.refresh(s, budget=5)
+        for t in ("search_former", "search2_former"):
+            assert s.scalar(f"SELECT COUNT(*) FROM {t} WHERE name='ながいなまえ2'") == 1
+        assert search_index.grams("みくちゃ") == "みく くち ちゃ" and search_index.grams("み") == "み"
     g = {x["user_id"]: x for x in explore.search(tmp_path, "なまえ")["gifters"]}
     assert set(g) == {1, 2, 3, 4, 5} and g[1]["name"] == "かわったなまえ"
     assert [x["user_id"] for x in explore.search(tmp_path, "かわった")["gifters"]] == [1]
     g = explore.search(tmp_path, "ながいなまえ1")["gifters"]
     assert [(x["user_id"], x["match"]) for x in g] == [(1, {"kind": "former", "name": "ながいなまえ1"})]
-    # 1〜2 文字は索引の中を全部くらべる
+    # 2 文字は 2 文字ずつの索引で、1 文字は索引の中身を全部くらべる
     assert {x["user_id"] for x in explore.search(tmp_path, "ナマ")["gifters"]} == {1, 2, 3, 4, 5}
+    assert {x["user_id"] for x in explore.search(tmp_path, "か")["gifters"]} == {1, 2}
+    assert [x["user_id"] for x in explore.search(tmp_path, "みじ")["gifters"]] == [2]
+    assert [x["match"] for x in explore.search(tmp_path, "え2")["gifters"]] == [{"kind": "former", "name": "ながいなまえ2"}]
 
 
 def test_room_daily_metrics(tmp_path):

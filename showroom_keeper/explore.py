@@ -53,7 +53,9 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
     """
     from . import listing
 
-    path = (files if files is not None else listing._record_files(state_dir)).get(room_key)  # files: 何ルームも続けて足す時に、一度だけ探したもの
+    files = files if files is not None else listing._record_files(state_dir)  # files: 何ルームも続けて足す時に、一度だけ探したもの
+    update_gift_events(state_dir, s, room_key, files)  # ギフト 1 件ずつの表も、同じ時に足す
+    path = files.get(room_key)
     if path is None:
         return
     with _sender_lock:
@@ -113,6 +115,51 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
                              ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
                           [(uid, name, _fold(name), at) for (uid, name), at in names.items()])
             c.execute("""INSERT INTO gift_sender_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
+                         ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
+                      (room_key, pos + end, pos + end, time.time()))
+
+
+_event_lock = threading.Lock()
+
+
+def update_gift_events(state_dir: Path, s: Store, room_key: str, files: dict[str, Path] | None = None) -> None:
+    """記録したギフトのファイルの、前に読んだところから先だけを、ギフト 1 件ずつの表 (gift_events) に足す。
+    ファイルが前より小さくなっていたら、そのルームの分を最初から作り直す。ポイントは読む時にギフトの一覧で数える (ここでは残さない)。"""
+    from . import listing
+
+    path = (files if files is not None else listing._record_files(state_dir)).get(room_key)
+    if path is None:
+        return
+    with _event_lock:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        row = s.one("SELECT pos, size FROM gift_event_pos WHERE room_key=?", (room_key,))
+        pos = row["pos"] if row is not None else 0
+        if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
+            with s.tx() as c:
+                c.execute("DELETE FROM gift_events WHERE room_key=?", (room_key,))
+            pos = 0
+        if size <= pos:
+            return
+        with path.open("rb") as f:
+            f.seek(pos)
+            chunk = f.read(size - pos)
+        end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
+        if end <= 0:
+            return
+        rows = []
+        for line in chunk[:end].splitlines():
+            try:
+                g = json.loads(line)
+                if isinstance(g, dict) and g.get("user_id") is not None and "at" in g:
+                    rows.append((int(g["user_id"]), float(g["at"]), room_key, g.get("gift_id"), int(g.get("num") or 1)))
+            except (ValueError, TypeError):
+                continue
+        with s.tx() as c:
+            c.executemany("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (?, ?, ?, ?, ?)", rows)
+            c.execute("""INSERT INTO gift_event_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
                       (room_key, pos + end, pos + end, time.time()))
 
@@ -276,18 +323,20 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
 
     with Store(state_dir) as s:
         # 名前の索引 (search_index)。入れ終わるまで・作れない SQLite では、前のやり方 (名前を全部 LIKE でくらべる)
-        indexed = search_index.refresh(s)
+        ready = search_index.refresh(s)
+        two = ready["two"]
+        indexed = ready["three"]  # 2 文字ずつの索引がまだ無い間の 2 文字は、3 文字ずつの索引の中を全部くらべる
 
         def ids(table: str, cols: tuple[str, ...]) -> tuple[str, list[Any]]:
-            cond, args = search_index.where(table, cols, folded)
-            return f"SELECT rowid FROM {table} WHERE {cond}", args
+            src, cond, args = search_index.where(table, cols, folded, two)
+            return f"SELECT rowid FROM {src} WHERE {cond}", args
 
         points = "(SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id)"
         if indexed:
             sub, args = ids("search_users", ("folded",))
             users_sql, users_args = f"u.user_id IN ({sub})", args
-            cond, args = search_index.where("search_former", ("folded",), folded)
-            former_sql, former_args = f"(SELECT user_id, name FROM search_former WHERE {cond}) n", args
+            src, cond, args = search_index.where("search_former", ("folded",), folded, two)
+            former_sql, former_args = f"(SELECT user_id, name FROM {src} WHERE {cond}) n", args
         else:
             users_sql, users_args = name_match("u.name"), likes
             former_sql, former_args = f"user_names n WHERE {name_match('n.name')}", likes
