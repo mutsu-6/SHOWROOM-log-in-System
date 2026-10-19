@@ -192,3 +192,25 @@ def test_backup_measures_table_sizes_and_disk_history_keeps_them(tmp_path):
     assert "room_lives" in tables and "room_lives_start" not in tables  # 索引は表の分に入れる
     b.record_disk(tmp_path, 1792292400.0)
     assert b._disk_history(tmp_path / b.DISK_FILE)[0][2]["research.db の room_lives"] == tables["room_lives"]
+
+
+def test_table_sizes_puts_fts_parts_under_the_index_name(tmp_path):
+    import sqlite3
+
+    from showroom_keeper import backup as b
+
+    path = tmp_path / "t.db"
+    con = sqlite3.connect(path)
+    try:
+        con.execute("CREATE VIRTUAL TABLE search_rooms USING fts5(name, key)")
+    except sqlite3.OperationalError:  # FTS5 の無い SQLite
+        con.close()
+        return
+    con.executemany("INSERT INTO search_rooms(name, key) VALUES (?, ?)", [(f"room {i}", f"k{i}") for i in range(2000)])
+    con.commit()
+    con.close()
+    tables = b.table_sizes(path)
+    if not tables:  # dbstat の無い SQLite
+        return
+    assert tables.get("search_rooms", 0) > 0
+    assert not [t for t in tables if t.startswith("search_rooms_")]

@@ -209,6 +209,9 @@ def _size(path: Path) -> int:
     return total
 
 
+FTS_PARTS = ("data", "idx", "content", "docsize", "config")
+
+
 def table_sizes(path: Path) -> dict[str, int]:
     """research.db の表ごとの大きさ (索引も含む、バイト)。全体を読むので、動いている DB ではなく、作ったばかりの写しで行う。
     dbstat が使えない SQLite では空。"""
@@ -216,9 +219,15 @@ def table_sizes(path: Path) -> dict[str, int]:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             owner = dict(con.execute("SELECT name, tbl_name FROM sqlite_master WHERE type IN ('table', 'index')").fetchall())
+            # 全文検索の索引 (FTS5) は、中身が <名前>_data・_idx などの表に分かれるので、索引の名前にまとめる
+            virtual = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE sql LIKE 'CREATE VIRTUAL TABLE%'")]
+            for v in virtual:
+                for part in FTS_PARTS:
+                    owner[f"{v}_{part}"] = v
             out: dict[str, int] = {}
             for name, size in con.execute("SELECT name, pgsize FROM dbstat WHERE aggregate = 1"):
                 table = owner.get(name, name)
+                table = owner.get(table, table)
                 out[table] = out.get(table, 0) + int(size or 0)
             return out
         finally:
