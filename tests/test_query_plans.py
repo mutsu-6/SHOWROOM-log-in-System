@@ -165,3 +165,15 @@ def test_series_does_not_read_whole_tables(traced):
         explore.series_link(d, "1")
         explore.series_link(d, "1", "2")
     check(traced, run)
+
+
+def test_recorded_types_do_not_read_whole_tables(traced):
+    from types import SimpleNamespace
+
+    def run(d):
+        with Store(d) as s:
+            rooms = research._Rooms(s, d)
+            gifts = [(NOW - 3600, 10, "k1"), (NOW - 60, 20, "k2")]
+            rec = SimpleNamespace(gifts={1: gifts}, points={(1, "k1"): 10, (1, "k2"): 20}, free={})
+            assert research._recorded_types(s, rooms, rec, 1, gifts)["gifts"] == 2
+    check(traced, run)

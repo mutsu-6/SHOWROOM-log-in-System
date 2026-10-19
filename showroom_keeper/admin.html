@@ -1754,6 +1754,31 @@ function gifterStates(st) {
   }
   return h;
 }
+// 記録しているルームのギフト 1 件ずつからの型 (終盤勝負型・規則型・星だけの大貢献・盛り上がり型)
+function recordedTypes(x) {
+  if (!x || !x.gifts) return "";
+  const yes = (v, label) => v == null ? "—" : v ? `<b>${label}</b>` : "ちがう";
+  const L = x.late || {}, R = x.regular || {}, H = x.hype || {};
+  let h = `<h3>記録したギフトからの型 <small class="muted">記録しているルームの ${num(x.rooms)} ルーム・${num(x.gifts)} 件から</small></h3>
+    <div class="hint" style="margin-top:0">記録しているルーム (視聴しているルーム・ギフトだけ記録するルーム・グリッターを取ったルーム) を推す人の中での分け方で、全体の代表ではありません。線はどれも仮の値です</div>
+    <div class="tiles">
+      ${tile("終盤勝負型", yes(L.type, "終盤勝負型"), L.type == null ? `イベント中のギフトが 10 件より少ないので決めません (${num(L.event_gifts || 0)} 件)`
+        : `イベント中の量のうち最後の 24 時間が ${pctText(L.share)} (時間の割合の ${L.ratio.toFixed(1)} 倍)・最後の 10 分が ${pctText(L.last10)}`, L.type ? "warn" : "")}
+      ${tile("規則型", yes(R.type, "規則型"), R.type == null ? "送った回数が 20 回より少ないので決めません"
+        : `送る時刻の偏り ${R.r.toFixed(2)} (ルームの配信の始まり ${R.room_r == null ? "—" : R.room_r.toFixed(2)})・配信が始まって 30 分のうちが ${pctText(R.start_share)}`)}
+      ${tile("盛り上がり型", yes(H.type, "盛り上がり型"), H.type == null ? "見たルームで送った回数が 20 回より少ないので決めません"
+        : `他の人のギフトの 60 秒のうちに送った割合 ${pctText(H.share)} (偶然なら ${pctText(H.expected)}・${H.ratio.toFixed(1)} 倍)`)}
+    </div>`;
+  if (x.stars && x.stars.length) {
+    h += dataTable("gp-stars", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.star ? ' <span class="tag live" title="無料のギフトが 9 割以上で、記録したギフターの中で上から 1 割まで">星だけの大貢献</span>' : ""}`, cls: "name" },
+      { label: "記録した pt", num: true, value: (r) => r.points, html: (r) => num(r.points) },
+      { label: "無料の割合", num: true, value: (r) => r.free_share, html: (r) => pctText(r.free_share) },
+      { label: "記録したギフターの中の順位", num: true, value: (r) => r.place, html: (r) => `${num(r.place)} <span class="uid">/ ${num(r.gifters)} 人</span>` },
+    ], x.stars, { sort: 1, limit: 6, csvName: "ギフター_無料の割合" });
+  }
+  return h;
+}
 const habitCell = (u) => u.habits ? `${esc(u.habits.top_weekday)}曜 ${esc(hourText(u.habits.top_hours))}<div class="uid">1 回 平均 ${num(u.habits.avg_point)} pt ・ ${num(u.habits.times)} 回</div>` : `<span class="uid">記録なし</span>`;
 const roomsCell = (u) => esc(u.top_rooms.map((r) => `${r.name} ${num(r.points)}`).join("、")) + (u.room_count > u.top_rooms.length + (u.support_points ? 1 : 0) ? ` ほか` : "");
 const eventCell = (u) => u.event_count ? `${num(u.event_count)} 件<div class="uid">最高 ${num(u.best_rank)} 位・${num(u.event_points)} pt</div>` : `<span class="uid">-</span>`;
@@ -2153,6 +2178,7 @@ async function showGifter(uid) {
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
   if (d.found && d.states) html += gifterStates(d.states);
+  if (d.found && d.recorded_types) html += recordedTypes(d.recorded_types);
   if (d.found && d.visits) {
     const v = d.visits, mx = Math.max(1, ...v.hour);
     html += `<h3>来場の時間帯 <small class="muted">記録しているルームの「○○さんが N 度目の訪問」の知らせから</small></h3><div class="tiles">

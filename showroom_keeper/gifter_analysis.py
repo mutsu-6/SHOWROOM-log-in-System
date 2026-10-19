@@ -408,3 +408,130 @@ def engage(s: Store, uid: int, per: dict[int, dict[str, int]], month: str) -> di
                       "points": window_pts, "recent": p_recent, "prior": p_prior, "watch": watch, "cool": cool,
                       "per_visit": per_visit, "per_visit_low": low})
     return {"dependency": dependency, "contests": contests, "contest": contest, "rooms": rooms}
+
+
+# ------------------------------------------------------------------ 記録しているルームのギフト 1 件ずつから (作る順番の 5 番目)
+# 終盤勝負型・規則型・星だけの大貢献・盛り上がり型 (docs/ギフターの分類.md の軸 1〜3)。記録しているルームを推す人の中での分類で、
+# 全体の代表ではない。線はどれも仮の値
+LATE_HOURS = 24  # イベントの最後の何時間を「終盤」とみるか
+LATE_RATIO = 2.5  # 終盤の割合 ÷ (終盤の長さ ÷ イベントの長さ) がこれ以上なら「終盤勝負型」(ルームの「追い込み」と同じ線)
+LATE_MIN = 10  # イベント中に送ったギフトがこれより少なければ決めない
+REGULAR_R = 0.6  # 送った時刻 (24 時間の円) の偏りの強さ R がこれ以上で
+REGULAR_OVER_ROOM = 0.2  # ルームの配信の始まりの時刻の偏りより、これだけ以上強ければ「規則型」
+REGULAR_MIN = 20  # 送った回数がこれより少なければ決めない
+START_MINUTES = 30  # 配信が始まってからこの分数のうちに送った割合も出す
+STAR_SHARE = 0.9  # そのルームで送ったポイントのうち無料がこれ以上で
+STAR_TOP = 0.1  # そのルームの記録したギフターの中で、ポイントの多い順に上からこれだけまでなら「星だけの大貢献」
+STAR_MIN_GIFTERS = 10  # ルームの記録したギフターがこれより少なければ決めない
+HYPE_SECONDS = 60  # 他の人のギフトのあと、この秒数のうちに送ったら「続けて送った」
+HYPE_RATIO = 2.0  # 続けて送った割合 ÷ 偶然の期待値 がこれ以上なら「盛り上がり型」
+HYPE_MIN = 20  # 送った回数がこれより少なければ決めない
+HYPE_ROOMS = 3  # 盛り上がり型を見るルームの数 (記録したポイントの多い順)
+
+
+def _circular_r(times: list[float]) -> float | None:
+    """時刻を 24 時間の円に置いた時の偏りの強さ (0 = ばらばら、1 = いつも同じ時刻)。日本時間。"""
+    import math
+
+    if not times:
+        return None
+    xs = [2 * math.pi * (((t + 9 * 3600) % 86400) / 86400) for t in times]
+    c, s_ = sum(math.cos(x) for x in xs) / len(xs), sum(math.sin(x) for x in xs) / len(xs)
+    return (c * c + s_ * s_) ** 0.5
+
+
+def _covered(times: list[float], width: float) -> float:
+    """[t, t + width] の区間を重ねた長さ。"""
+    total, end = 0.0, None
+    for t in sorted(times):
+        if end is None or t > end:
+            total += width
+            end = t + width
+        elif t + width > end:
+            total += t + width - end
+            end = t + width
+    return total
+
+
+def recorded_types(uid: int, gifts: list[tuple[float, int, str]], points: dict[tuple[int, str], int],
+                   free: dict[tuple[int, str], int], others: dict[str, list[tuple[float, int]]],
+                   events: dict[str, list[tuple[float, float]]], starts: dict[str, list[float]]) -> dict[str, Any]:
+    """記録しているルームのギフト 1 件ずつからの型。
+
+    - gifts: その人のギフト (時刻, pt, ルーム)。points / free: (人, ルーム) ごとの記録したポイントと、そのうち無料
+    - others: ルームごとの、記録した全員のギフト (時刻, 人)。events: ルームごとのイベントの (始まり, 終わり)。starts: ルームごとの配信の始まり
+    """
+    from bisect import bisect_left, bisect_right
+
+    out: dict[str, Any] = {"gifts": len(gifts), "rooms": len({k for _, _, k in gifts})}
+    if not gifts:
+        return out
+    # 終盤勝負型: イベント中のギフトのうち、最後の LATE_HOURS 時間の割合を、時間の割合とくらべる
+    in_event = late = last10 = 0.0
+    expect = 0.0
+    for at, pt, key in gifts:
+        for st, en in events.get(key, []):
+            if st <= at <= en and en > st:
+                w = max(pt, 1)
+                in_event += w
+                late += w if at >= en - LATE_HOURS * 3600 else 0
+                last10 += w if at >= en - 600 else 0
+                expect += w * min(1.0, LATE_HOURS * 3600 / (en - st))
+                break
+    n_event = sum(1 for at, _, key in gifts if any(st <= at <= en for st, en in events.get(key, [])))
+    ratio = (late / expect) if expect else None
+    out["late"] = {"event_gifts": n_event, "share": late / in_event if in_event else None, "last10": last10 / in_event if in_event else None,
+                   "ratio": ratio, "type": None if n_event < LATE_MIN or ratio is None else ratio >= LATE_RATIO}
+    # 規則型: 送った時刻の偏りを、いちばん送ったルームの配信の始まりの時刻の偏りとくらべる
+    main = max({k for _, _, k in gifts}, key=lambda k: points.get((uid, k), 0))
+    r_user = _circular_r([at for at, _, _ in gifts])
+    r_room = _circular_r(starts.get(main, []))
+    near = 0
+    for at, _, key in gifts:
+        ss = starts.get(key, [])
+        i = bisect_right(ss, at) - 1
+        if i >= 0 and at - ss[i] <= START_MINUTES * 60:
+            near += 1
+    out["regular"] = {"r": r_user, "room_r": r_room, "start_share": near / len(gifts),
+                      "type": None if len(gifts) < REGULAR_MIN or r_user is None else
+                      bool(r_user >= REGULAR_R and (r_room is None or r_user >= r_room + REGULAR_OVER_ROOM))}
+    # 星だけの大貢献: ルームごとに、無料の割合と、記録したギフターの中での順位
+    stars = []
+    for key in sorted({k for _, _, k in gifts}, key=lambda k: -points.get((uid, k), 0))[:HYPE_ROOMS * 2]:
+        mine = points.get((uid, key), 0)
+        if not mine:
+            continue
+        everyone = sorted({u for _, u in others.get(key, [])})
+        ranked = sorted((points.get((u, key), 0) for u in everyone), reverse=True)
+        place = 1 + sum(1 for p in ranked if p > mine)
+        share = free.get((uid, key), 0) / mine
+        stars.append({"key": key, "points": mine, "free_share": share, "place": place, "gifters": len(ranked),
+                      "star": len(ranked) >= STAR_MIN_GIFTERS and share >= STAR_SHARE and place <= max(1, STAR_TOP * len(ranked))})
+    out["stars"] = stars
+    # 盛り上がり型: 他の人のギフトの HYPE_SECONDS 秒のうちに送った割合 ÷ 偶然の期待値 (その日のルームで、他の人のギフトの後の時間の割合)
+    obs = exp_ = 0.0
+    n = 0
+    for key in sorted({k for _, _, k in gifts}, key=lambda k: -points.get((uid, k), 0))[:HYPE_ROOMS]:
+        theirs = sorted(t for t, u in others.get(key, []) if u != uid)
+        mine_t = sorted(at for at, _, k in gifts if k == key)
+        days: dict[int, list[float]] = {}
+        for at in mine_t:
+            days.setdefault(int((at + 9 * 3600) // 86400), []).append(at)
+        for d, ts in days.items():
+            lo, hi = d * 86400 - 9 * 3600, (d + 1) * 86400 - 9 * 3600
+            day_others = theirs[bisect_left(theirs, lo):bisect_left(theirs, hi)]
+            if len(day_others) < 2:
+                continue
+            span = max(day_others[-1], ts[-1]) - min(day_others[0], ts[0])
+            if span <= HYPE_SECONDS:
+                continue
+            p = min(1.0, _covered(day_others, HYPE_SECONDS) / span)
+            for at in ts:
+                j = bisect_right(day_others, at) - 1
+                obs += 1 if j >= 0 and at - day_others[j] <= HYPE_SECONDS else 0
+                exp_ += p
+                n += 1
+    out["hype"] = {"gifts": n, "share": obs / n if n else None, "expected": exp_ / n if n else None,
+                   "ratio": (obs / exp_) if exp_ else None,
+                   "type": None if n < HYPE_MIN or not exp_ else (obs / exp_) >= HYPE_RATIO}
+    return out

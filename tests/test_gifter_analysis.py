@@ -159,3 +159,32 @@ def test_engage_event_dependency_contest_watch_and_cooling(tmp_path):
     assert e[1]["contest"] is True and e[3]["contest"] is False and e[1]["contests"][0]["growth"] == 4
     assert e[6]["rooms"][0]["watch"] and e[6]["dependency"]["ratio"] is None
     assert e[7]["rooms"][0]["cool"] and not e[7]["rooms"][0]["watch"]
+
+
+def test_recorded_types_late_regular_star_and_hype():
+    """記録したギフトからの型: 終盤勝負型・規則型・星だけの大貢献・盛り上がり型。"""
+    day = 86400
+    t0 = NOW - 30 * day
+    ev = {"a": [(t0, t0 + 7 * day)]}
+    # 終盤勝負型: イベント中の 12 件が、すべて最後の 24 時間
+    late = [(t0 + 7 * day - 3600 * k, 100, "a") for k in range(12)]
+    r = ga.recorded_types(1, late, {(1, "a"): 1200}, {}, {"a": [(at, 1) for at, _, _ in late]}, ev, {"a": []})
+    assert r["late"]["type"] is True and r["late"]["share"] == 1 and round(r["late"]["ratio"], 6) == 7
+    early = [(t0 + 3600 * k, 100, "a") for k in range(12)]
+    assert ga.recorded_types(1, early, {(1, "a"): 1200}, {}, {"a": []}, ev, {"a": []})["late"]["type"] is False
+    # 規則型: 毎日同じ時刻 (配信の始まりはばらばら)
+    reg = [(t0 + d * day + 3 * 3600, 10, "a") for d in range(25)]
+    starts = {"a": sorted(t0 + d * day + (d * 5 % 24) * 3600 for d in range(25))}
+    r = ga.recorded_types(1, reg, {(1, "a"): 250}, {}, {"a": []}, {}, starts)
+    assert r["regular"]["type"] is True and r["regular"]["r"] > 0.99 and r["regular"]["room_r"] < 0.3
+    # 星だけの大貢献: 無料ばかりで、記録した 12 人の中で 1 位
+    pts = {(1, "a"): 5000, **{(u, "a"): 100 * u for u in range(2, 13)}}
+    others = {"a": [(t0 + u, u) for u in range(1, 13)]}
+    r = ga.recorded_types(1, [(t0, 5000, "a")], pts, {(1, "a"): 4800}, others, {}, {"a": []})
+    assert r["stars"][0]["star"] and r["stars"][0]["place"] == 1
+    # 盛り上がり型: いつも他の人のギフトの 10 秒あと (他の人は 1 時間に 1 回)
+    theirs = [t0 + h * 3600 for h in range(30)]
+    mine = [(t + 10, 50, "a") for t in theirs[:25]]
+    others = {"a": [(t, 2) for t in theirs] + [(at, 1) for at, _, _ in mine]}
+    r = ga.recorded_types(1, mine, {(1, "a"): 1250, (2, "a"): 3000}, {}, others, {}, {"a": []})
+    assert r["hype"]["type"] is True and r["hype"]["share"] == 1 and r["hype"]["ratio"] > 10

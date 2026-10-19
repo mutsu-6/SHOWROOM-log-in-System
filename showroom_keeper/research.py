@@ -494,16 +494,19 @@ class _Recorded:
         self.gifts: dict[int, list[tuple[float, int, str]]] = defaultdict(list)
         self.points: dict[tuple[int, str], int] = defaultdict(int)
         self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self.free: dict[tuple[int, str], int] = defaultdict(int)  # そのうち無料のギフトのポイント
         self.names: dict[int, str] = {}
         for key, g in records:
             uid = g.get("user_id")
             if uid is None:
                 continue
             uid = int(uid)
-            pt, _free = _points(catalog, g)
+            pt, free = _points(catalog, g)
             if g.get("name"):
                 self.names[uid] = g["name"]  # 後の記録の名前で上書きする
             self.points[(uid, key)] += pt
+            if free:
+                self.free[(uid, key)] += pt
             self.by_user[uid][key] += pt
             self.gifts[uid].append((g["at"], pt, key))
 
@@ -1052,6 +1055,7 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         w = s.one("SELECT memo, added_at FROM watch WHERE user_id=?", (uid,))
         visits = _visit_habits(state_dir, rooms, uid)
         overlap = _time_overlap(s, rooms, habits(gifts) or visits, [r["key"] for r in room_list[:OVERLAP_ROOMS]], support)
+        recorded = _recorded_types(s, rooms, rec, uid, gifts)
     cov = coverage(state_dir)
     with Store(state_dir) as s:
         return {"user_id": uid, "found": True,
@@ -1062,7 +1066,7 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                                                           ORDER BY at DESC LIMIT 20""", (uid,))],
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
-                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid),
+                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "recorded_types": recorded, "timeline": _timeline(s, rooms, gifts, uid),
                 "visits": visits, "overlap": overlap,
                 "states": _states(s, rooms, uid)}
 
@@ -1089,6 +1093,30 @@ def _visits_by_user(state_dir: Path) -> dict[int, list[tuple[int, str, int]]]:
                 except (TypeError, ValueError):
                     continue
     _visit_index[key] = (time.time(), out)
+    return out
+
+
+def _recorded_types(s: Store, rooms: "_Rooms", rec: _Recorded, uid: int, gifts: list[tuple[float, int, str]]) -> dict[str, Any] | None:
+    """記録しているルームのギフト 1 件ずつからの型 (gifter_analysis.recorded_types)。ルームのイベントと配信の始まりは、ルームごとに主キーで引く。"""
+    from .gifter_analysis import recorded_types
+
+    if not gifts:
+        return None
+    keys = {k for _, _, k in gifts}
+    others: dict[str, list[tuple[float, int]]] = {k: [] for k in keys}
+    for u, gs in rec.gifts.items():
+        for at, _, k in gs:
+            if k in others:
+                others[k].append((at, u))
+    events, starts = {}, {}
+    for k in keys:
+        rid = rooms.id(k)
+        events[k] = [(r[0], r[1]) for r in s.all("""SELECT e.start, e.end FROM room_events re JOIN events e USING(event_id)
+                                                     WHERE re.room_id=? AND e.start IS NOT NULL AND e.end IS NOT NULL""", (rid,))]
+        starts[k] = [r[0] for r in s.all("SELECT started_at FROM room_lives WHERE room_id=? ORDER BY started_at", (rid,))]
+    out = recorded_types(uid, gifts, rec.points, rec.free, others, events, starts)
+    for x in out.get("stars", []):
+        x["name"] = rooms.label(rooms.id(x["key"]))[1]
     return out
 
 
