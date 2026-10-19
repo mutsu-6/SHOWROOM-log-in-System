@@ -444,3 +444,32 @@ def test_release_memory_does_not_fail():
 
     memory.release()
     memory.release()
+
+
+def test_warm_listeners_does_not_wait_for_other_heavy_work(tmp_path, monkeypatch):
+    """ほかの重い集計 (分析など) が動いている時は、前の結果があれば待たずに次の機会に回す (収集を止めない)。"""
+    import threading
+
+    from showroom_keeper import memory
+
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(listing, "_listeners_cache", {})
+    listing.warm_listeners(tmp_path)
+    calls = []
+    monkeypatch.setattr(listing, "_list_listeners", lambda *a: calls.append(a) or {})
+    held, done = threading.Event(), threading.Event()
+
+    def other():
+        with memory.heavy():
+            held.set()
+            done.wait(10)
+
+    t = threading.Thread(target=other)
+    t.start()
+    held.wait(10)
+    listing.warm_listeners(tmp_path)
+    done.set()
+    t.join(10)
+    assert calls == []
+    listing.warm_listeners(tmp_path)
+    assert len(calls) == 1

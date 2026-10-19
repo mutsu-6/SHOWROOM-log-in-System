@@ -694,13 +694,17 @@ _listeners_running: set[tuple[str, Any, Any]] = set()
 def warm_listeners(state_dir: Path) -> None:
     """収集の合間に、ギフターの一覧 (すべての期間) を先に数えておく (開いた人を待たせない)。"""
     key = (str(state_dir), None, None)
-    if key in _listeners_cache and memory.tight():
+    cached = key in _listeners_cache
+    if cached and memory.tight():
         return  # メモリの空きが少ない時 (視聴のブラウザと重なった時) は、前の結果のまま次の機会に
-    with _listeners_lock:
-        if key in _listeners_running:
-            return
-        _listeners_running.add(key)
-    _refresh_listeners(state_dir, None, None, key)
+    with memory.heavy(wait=not cached) as got:
+        if not got:
+            return  # ほかの重い集計 (分析など) が動いている: 収集を待たせず、次の機会に
+        with _listeners_lock:
+            if key in _listeners_running:
+                return
+            _listeners_running.add(key)
+        _refresh_listeners(state_dir, None, None, key)
 
 
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:

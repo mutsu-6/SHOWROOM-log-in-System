@@ -1068,3 +1068,29 @@ def test_old_analysis_waits_while_memory_is_tight(collected, monkeypatch):
     research.forget_analysis()
     research.analyze(collected, [])
     assert started  # 空きが戻れば、次に開いた時に数え直す
+
+
+def test_pair_scan_merges_recorded_gifts_in_one_pass(tmp_path):
+    """user_room を 1 回だけ読み、記録したギフト (人 → ルーム → pt) と大きい方を取って、人ごと・ルームごとにまとめる。"""
+    with Store(tmp_path) as s:
+        s.conn.executemany("INSERT INTO user_room(user_id, room_id, cumulative, events) VALUES (?, ?, ?, ?)",
+                           [(2, 10, 50, 0), (2, 11, 0, 30), (4, 10, 0, 0), (6, 11, 5, 0)])
+        s.conn.execute("CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)")
+        # 1: 記録だけの人 (user_room より前)、2: 記録の方が大きい、5: 記録だけの人 (間)、7: 記録だけの人 (後)
+        scan = research._PairScan(s, {1: {10: 7}, 2: {11: 40}, 5: {12: 3}, 7: {10: 50, 11: 1}}, {10})
+        u = {r[0]: tuple(r[1:]) for r in s.all("SELECT * FROM u")}
+    assert u == {1: (7, 7, 1), 2: (90, 50, 2), 5: (3, 0, 1), 6: (5, 0, 1), 7: (51, 50, 2)}
+    assert scan.rooms[10] == [3, 107, 2, 2, 50]  # 50 pt は 2 と 7 が同じ。先 (ID の小さい 2) を取る
+    assert scan.rooms[11] == [3, 46, 2, 2, 40]
+    assert dict(scan.fan_rooms) == {11: 2}
+    assert list(scan.user_ends) == [2, 4] and sorted(scan.user_rooms) == [10, 10, 11, 11]
+
+
+def test_cumulative_from_is_remembered(tmp_path):
+    """累計ランキングを残し始めた時刻は、一度数えたら research.db に覚えて、表を読み直さない。"""
+    with Store(tmp_path) as s:
+        assert research._cumulative_from(s) is None
+        s.set_cumulative(1, [{"user_id": 7, "name": "a", "point": 10, "visits": 1, "rank": 1}], NOW - 86400)
+        assert research._cumulative_from(s) == NOW - 86400
+        s.conn.execute("DELETE FROM cumulative_history")
+        assert research._cumulative_from(s) == NOW - 86400

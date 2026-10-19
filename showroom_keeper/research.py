@@ -26,6 +26,7 @@ import threading
 import sqlite3
 import time
 import urllib.error
+from array import array
 from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime
@@ -51,7 +52,7 @@ RANKING_RETRIES = 3  # 貢献ランキングの取得に続けて失敗したら
 ARCHIVE_HOLD = RANKING_RETRIES + 1  # Internet Archive で見つけたルームの貢献ランキング: ルームがあると分かるまで取りに行かない
 WEEKDAYS = "月火水木金土日"
 LEFT_NAMES = {"退会済みユーザー"}  # SHOWROOM をやめたユーザー (誘導できないので候補に出さない)
-ANALYSIS_TTL = 600  # 分析の結果を使い回す時間 (秒)。全ルーム分の集計は重いので、そのたびには数え直さない
+ANALYSIS_TTL = 3600  # (2026-10-19 に 10 分から延ばした。全ルーム分はサーバーで数分かかり、そのあいだディスクを読み続けるため) 分析の結果を使い回す時間 (秒)。全ルーム分の集計は重いので、そのたびには数え直さない
 
 
 # ------------------------------------------------------------------ 問い合わせの間隔
@@ -879,7 +880,8 @@ def _run_analysis(state_dir: Path, support: list[str], limit: int, key: Any, max
         if hit and max_age > 0 and time.time() - hit[0] < max_age:  # 待っている間に、ほかが数え終えた
             return hit[1]
         started = time.time()
-        result = _analyze(state_dir, support, limit)
+        with memory.heavy():
+            result = _analyze(state_dir, support, limit)
         result["analyzed_at"] = time.time()
         result["analysis_seconds"] = round(result["analyzed_at"] - started, 1)
         _analysis[key] = (result["analyzed_at"], result)
@@ -888,37 +890,109 @@ def _run_analysis(state_dir: Path, support: list[str], limit: int, key: Any, max
     return result
 
 
+class _PairScan:
+    """ギフター × ルームの送ったポイント (累計ランキング・貢献ランキング・記録したギフトの大きい方) を 1 回だけ読んで、
+    人ごとのまとめ (一時表 u)・ルームごとのまとめ (rooms)・応援ルームのギフターが送るルーム (fan_rooms)・
+    ルーム同士の重なりに使う人ごとのルームの並び (user_rooms・user_ends) を一度に作る。
+
+    user_room は人の順に並んでいるので、人ごとに読み終えた所でまとめる (並べ替えも、写しの一時表も要らない)。
+    前は user_room を一時表 pair に写してから、索引を作り、人ごと・ルームごとに読み直していて、サーバーで 2〜5 分かかっていた
+    (メモリが視聴のブラウザでいっぱいの時は、写した表もディスクに出て、読み書きが何倍にもなる。2026-10-19 に Cursor が測った)。
+    """
+
+    def __init__(self, s: Store, recorded: dict[int, dict[int, int]], sup: set[int]):
+        self.rooms: dict[int, list[int]] = {}  # ルーム → [ギフターの数, ポイント, 複数のルームに送る人, いちばん送っている人, その人のポイント]
+        self.fan_rooms: dict[int, int] = defaultdict(int)  # 応援ルームのギフターが送っている、応援ルームでないルーム → 人数
+        self.user_rooms = array("i")  # 2〜PAIR_USER_ROOMS ルームに送っている人の、ルームの番号を人ごとに続けて並べたもの
+        self.user_ends = array("q")  # 人ごとの終わりの位置
+        self.sup = sup
+        self.batch: list[tuple[int, int, int, int]] = []
+        self.s = s
+        rec_users = sorted(recorded)
+        k = 0
+        cur, mine = None, {}
+        cursor = s.conn.execute("""SELECT user_id, room_id, MAX(cumulative, events) FROM user_room
+                                   WHERE MAX(cumulative, events) > 0 ORDER BY user_id, room_id""")
+        while True:
+            rows = cursor.fetchmany(10000)
+            if not rows:
+                break
+            for uid, rid, pt in rows:
+                if uid != cur:
+                    if cur is not None:
+                        self._user(cur, mine, recorded.get(cur))
+                    while k < len(rec_users) and rec_users[k] < uid:  # 記録したギフトにだけ出てくる人
+                        self._user(rec_users[k], {}, recorded[rec_users[k]])
+                        k += 1
+                    if k < len(rec_users) and rec_users[k] == uid:
+                        k += 1
+                    cur, mine = uid, {}
+                mine[rid] = pt
+        if cur is not None:
+            self._user(cur, mine, recorded.get(cur))
+        for uid in rec_users[k:]:
+            self._user(uid, {}, recorded[uid])
+        self._flush()
+
+    def _user(self, uid: int, mine: dict[int, int], recorded: dict[int, int] | None) -> None:
+        if recorded:
+            for rid, pt in recorded.items():
+                if pt > mine.get(rid, 0):
+                    mine[rid] = pt
+        if not mine:
+            return
+        n = len(mine)
+        total = support = 0
+        rooms = self.rooms
+        for rid, pt in mine.items():
+            total += pt
+            r = rooms.get(rid)
+            if r is None:
+                rooms[rid] = [1, pt, int(n > 1), uid, pt]
+            else:
+                r[0] += 1
+                r[1] += pt
+                r[2] += n > 1
+                if pt > r[4]:  # 同じポイントなら先 (ユーザー ID の小さい人)
+                    r[3], r[4] = uid, pt
+            if rid in self.sup:
+                support += pt
+        if support > 0:
+            for rid in mine:
+                if rid not in self.sup:
+                    self.fan_rooms[rid] += 1
+        if 2 <= n <= PAIR_USER_ROOMS:
+            self.user_rooms.extend(mine)
+            self.user_ends.append(len(self.user_rooms))
+        self.batch.append((uid, total, support, n))
+        if len(self.batch) >= 20000:
+            self._flush()
+
+    def _flush(self) -> None:
+        self.s.conn.executemany("INSERT INTO u VALUES (?, ?, ?, ?)", self.batch)
+        self.batch = []
+
+
 def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
     rec = _Recorded(state_dir)
     with Store(state_dir) as s:
         rooms = _Rooms(s, state_dir)
         sup_ids = list(dict.fromkeys(rooms.id(k) for k in support))
         c = s.conn
-        c.execute("CREATE TEMP TABLE rec (user_id INTEGER, room_id INTEGER, pt INTEGER, PRIMARY KEY (user_id, room_id))")
-        merged: dict[tuple[int, int], int] = defaultdict(int)
+        merged: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))  # 記録したギフト: 人 → ルーム → pt
         for (uid, key), pt in rec.points.items():
             if pt:
-                merged[(uid, rooms.id(key))] += pt
-        c.executemany("INSERT INTO rec VALUES (?, ?, ?)", [(u, r, pt) for (u, r), pt in merged.items()])
+                merged[uid][rooms.id(key)] += pt
         c.execute("CREATE TEMP TABLE sup (room_id INTEGER PRIMARY KEY)")
         c.executemany("INSERT INTO sup VALUES (?)", [(r,) for r in sup_ids])
         c.execute("CREATE TEMP TABLE rname (user_id INTEGER PRIMARY KEY, name TEXT)")
         c.executemany("INSERT INTO rname VALUES (?, ?)", list(rec.names.items()))
-        # 何百万行もの一時表を並べ替えるので、この接続の作業用のメモリを広げる (既定の 2MB だとディスクを何度も読み書きする)
-        # (メモリの空きが少ない時は、空きの 8 分の 1 まで。ブラウザを追い出さない)
+        # この接続の作業用のメモリ (メモリの空きが少ない時は、空きの 8 分の 1 まで。ブラウザを追い出さない)
         free = memory.free_mb()
         c.execute(f"PRAGMA cache_size=-{ANALYSIS_CACHE_KB if free is None else max(8192, min(ANALYSIS_CACHE_KB, int(free * 1024 / 8)))}")
-        # ギフター × ルームの送ったポイント (累計ランキング・貢献ランキング・記録の大きい方)。
-        # user_room は (人, ルーム) で 1 行ずつなので、そのまま写し、記録の分 (少ない) だけ足し合わせる
-        # (前は 2 つを合わせてから全部を並べ替えてまとめていて、サーバーで 22 秒かかっていた。2026-10-19)
-        c.execute("CREATE TEMP TABLE pair (user_id INTEGER, room_id INTEGER, s INTEGER, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID")
-        c.execute("INSERT INTO pair SELECT user_id, room_id, MAX(cumulative, events) FROM user_room WHERE MAX(cumulative, events) > 0")
-        c.execute("""INSERT INTO pair SELECT user_id, room_id, pt FROM rec WHERE pt > 0
-                     ON CONFLICT(user_id, room_id) DO UPDATE SET s=MAX(s, excluded.s)""")
-        c.execute("CREATE INDEX temp.pair_room ON pair(room_id, s)")  # ルームごとのまとめ (下の rs・似ているルーム) で、並べ替えずに、表を引き直さずに読む
         c.execute("""CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)""")
-        c.execute("""INSERT INTO u SELECT user_id, SUM(s), SUM(CASE WHEN room_id IN (SELECT room_id FROM sup) THEN s ELSE 0 END),
-                       COUNT(*) FROM pair GROUP BY user_id""")
+        scan = _PairScan(s, merged, set(sup_ids))
+        del merged
         c.execute("CREATE TEMP TABLE fan (user_id INTEGER PRIMARY KEY)")
         c.execute("INSERT INTO fan SELECT user_id FROM u WHERE support > 0")
         fan_count = s.scalar("SELECT COUNT(*) FROM fan")
@@ -944,29 +1018,24 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
                                                      ORDER BY total DESC, user_id LIMIT ?""", (*band, SIGNUP_YEAR_LIMIT))
                               if r[0] not in overall]
         gifter_count = s.scalar("SELECT COUNT(*) FROM u")
-        # ルームごとのまとめ (ギフターの数・分かったポイント・複数のルームに送る人・いちばん送っている人)。
-        # MAX(p.s) と一緒に選んだ p.user_id は、SQLite ではその最大の行の値になる
-        c.execute("""CREATE TEMP TABLE rs AS SELECT p.room_id, COUNT(*) AS gifters, SUM(p.s) AS points,
-                       SUM(u.n > 1) AS multi, p.user_id AS top_user, MAX(p.s) AS top_points
-                     FROM pair p JOIN u USING(user_id) GROUP BY p.room_id""")
-        # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか。
-        # 応援ルームのギフター (fan) から引いて数える (前は pair を全部読んで 1 行ずつ fan を引いていて、サーバーで 11 秒。
-        # 応援ルームが無い時も読んでいた。2026-10-19)。ギフターの数は上の rs から
+        # ルームごとのまとめ (ギフターの数・分かったポイント・複数のルームに送る人・いちばん送っている人)。上の 1 回の読み込みで数えたもの
+        c.execute("""CREATE TEMP TABLE rs (room_id INTEGER PRIMARY KEY, gifters INTEGER, points INTEGER, multi INTEGER,
+                                           top_user INTEGER, top_points INTEGER)""")
+        c.executemany("INSERT INTO rs VALUES (?, ?, ?, ?, ?, ?)", [(rid, *v) for rid, v in scan.rooms.items()])
+        # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか (ギフターの数は rs から)
         similar = []
-        if fan_count:
-            for r in s.all("""SELECT x.room_id, rs.gifters, x.shared FROM (
-                                SELECT p.room_id, COUNT(*) AS shared FROM fan JOIN pair p USING(user_id)
-                                WHERE p.room_id NOT IN (SELECT room_id FROM sup) GROUP BY p.room_id) x JOIN rs USING(room_id)
-                              ORDER BY x.shared DESC, CAST(x.shared AS REAL) / (rs.gifters + ? - x.shared) DESC LIMIT 100""", (fan_count,)):
-                key, label = rooms.label(r["room_id"])
-                similar.append({"key": key, "name": label, "gifters": r["gifters"], "shared": r["shared"],
-                                "overlap": round(r["shared"] / (r["gifters"] + fan_count - r["shared"]), 3),
-                                "candidates": r["gifters"] - r["shared"]})
+        for rid, shared in sorted(scan.fan_rooms.items(), key=lambda kv: (
+                -kv[1], -kv[1] / (scan.rooms[kv[0]][0] + fan_count - kv[1]), kv[0]))[:100]:
+            gifters = scan.rooms[rid][0]
+            key, label = rooms.label(rid)
+            similar.append({"key": key, "name": label, "gifters": gifters, "shared": shared,
+                            "overlap": round(shared / (gifters + fan_count - shared), 3), "candidates": gifters - shared})
         givers = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM rs")} if sup_ids else {}
         room_count = s.scalar("SELECT COUNT(*) FROM rs")
         multi_count = s.scalar(f"SELECT COUNT(*) FROM u WHERE n > 1 AND {name} NOT IN ({','.join('?' * len(left))})", left)
         room_rows = s.all("SELECT * FROM rs ORDER BY points DESC LIMIT 200")
-        pairs = _room_pairs(s, rooms)
+        pairs = _room_pairs(s, rooms, scan)
+        del scan
 
         cov = coverage(state_dir)  # 古ければ前の結果 (裏で数え直す)。数えるのに 20 秒かかるので、分析のたびに数え直さない
         trend = _trend(s, cov, left)
@@ -1044,7 +1113,7 @@ def coverage(state_dir: Path, max_age: float = ANALYSIS_TTL, now: float | None =
                     _coverage_running.add(key)
                     threading.Thread(target=_refresh_coverage, args=(state_dir, key), name="coverage", daemon=True).start()
             return hit[1]
-    with Store(state_dir) as s:
+    with memory.heavy(), Store(state_dir) as s:
         result = _coverage(s, time.time() if now is None else now)
         if now is None:
             _save_coverage(s, result)
@@ -1065,7 +1134,9 @@ _coverage_running: set[str] = set()
 
 def _refresh_coverage(state_dir: Path, key: str) -> None:
     try:
-        with Store(state_dir) as s:
+        with memory.heavy(wait=False) as got, Store(state_dir) as s:
+            if not got:  # ほかの重い集計が動いている: 前の結果のまま、次の機会に
+                return
             result = _coverage(s, time.time())
             _save_coverage(s, result)
             _coverage_cache[key] = (time.time(), result)
@@ -1082,8 +1153,10 @@ def _coverage(s: Store, now: float) -> dict[str, Any]:
                      FROM room_events re JOIN events e USING(event_id)
                      WHERE e.end IS NOT NULL AND e.end < ? AND e.show_ranking=1 GROUP BY month ORDER BY month""",
                  (now - 3600, RANKING_RETRIES, now - 3600))
-    rooms_total = s.scalar(f"SELECT COUNT(*) FROM rooms WHERE NOT ({SKIPPED_ROOM})")
-    rooms_done = s.scalar(f"SELECT COUNT(*) FROM rooms WHERE collected_at IS NOT NULL AND NOT ({SKIPPED_ROOM})")
+    # 1 回で数える (rooms を読むのはサーバーで 1 回 5 秒。前は 2 回読んでいた)
+    counts = s.one(f"""SELECT COALESCE(SUM(NOT ({SKIPPED_ROOM})), 0) AS total,
+                              COALESCE(SUM(collected_at IS NOT NULL AND NOT ({SKIPPED_ROOM})), 0) AS done FROM rooms""")
+    rooms_total, rooms_done = counts["total"], counts["done"]
     rooms_ok = bool(rooms_total) and rooms_done >= rooms_total * ROOMS_RATIO
     # 過去のイベントの読み込み (番号を新しい順にさかのぼる) がどの月まで進んだか。読み終えていれば全部
     nxt, read_done = s.meta("history_next"), s.meta("history_done_at")
@@ -1122,7 +1195,21 @@ def _coverage(s: Store, now: float) -> dict[str, Any]:
     return {"months": months, "years": sorted(years.values(), key=lambda y: -y["year"]), "complete_from": complete_from,
             "last_full": last_full, "rooms": {"total": rooms_total, "collected": rooms_done, "ok": rooms_ok},
             "read_from": None if read_from == "9999-99" else read_from, "read_done": bool(read_done),
-            "cumulative_from": (lambda at: _month(at) if at else None)(s.scalar("SELECT MIN(at) FROM cumulative_history", default=None))}
+            "cumulative_from": (lambda at: _month(at) if at else None)(_cumulative_from(s))}
+
+
+def _cumulative_from(s: Store) -> float | None:
+    """累計ランキングの値を残し始めた時刻 (cumulative_history のいちばん古い at)。
+
+    表は人の順に並んでいて at の索引が無いので、数えると表を全部読む (サーバーで 7 秒)。値は、残すたびにその時刻で足すので
+    一度分かれば変わらない。research.db に覚えておく。"""
+    at = s.meta("cumulative_from_at")
+    if at is None:
+        at = s.scalar("SELECT MIN(at) FROM cumulative_history", default=None)
+        if at is not None:
+            with s.tx():
+                s.set_meta("cumulative_from_at", at)
+    return at
 
 
 def _trend(s: Store, cov: dict[str, Any], left: tuple[str, ...]) -> dict[str, Any]:
@@ -1212,40 +1299,27 @@ PAIR_ROOMS = 300  # ルーム同士の重なりを調べるルームの数 (ギ�
 PAIR_USER_ROOMS = 100  # これより多くのルームに送っている人は、重なりの数に入れない (組の数が増えすぎるため)
 
 
-def _room_pairs(s: Store, rooms: _Rooms) -> list[dict[str, Any]]:
+def _room_pairs(s: Store, rooms: _Rooms, scan: "_PairScan") -> list[dict[str, Any]]:
     """ルーム同士の重なり: どのルームとどのルームに、同じギフターが送っているか (ギフターの好みが近いルーム)。
 
     全ルームの組は数が多すぎるので、ギフターの多い PAIR_ROOMS ルームの中で調べる。
+    組ごとの共通のギフターの数を、人ごとに (読み込みの時に残した、人ごとのルームの並び) 数えて、ルームの番号 × 番号の表に足す。
     """
-    c = s.conn
-    c.execute("CREATE TEMP TABLE top_rooms AS SELECT room_id, gifters FROM rs ORDER BY gifters DESC LIMIT ?", (PAIR_ROOMS,))
-    gifters = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM top_rooms")}
-    # 組ごとの共通のギフターの数を、人ごとに (pair は人の順に並んでいる) 数えて、ルームの番号 × 番号の表に足す。
-    # 前は SQL で組 (何百万) を全部並べ替えてまとめていて、作業用のファイルとメモリを多く使っていた (サーバーで 4 秒。
-    # 組の多いデータでは 37 秒。Python で数えると 3 秒ほど・表はルーム数 × ルーム数だけ)
+    top = sorted(scan.rooms.items(), key=lambda kv: (-kv[1][0], kv[0]))[:PAIR_ROOMS]
+    gifters = {rid: v[0] for rid, v in top}
     ids = sorted(gifters)
     at = {rid: i for i, rid in enumerate(ids)}
     n = len(ids)
     counts = [0] * (n * n)
-
-    def add(mine: list[int]) -> None:
-        if len(mine) >= 2:
-            mine.sort()
-            for i, x in enumerate(mine):
-                base = x * n
-                for y in mine[i + 1:]:
-                    counts[base + y] += 1
-
-    cur, mine = None, []
-    # 送っているルームの数 (u.n) で絞るのは、上位のルームに限る前の数 (前と同じ)
-    for uid, rid in c.execute("""SELECT p.user_id, p.room_id FROM pair p JOIN u USING(user_id)
-                                 WHERE p.room_id IN (SELECT room_id FROM top_rooms) AND u.n BETWEEN 2 AND ?
-                                 ORDER BY p.user_id""", (PAIR_USER_ROOMS,)):
-        if uid != cur:
-            add(mine)
-            cur, mine = uid, []
-        mine.append(at[rid])
-    add(mine)
+    flat, ends = scan.user_rooms, scan.user_ends
+    start = 0
+    for end in ends:
+        mine = sorted(at[r] for r in flat[start:end] if r in at)
+        start = end
+        for i, x in enumerate(mine):
+            base = x * n
+            for y in mine[i + 1:]:
+                counts[base + y] += 1
     found = heapq.nlargest(1000, ((v, i) for i, v in enumerate(counts) if v >= PAIR_MIN_SHARED))
     del counts
     out = []
