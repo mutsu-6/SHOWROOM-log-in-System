@@ -713,6 +713,7 @@ def _signup(s: Store, rec: _Recorded) -> _Signup:
     return _Signup(steps) if steps else _Signup.build(s, rec)
 
 
+ANALYSIS_CACHE_KB = 65536  # 分析の接続の作業用のメモリ (KB。終われば接続ごと戻る)
 SUMMARY_STEP = 50  # 分析で、ルームごとの内訳をまとめて読む人の数
 
 
@@ -791,11 +792,45 @@ def _summary(uid: int, name: str | None, slots: dict[int, dict[str, Any]], ev: A
 
 _analysis: dict[Any, tuple[float, dict[str, Any]]] = {}
 _analysis_lock = threading.Lock()
+_analysis_running: set[Any] = set()
+_analysis_guard = threading.Lock()
 
 
 def forget_analysis() -> None:
-    """次の analyze で数え直す (集め終わったときなど)。"""
-    _analysis.clear()
+    """集め終わったときなど: 次の analyze で数え直す (それまでは前の結果を出し、裏で数え直す)。"""
+    for k, (_, result) in list(_analysis.items()):
+        _analysis[k] = (0.0, result)
+
+
+def _analysis_path(state_dir: Path, key: Any) -> Path:
+    import hashlib
+
+    return Path(state_dir) / "cache" / f"analysis-{hashlib.sha1(repr(key[1:]).encode()).hexdigest()[:12]}.json"
+
+
+def _load_analysis(state_dir: Path, key: Any) -> tuple[float, dict[str, Any]] | None:
+    """起動し直したあと: 前に数えた結果をファイルから読む (古ければ、それを出して裏で数え直す)。"""
+    import json
+
+    try:
+        result = json.loads(_analysis_path(state_dir, key).read_text(encoding="utf-8"))
+        return float(result["analyzed_at"]), result
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_analysis(state_dir: Path, key: Any, result: dict[str, Any]) -> None:
+    import json
+    import os
+
+    path = _analysis_path(state_dir, key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:  # 残せなくても、この起動の間は覚えている
+        log.debug("分析の結果を残せませんでした: %s", e)
 
 
 def analyze(state_dir: Path, support: list[str], limit: int = 300, max_age: float = ANALYSIS_TTL) -> dict[str, Any]:
@@ -803,18 +838,49 @@ def analyze(state_dir: Path, support: list[str], limit: int = 300, max_age: floa
 
     応援ルームがあれば、それを基準に誘導の候補・応援ルームのギフター・似ているルームを出す。
     無ければ (mode "all")、ギフター一覧 (分かったポイントの多い順)・ルーム同士の重なり・ルームごとのまとめを出す。
-    全ルーム分だと重いので、結果は max_age 秒使い回す (同時に何本も数えないように 1 本ずつ)。
+    全ルーム分だと重い (サーバーで 2 分ほど) ので、結果は max_age 秒使い回し、古くなったら前の結果をすぐ返して裏で数え直す
+    (前は、古くなったあとに開いた人が 2 分待っていた。2026-10-19)。結果はファイルにも残し、起動し直したあとも使う。
+    max_age=0 (「集計し直す」) の時だけ、数え終わるまで待つ。
     """
     key = (str(Path(state_dir).resolve()), tuple(support), limit)
-    with _analysis_lock:
+    hit = _analysis.get(key)
+    if hit is None:
+        hit = _load_analysis(state_dir, key)
+        if hit is not None:
+            _analysis[key] = hit
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1]
+    if hit and max_age > 0:
+        with _analysis_guard:
+            if key not in _analysis_running:
+                _analysis_running.add(key)
+                threading.Thread(target=_refresh_analysis, args=(Path(state_dir), list(support), limit, key),
+                                 name="analysis", daemon=True).start()
+        return {**hit[1], "stale": True}
+    return _run_analysis(Path(state_dir), support, limit, key, max_age)
+
+
+def _refresh_analysis(state_dir: Path, support: list[str], limit: int, key: Any) -> None:
+    try:
+        _run_analysis(state_dir, support, limit, key, ANALYSIS_TTL)
+    except Exception as e:  # noqa: BLE001 - 数え直せなくても、前の結果を使い続ける
+        log.warning("分析を数え直せませんでした: %s", e)
+    finally:
+        with _analysis_guard:
+            _analysis_running.discard(key)
+
+
+def _run_analysis(state_dir: Path, support: list[str], limit: int, key: Any, max_age: float) -> dict[str, Any]:
+    with _analysis_lock:  # 同時に何本も数えない
         hit = _analysis.get(key)
-        if hit and time.time() - hit[0] < max_age:
+        if hit and max_age > 0 and time.time() - hit[0] < max_age:  # 待っている間に、ほかが数え終えた
             return hit[1]
         started = time.time()
-        result = _analyze(Path(state_dir), support, limit)
+        result = _analyze(state_dir, support, limit)
         result["analyzed_at"] = time.time()
         result["analysis_seconds"] = round(result["analyzed_at"] - started, 1)
         _analysis[key] = (result["analyzed_at"], result)
+        _save_analysis(state_dir, key, result)
         return result
 
 
@@ -834,11 +900,16 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         c.executemany("INSERT INTO sup VALUES (?)", [(r,) for r in sup_ids])
         c.execute("CREATE TEMP TABLE rname (user_id INTEGER PRIMARY KEY, name TEXT)")
         c.executemany("INSERT INTO rname VALUES (?, ?)", list(rec.names.items()))
-        # ギフター × ルームの送ったポイント (累計ランキング・貢献ランキング・記録の大きい方)
-        c.execute("""CREATE TEMP TABLE pair AS SELECT user_id, room_id, MAX(s) AS s FROM (
-                       SELECT user_id, room_id, MAX(cumulative, events) AS s FROM user_room
-                       UNION ALL SELECT user_id, room_id, pt FROM rec)
-                     GROUP BY user_id, room_id HAVING MAX(s) > 0""")
+        # 何百万行もの一時表を並べ替えるので、この接続の作業用のメモリを広げる (既定の 2MB だとディスクを何度も読み書きする)
+        c.execute(f"PRAGMA cache_size=-{ANALYSIS_CACHE_KB}")
+        # ギフター × ルームの送ったポイント (累計ランキング・貢献ランキング・記録の大きい方)。
+        # user_room は (人, ルーム) で 1 行ずつなので、そのまま写し、記録の分 (少ない) だけ足し合わせる
+        # (前は 2 つを合わせてから全部を並べ替えてまとめていて、サーバーで 22 秒かかっていた。2026-10-19)
+        c.execute("CREATE TEMP TABLE pair (user_id INTEGER, room_id INTEGER, s INTEGER, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID")
+        c.execute("INSERT INTO pair SELECT user_id, room_id, MAX(cumulative, events) FROM user_room WHERE MAX(cumulative, events) > 0")
+        c.execute("""INSERT INTO pair SELECT user_id, room_id, pt FROM rec WHERE pt > 0
+                     ON CONFLICT(user_id, room_id) DO UPDATE SET s=MAX(s, excluded.s)""")
+        c.execute("CREATE INDEX temp.pair_room ON pair(room_id, s)")  # ルームごとのまとめ (下の rs・似ているルーム) で、並べ替えずに、表を引き直さずに読む
         c.execute("""CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)""")
         c.execute("""INSERT INTO u SELECT user_id, SUM(s), SUM(CASE WHEN room_id IN (SELECT room_id FROM sup) THEN s ELSE 0 END),
                        COUNT(*) FROM pair GROUP BY user_id""")

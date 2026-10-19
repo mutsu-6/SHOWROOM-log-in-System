@@ -2019,7 +2019,7 @@ async function loadAnalysis(refresh = false) {
       + (d.support_rooms.map((k) => `<option value="${esc(k)}">${esc(roomName(k))}</option>`).join("") || `<option value="">設定なし</option>`);
     if (d.support_rooms.includes(cur)) sel.value = cur;
     $("#r-support-wrap").hidden = !d.support_rooms.length;
-    $("#r-analyzed").innerHTML = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true).slice(0, 11)}${d.analysis_seconds >= 1 ? ` (${num(d.analysis_seconds)} 秒)` : ""} ・ 10 分間は同じ集計を使います` : "";
+    $("#r-analyzed").innerHTML = d.analyzed_at ? `集計 ${tm(d.analyzed_at, true).slice(0, 11)}${d.analysis_seconds >= 1 ? ` (${num(d.analysis_seconds)} 秒)` : ""} ・ 10 分間は同じ集計を使います${d.stale ? " ・ <b>前の集計です</b> (裏で数え直しています。少しあとに開き直すと新しくなります)" : ""}` : "";
     return d;
   })();
   try { return await research.loading; } finally { research.loading = null; }

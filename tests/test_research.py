@@ -1,3 +1,4 @@
+import threading
 import json
 import time
 import urllib.error
@@ -1031,3 +1032,20 @@ def test_sweep_keeps_gift_daily_up_to_date(tmp_path):
     sw._gift_daily(NOW)
     with Store(tmp_path) as s:
         assert s.scalar("SELECT SUM(paid_points) FROM room_gift_daily WHERE room_key='aaa'") == 100
+
+
+def test_old_analysis_is_returned_at_once_and_counted_again_behind(collected, monkeypatch):
+    """古くなった分析は、前の結果をすぐ返して裏で数え直す。起動し直したあとは、ファイルに残した結果を使う。"""
+    collected = collected[0]
+    first = research.analyze(collected, [])
+    research.forget_analysis()  # 集め終わった (古くなった)
+    started = []
+    real = research._refresh_analysis
+    monkeypatch.setattr(research, "_refresh_analysis", lambda *a: started.append(a) or real(*a))
+    again = research.analyze(collected, [])
+    assert again.get("stale") is True and again["analyzed_at"] == first["analyzed_at"]
+    for t in [t for t in threading.enumerate() if t.name == "analysis"]:
+        t.join(30)
+    assert started and research.analyze(collected, [])["analyzed_at"] > first["analyzed_at"]
+    research._analysis.clear()  # 起動し直した
+    assert research.analyze(collected, [])["candidate_count"] == 3 and research._analysis  # ファイルから読んだ

@@ -685,6 +685,19 @@ def _size(path: Path) -> int | None:
 
 LISTENERS_TTL = 60  # ギフターの一覧 (記録したギフト) を使い回す秒数 (何人もが続けて開いた時に、数え直さない)
 _listeners_cache: dict[tuple[str, Any, Any], tuple[float, dict[str, Any]]] = {}
+LISTENERS_STALE = 6 * 3600  # これより古い結果は返さずに数え直す (収集の合間に先に数えておくので、ふだんは古くならない)
+_listeners_lock = threading.Lock()
+_listeners_running: set[tuple[str, Any, Any]] = set()
+
+
+def warm_listeners(state_dir: Path) -> None:
+    """収集の合間に、ギフターの一覧 (すべての期間) を先に数えておく (開いた人を待たせない)。"""
+    key = (str(state_dir), None, None)
+    with _listeners_lock:
+        if key in _listeners_running:
+            return
+        _listeners_running.add(key)
+    _refresh_listeners(state_dir, None, None, key)
 
 
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
@@ -693,11 +706,26 @@ def list_listeners(state_dir: Path, days: float | None = None, room: str | None 
     hit = _listeners_cache.get(key)
     if hit and time.time() - hit[0] < LISTENERS_TTL:
         return hit[1]
-    out = _list_listeners(state_dir, days, room)
-    if len(_listeners_cache) > 20:
-        _listeners_cache.clear()
-    _listeners_cache[key] = (time.time(), out)
-    return out
+    if hit and LISTENERS_TTL > 0 and time.time() - hit[0] < LISTENERS_STALE:
+        # 古ければ、前の結果をすぐ返して、裏で数え直す (サーバーで 1 回目 11.8 秒かかっていた。2026-10-19)
+        with _listeners_lock:
+            if key not in _listeners_running:
+                _listeners_running.add(key)
+                threading.Thread(target=_refresh_listeners, args=(state_dir, days, room, key), name="listeners", daemon=True).start()
+        return hit[1]
+    return _refresh_listeners(state_dir, days, room, key)
+
+
+def _refresh_listeners(state_dir: Path, days: float | None, room: str | None, key: tuple[str, Any, Any]) -> dict[str, Any]:
+    try:
+        out = _list_listeners(state_dir, days, room)
+        if len(_listeners_cache) > 20:
+            _listeners_cache.clear()
+        _listeners_cache[key] = (time.time(), out)
+        return out
+    finally:
+        with _listeners_lock:
+            _listeners_running.discard(key)
 
 
 def _from_table(rows: list[Any], sender_names: list[Any], names: dict[str, Any], catalog: dict[int, Any]) -> dict[str, Any]:

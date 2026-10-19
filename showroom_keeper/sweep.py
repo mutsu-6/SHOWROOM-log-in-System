@@ -329,6 +329,10 @@ class Sweeper:
         from . import search_index
 
         search_index.refresh(self.store, search_index.SWEEP_BUDGET)  # 上の検索欄の名前の索引 (変わった名前と、最初に入れる分)
+        try:
+            listing.warm_listeners(self.state_dir)  # ギフターの一覧 (すべての期間) を先に数えておく
+        except Exception as err:  # noqa: BLE001 - 数えられなくても、開いた時に数える
+            log.debug("ギフターの一覧を先に数えられませんでした: %s", err)
         if not research._coverage_cache:
             research.coverage(self.state_dir)  # 集まり具合を先に数えておく (起動し直したあと、最初にページを開いた人を待たせない)
 
