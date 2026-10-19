@@ -192,6 +192,25 @@ def test_recorded_senders_use_the_index(traced):
     check(traced, run)
 
 
+def test_listeners_in_a_period_use_the_gift_events_index(traced):
+    """期間を決めたギフターの一覧は、ギフト 1 件ずつの表をルームと時刻の索引で読む。"""
+    from showroom_keeper import listing
+
+    def run(d):
+        with Store(d) as s:
+            with s.tx() as c:
+                c.execute("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (55, ?, 'k1', 1, 2)", (NOW,))
+        listing._period_rows(d, NOW - 7 * DAY)
+    check(traced, run)
+    # 一時表を使う SQL は、full_scans の別の接続では読み方を確かめられない (表が無いので飛ばされる) ので、ここで確かめる
+    with Store(traced[0]) as s:
+        for sql in listing.PERIOD_TEMP:
+            s.conn.execute(sql)
+        plan = [r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + listing.PERIOD_SQL, (NOW,))]
+    assert not [p for p in plan if p.startswith("SCAN e")], plan
+    assert any("gift_events_room" in p for p in plan), plan
+
+
 def test_signup_anchor_does_not_read_whole_contributions(traced):
     def run(d):
         with Store(d) as s:

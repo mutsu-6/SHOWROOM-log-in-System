@@ -635,6 +635,46 @@ def _sender_rooms(state_dir: Path, user: int | None = None, since: float | None 
     return sorted((picked & set(files)) | (set(files) - done)), rows, names
 
 
+def _period_rows(state_dir: Path, since: float) -> tuple[list[str], list[Any], list[Any]]:
+    """期間を決めたギフターの一覧の、ギフト 1 件ずつの表 (gift_events) から SQL でまとめた分。戻り値は _sender_rooms と同じ形
+    (読むルーム, [人ごとの合計, 人ごとの多いルーム TOP_ROOMS 個], 名前の行)。表に足し終えていないルームだけファイルを読む。
+    前は、その間に送りのあったルーム (サーバーではほぼ全部の 816 ルーム・70MB) のファイルを読み、41〜44 秒・メモリ +520MB かかった (2026-10-19)。
+    """
+    from .explore import update_all_gift_senders
+    from .research_store import Store
+
+    files = _record_files(state_dir)
+    with Store(state_dir) as s:
+        update_all_gift_senders(state_dir, s)  # 送り主の表と一緒に、ギフト 1 件ずつの表にも新しい分を足す
+        pos = {r[0]: r[1] for r in s.all("SELECT room_key, pos FROM gift_event_pos")}
+        done = {k for k, p in files.items() if _size(p) is not None and pos.get(k) == _size(p)}
+        catalog = gift_catalog(state_dir, sorted(done))
+        cur = s.conn.cursor()
+        cur.row_factory = None
+        for sql in PERIOD_TEMP:
+            cur.execute(sql)
+        cur.execute("DELETE FROM event_done")
+        cur.executemany("INSERT INTO event_done VALUES (?)", [(k,) for k in done])
+        cur.execute("DELETE FROM period_catalog")
+        cur.executemany("INSERT INTO period_catalog VALUES (?, ?, ?)",
+                        [(int(k), int(g.get("point") or 0), int(bool(g.get("free", True)))) for k, g in catalog.items()])
+        # 一覧に無いギフトは 0 pt・無料として数える (_points と同じ)。
+        # CROSS JOIN でルームから先に読む (ふつうの JOIN だと、GROUP BY のために gift_events を人の索引で全部読むことがある)
+        per_room = cur.execute(PERIOD_SQL, (since,)).fetchall()
+        names = cur.execute("SELECT user_id, name, at FROM gift_sender_names WHERE at >= ?", (since,)).fetchall()
+    return sorted(set(files) - done), per_room, names
+
+
+PERIOD_TEMP = ("CREATE TEMP TABLE IF NOT EXISTS event_done (room_key TEXT PRIMARY KEY)",
+               "CREATE TEMP TABLE IF NOT EXISTS period_catalog (gift_id INTEGER PRIMARY KEY, point INTEGER, free INTEGER)")
+PERIOD_SQL = """SELECT e.user_id, e.room_key, SUM(e.num * COALESCE(c.point, 0)),
+                       SUM(CASE WHEN COALESCE(c.free, 1) THEN e.num * COALESCE(c.point, 0) ELSE 0 END),
+                       SUM(e.num), COUNT(*), MIN(e.at), MAX(e.at)
+                FROM event_done d CROSS JOIN gift_events e ON e.room_key = d.room_key AND e.at >= ?
+                LEFT JOIN period_catalog c ON c.gift_id = e.gift_id
+                GROUP BY e.user_id, e.room_key"""
+
+
 def _size(path: Path) -> int | None:
     try:
         return path.stat().st_size
@@ -645,14 +685,19 @@ def _size(path: Path) -> int | None:
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
     """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。
 
-    全ルーム・すべての期間なら送り主の表 (gift_senders) から、期間を決めたら、その間に送りのあったルームのファイルだけを読む。
-    個数 (count) は表に無いので、表から出した人は None。
+    全ルーム・すべての期間なら送り主の表 (gift_senders) から、期間を決めたらギフト 1 件ずつの表 (gift_events) から SQL でまとめる。
+    個数 (count) は送り主の表に無いので、すべての期間で表から出した人は None。
     """
     since = time.time() - days * 86400 if days else None
     rows: list[Any] = []
     sender_names: list[Any] = []
+    period: list[Any] = []
     if room:
         records = _records(state_dir, room, since)
+    elif since is not None:
+        keys, period, sender_names = _period_rows(state_dir, since)
+        files = _record_files(state_dir)
+        records = [kg for key in keys for kg in _records(state_dir, key, since, files)]
     else:
         keys, rows, sender_names = _sender_rooms(state_dir, since=since, table=True)
         files = _record_files(state_dir)
@@ -667,10 +712,26 @@ def list_listeners(state_dir: Path, days: float | None = None, room: str | None 
                       "count": None, "times": times or 0, "rooms": defaultdict(int), "room_count": n, "first_at": first, "last_at": last}
     for uid, key, pt in top:
         users[uid]["rooms"][key] = pt or 0
+    for uid, key, pt, free, count, times, first, last in period:  # ギフト 1 件ずつの表から (人 × ルームの合計)
+        pt, free = pt or 0, free or 0
+        u = users.setdefault(uid, {"user_id": uid, "name": None, "names": {}, "points": 0, "paid_points": 0, "free_points": 0,
+                                   "count": 0, "times": 0, "rooms": defaultdict(int), "room_count": 0,
+                                   "first_at": first, "last_at": last})
+        u["points"] += pt
+        u["free_points"] += free
+        u["paid_points"] += pt - free
+        u["count"] += count or 0
+        u["times"] += times or 0
+        u["rooms"][key] += pt
+        u["room_count"] += 1
+        u["first_at"], u["last_at"] = min(u["first_at"], first), max(u["last_at"], last)
     for uid, name, at in sender_names:
         u = users.get(uid)
         if u is not None:
             u["names"][name] = max(u["names"].get(name, 0), at or 0)
+    for u in users.values():
+        if u["name"] is None and u["names"]:  # ギフト 1 件ずつの表には名前が無いので、一番新しく使った名前
+            u["name"] = max(u["names"].items(), key=lambda kv: kv[1])[0]
     for key, g in records:
         uid = g.get("user_id")
         if uid is None:

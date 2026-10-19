@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 from showroom_keeper import listing
 from showroom_keeper.gifts import record_gift
 
@@ -86,6 +88,30 @@ def test_listener_pages_read_only_the_needed_files(tmp_path, monkeypatch):
     record_gift(tmp_path, "room_d", 4, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now - 10})
     assert listing.listener_detail(tmp_path, "7")["total"]["points"] == 305
     assert {u["user_id"]: u for u in listing.list_listeners(tmp_path)["listeners"]}[7]["points"] == 305
+
+
+def test_listeners_in_a_period_come_from_the_gift_events_table(tmp_path, monkeypatch):
+    """期間を決めたギフターの一覧は、ギフト 1 件ずつの表 (gift_events) から出し、ファイルを読まない
+    (前は、その間に送りのあったルームのファイルを全部読んでいた。サーバーで 41〜44 秒・メモリ +520MB)。"""
+    now = _setup(tmp_path, monkeypatch)
+    record_gift(tmp_path, "room_c", 3, {"t": 2, "u": 7, "ac": "たろう", "g": 1, "n": 3, "created_at": now - 30})
+    listing.list_listeners(tmp_path)  # 表に足す
+    read = []
+    real = listing._load_file
+    monkeypatch.setattr(listing, "_load_file", lambda path: read.append(path.stem) or real(path))
+    week = {u["user_id"]: u for u in listing.list_listeners(tmp_path, days=7)["listeners"]}
+    assert read == []
+    taro, hana = week[7], week[8]
+    assert (taro["points"], taro["paid_points"], taro["free_points"], taro["count"], taro["times"], taro["room_count"]) == (203, 200, 3, 5, 2, 2)
+    assert taro["name"] == "たろう" and taro["names"] == ["たろう"]  # 10 日前の名前 (タロウ改) は出さない
+    assert [r["key"] for r in taro["rooms"]] == ["room_a", "room_c"]
+    assert (hana["points"], hana["count"], hana["name"]) == (10, 10, "はなこ")
+    assert taro["first_at"] == pytest.approx(now - 3600) and taro["last_at"] == pytest.approx(now - 30)
+    # まだ表に足していないルームは、ファイルを読んで足す
+    monkeypatch.setattr("showroom_keeper.explore.update_all_gift_senders", lambda *a, **k: None)
+    record_gift(tmp_path, "room_d", 4, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now - 10})
+    assert {u["user_id"]: u for u in listing.list_listeners(tmp_path, days=7)["listeners"]}[7]["points"] == 303
+    assert read == ["room_d"]
 
 
 def test_listener_detail_charts_show_when_where_and_how_much(tmp_path, monkeypatch):
