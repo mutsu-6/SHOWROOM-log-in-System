@@ -131,6 +131,17 @@ def test_saving_does_not_read_whole_tables(traced):
     check(traced, save)
 
 
+def test_changing_the_room_to_look_from_does_not_read_whole_tables(traced):
+    """分析の見るルームを切り替えた時は、土台 (全部読む重い集計。1 時間に 1 回) に、そのルームのギフターを索引で当てはめるだけ。"""
+    state_dir, seen = traced
+    research.forget_analysis()
+    research._analysis.clear()
+    research.analyze(state_dir, [])  # 土台を作る (ここは全部読む)
+    seen.clear()
+    research.analyze(state_dir, ["k2"])
+    assert seen and full_scans(state_dir, seen) == []
+
+
 def test_room_analysis_does_not_read_whole_tables(traced):
     def analyze(d):
         with Store(d) as s:

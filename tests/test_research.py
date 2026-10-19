@@ -545,7 +545,7 @@ def test_support_and_research_rooms_from_env_and_settings(tmp_path):
            "SHOWROOM_STATE_FILE": str(tmp_path / "s.json"), "SHOWROOM_RESEARCH_ALL": "true",
            "SHOWROOM_RESEARCH_SCAN": "off", "SHOWROOM_RESEARCH_GAP": "1.5"}
     cfg = Config.load(None, env)
-    assert (cfg.support_rooms, cfg.research_rooms) == (["sup"], ["a", "b"])
+    assert (cfg.support_rooms, cfg.research_rooms) == (["sup"], ["sup", "a", "b"])  # 前の応援ルームは、調べるルームに移す
     assert (cfg.research_all, cfg.research_scan, cfg.research_gap) == (True, False, 1.5)
     assert Config.load(None, {}).research_all is False  # 全ルームの収集は .env で有効にしたときだけ
     # 前からある settings.json (応援ルームの項目が無い) は、.env の指定を消さない
@@ -553,6 +553,25 @@ def test_support_and_research_rooms_from_env_and_settings(tmp_path):
     assert apply_settings(cfg) and cfg.rooms == ["x"] and cfg.support_rooms == ["sup"]
     save_settings(cfg, {"rooms": ["x"], "support_rooms": ["new_sup"]})
     assert apply_settings(cfg) and cfg.support_rooms == ["new_sup"]
+
+
+def test_switching_the_room_to_look_from_reuses_the_heavy_count(collected, monkeypatch):
+    """見るルームを切り替えても、全部を読む重い集計 (土台) は数え直さない。見るルームごとの軽い集計だけ作る。"""
+    tmp_path, _, _, _ = collected
+    calls = []
+    real = research._analyze_base
+    monkeypatch.setattr(research, "_analyze_base", lambda *a: calls.append(a) or real(*a))
+    a = research.analyze(tmp_path, ["support"])
+    b = research.analyze(tmp_path, ["other"])
+    c = research.analyze(tmp_path, [])
+    assert len(calls) == 1 and a["analyzed_at"] == b["analyzed_at"] == c["analyzed_at"]
+    assert [f["user_id"] for f in a["fans"]] == [10] and [c["user_id"] for c in a["candidates"]] == [20, 30]
+    assert sorted(f["user_id"] for f in b["fans"]) == [10, 20, 30, 40] and b["candidate_count"] == 0  # 退会した人もギフターには入れる
+    assert [x["key"] for x in b["similar"]] == ["support"] and b["support"][0]["gifters"] == 4
+    assert c["mode"] == "all" and [x["user_id"] for x in c["candidates"]] == [20, 10, 30]
+    assert research.analyze(tmp_path, ["support"]) is a  # 同じ土台から作ったものは使い回す
+    research.analyze(tmp_path, ["support"], max_age=0)  # 「集計し直す」だけは、土台から数え直す
+    assert len(calls) == 2
 
 
 def test_analyze_without_support_room(collected):
