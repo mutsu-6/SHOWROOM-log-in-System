@@ -431,7 +431,7 @@ td a.name-link, td a { word-break: break-word; }
   <section data-page="notices">
     <div class="page-head">
       <div class="grow"><h2>お知らせ</h2>
-        <p class="sub" style="margin:0">大きなギフト・気になるギフターの動き・調べるルームが出ているイベントの毎日 24:00 の上位 3 ルームなど、最近の出来事です。1 分ごとに新しくなり、大事なもの (赤い線) は画面の下にも出します。</p></div>
+        <p class="sub" style="margin:0">大きなギフト・気になるギフターの動き・毎日 24:00 の注目度が上位のイベント (その日に送られたポイントの多い順) の上位 3 ルームなど、最近の出来事です。1 分ごとに新しくなり、大事なもの (赤い線) は画面の下にも出します。</p></div>
       <div class="row">
         <select id="f-hours" aria-label="期間"><option value="24">直近 24 時間</option><option value="72">直近 3 日</option><option value="168">直近 7 日</option></select>
         <label class="row" style="gap:6px;color:var(--muted)">大きなギフト
@@ -641,7 +641,7 @@ td a.name-link, td a { word-break: break-word; }
       </div>
       <div class="card" data-list="research_rooms">
         <h3 style="margin-top:0">調べるルーム</h3>
-        <div class="hint" style="margin-top:0">ギフターを特に調べたいルームです。累計ランキングとイベントの貢献ランキングを毎日集めます (視聴はしません。全ルームの収集が有効なら、指定しなくても全ルームを集めます)。イベントの順位の変化は「お知らせ」に出ます。分析でどのルームから見るかは、「ギフター」「イベント」の画面で選びます。</div>
+        <div class="hint" style="margin-top:0">ギフターを特に調べたいルームです。累計ランキングとイベントの貢献ランキングを毎日集めます (視聴はしません。全ルームの収集が有効なら、指定しなくても全ルームを集めます)。このルームが出ているイベントが「お知らせ」に出た時は、その順位も添えます。分析でどのルームから見るかは、「ギフター」「イベント」の画面で選びます。</div>
         <ul class="list"></ul>
         <form class="row"><input type="text" class="grow" autocomplete="off" data-suggest="room" placeholder="ルーム名で SHOWROOM 全体から検索、または URL を貼り付け"><button class="btn" type="submit">追加</button></form>
       </div>
@@ -3560,8 +3560,9 @@ function feedItem(x) {
     case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b>`,
       `${num(x.times)} 回 ・ うち有料 ${num(x.paid_points)} pt${x.times > 1 ? ` ・ ${tm(x.first_at)} から` : ""}`, memo];
     case "watch_visit": return [`<span class="tag warn">気になる</span> ${g} が ${room} に来場`, `${x.n === 1 ? "初めての訪問" : `${num(x.n)} 回目の訪問`}`, memo];
-    case "event_daily": return [`${ev} の ${tm(x.at - 1, true).slice(0, 5)} 24:00 時点の上位 3 ルーム`,
-      `<ol class="top3">${x.top.map((r) => `<li><b>${num(r.rank)} 位</b> ${roomLink(r.room_key, r.room_name)} <span class="uid">${num(r.point)} pt</span></li>`).join("")}</ol>`
+    case "event_daily": return [`<span class="tag">注目度 ${num(x.place)} 位</span> ${ev} の ${tm(x.at - 1, true).slice(0, 5)} 24:00 時点の上位 3 ルーム`,
+      `この日に送られたポイント <b>${num(x.score)} pt</b> (${num(x.rooms)} ルーム)`
+      + `<ol class="top3">${x.top.map((r) => `<li><b>${num(r.rank)} 位</b> ${roomLink(r.room_key, r.room_name)} <span class="uid">${num(r.point)} pt ・ この日 +${num(r.gain)}</span></li>`).join("")}</ol>`
       + (x.mine.length ? `調べるルーム: ${x.mine.map((r) => `${roomLink(r.room_key, r.room_name)} ${rankText(r.rank)}・${num(r.point)} pt`).join("、")}` : "")
       + `${Math.abs(x.snapshot_at - x.at) >= 300 ? ` <span class="uid">(${tm(x.snapshot_at).slice(0, 5)} の値)</span>` : ""}${x.end ? ` <span class="uid">・ 終わり ${tm(x.end, true).slice(0, 11)}</span>` : ""}`];
     default: return [esc(x.kind), ""];
@@ -3624,7 +3625,7 @@ function renderNotices() {
   const items = kinds ? d.items.filter((x) => kinds.includes(x.kind)) : d.items;
   const EMPTY = { gift: `記録しているルームで、1 回 ${num(d.min_point)} pt 以上のギフトはありませんでした。上の「大きなギフト」で基準を下げられます。`,
     watch: "気になるギフターの、記録しているルームでのギフト・来場はありませんでした。ギフターのページの「☆ 気になる」で印を付けた人が出ます。",
-    event: "調べるルームが出ているイベントの、24:00 の上位 3 ルームはまだありません。「設定」の「調べるルーム」に入れたルームが出ているイベントが出ます (1 時間ごとの推移を残している開催中のイベントだけ)。" };
+    event: "24:00 の注目度が上位のイベントはまだありません。開催中のイベントの 1 時間ごとの推移から、毎日 24:00 にその日に送られたポイントの多いイベントを 5 件出します。" };
   $("#f-body").innerHTML = items.length ? feedList(items, { base: feed.mark }) : `<div class="empty">${EMPTY[feed.filter] || `直近 ${d.hours} 時間の出来事はありませんでした。`}</div>`;
 }
 async function showNotices() {
