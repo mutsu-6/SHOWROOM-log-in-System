@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from .research_store import Store
 
-LIVE_ROOMS = 10  # 読むルームの数 (今のポイントの多い順)
+LIVE_ROOMS = 5  # 読むルームの数 (今のポイントの多い順)
 LIVE_TTL = 180  # 読んだ結果を使い回す秒数
 LIVE_EVENTS = 4  # メモリに置くイベントの数
 LIVE_CONTRIBUTORS = 100  # 返す貢献者の数 (全ルームの合計の多い順)
