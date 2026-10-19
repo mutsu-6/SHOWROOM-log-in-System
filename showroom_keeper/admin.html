@@ -1645,7 +1645,8 @@ const STATE_NOTE = {
   "休眠": "前の 3 か月は送っていたが、この月はルームがイベントに出たのに、上位 100 人に出ていない (100 位より下に下がった場合も含む)",
   "ルームが休み": "前の 3 か月は送っていたが、この月はルームがイベントに出ていない (送る場が無かった)",
 };
-const TIER_NOTE = "その月にどこかの貢献ランキングに出た全員の中で、上から 1% までが大口・10% までが中堅・それより下が少額 (月ごとに区切るので、時期や規模でずれない)";
+const TIER_NOTE = "その月にどこかの貢献ランキングに出た全員の中で、上から 0.1% (少ない月でも 1 人) までが頂点・1% までが大口・10% までが中堅・それより下が少額 (月ごとに区切るので、時期や規模でずれない)";
+const WALL_NOTE = "見えた回 = 貢献ランキング (各ルームの上位 100 人) に出たイベント×ルーム。壁ぎわ = 100 人に届いた回で、ポイントが 100 位の 1.2 倍まで (見えない回にも送っていたかもしれない)。壁ぎわの回が半分以上の人は、見えている額が下限 (全体では大口でも、ルームごとには壁ぎわのことがある)。どの線も仮の値です";
 function gifterStates(st) {
   const ym = (m) => m.replace("-", "/");
   let h = `<h3>今の状態 <small class="muted">${ym(st.month)} (集め終わったいちばん新しい月) を、その前の 3 か月とくらべる。イベントの貢献ランキングから</small></h3>`;
@@ -1664,8 +1665,28 @@ function gifterStates(st) {
   const shown = st.tiers.filter((t) => t.points);
   if (shown.length) {
     h += `<h3>大口・中堅・少額 <small class="muted">月ごと</small></h3><div class="hint" style="margin-top:0">${TIER_NOTE}</div>
-      <div class="row" style="flex-wrap:wrap;gap:6px">${st.tiers.map((t) => `<span class="tag ${t.tier === "大口" ? "live" : t.tier === "中堅" ? "warn" : ""}"
-        title="${t.points ? `${num(t.points)} pt。この月は ${num(t.people)} 人。大口は ${num(t.top)} pt 以上・中堅は ${num(t.mid)} pt 以上` : "貢献ランキングに出ていない"}">${ym(t.month).slice(2)} ${esc(t.tier || "-")}</span>`).join("")}</div>`;
+      <div class="row" style="flex-wrap:wrap;gap:6px">${st.tiers.map((t) => `<span class="tag ${t.tier === "頂点" || t.tier === "大口" ? "live" : t.tier === "中堅" ? "warn" : ""}"
+        title="${t.points ? `${num(t.points)} pt。この月は ${num(t.people)} 人。頂点は ${num(t.peak)} pt 以上・大口は ${num(t.top)} pt 以上・中堅は ${num(t.mid)} pt 以上` : "貢献ランキングに出ていない"}">${ym(t.month).slice(2)} ${t.tier === "頂点" ? "<b>頂点</b>" : esc(t.tier || "-")}</span>`).join("")}</div>`;
+  }
+  const v = st.visibility;
+  if (v) {
+    const span = `${ym(v.months[0])}〜${ym(v.months[1])}`;
+    h += `<h3>見え方 <small class="muted">${span}。分け方をどこまで信じてよいか</small></h3><div class="hint" style="margin-top:0">${WALL_NOTE}</div>
+      <div class="tiles">
+        ${tile("見えた回", `${num(v.obs)} <small>回</small>`, v.unclassified ? "少ないので、型は決めません (未分類)" : "イベント×ルーム", v.unclassified ? "warn" : "")}
+        ${tile("壁ぎわ率", v.wall_rate == null ? "—" : pctText(v.wall_rate), v.full ? `100 人に届いた ${num(v.full)} 回のうち ${num(v.wall)} 回が壁ぎわ` : "100 人に届いた回がありません", v.wall_low ? "warn" : "")}
+        ${v.wall_low ? tile("見えている額は下限", "<b>壁ぎわ</b>", "ルームごとには 100 位のすぐ上。見えない回にも送っている見込みなので、少額・減少・休眠の判定は控えめに読む", "warn") : ""}
+      </div>`;
+  }
+  const pl = (st.pillars || []).filter((p) => p.share != null || p.first);
+  if (pl.length) {
+    h += `<h3>ルームの中での重み <small class="muted">${v ? `${ym(v.months[0])}〜${ym(v.months[1])}` : ""}。そのルームの上位 100 人の合計のうち、この人が出した割合</small></h3>` + dataTable("gp-pillars", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.pillar ? ' <span class="tag live" title="上位 100 人の合計の 3 割以上を出したか、出た回の半分以上で 1 位">柱</span>' : ""}`, cls: "name" },
+      { label: "割合", num: true, value: (r) => r.share, html: (r) => r.share == null ? "-" : `<b>${pctText(r.share, 1)}</b>` },
+      { label: "1 位の回", num: true, value: (r) => r.first, html: (r) => `${num(r.first)} <span class="uid">/ ${num(r.obs)} 回</span>` },
+      { label: "pt", num: true, value: (r) => r.points, html: (r) => num(r.points) },
+    ], pl, { sort: 1, limit: 10, csvName: "ギフター_ルームの重み",
+      note: "柱 = 3 割以上を出したか、出た回の半分以上で 1 位 (仮の線)。分母も上位 100 人の合計なので、ギフターの多いルームでは割合が高めに出ます" });
   }
   return h;
 }

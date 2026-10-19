@@ -19,10 +19,17 @@ GROW = 1.5  # 前の月の平均のこれ以上なら「増加」
 SHRINK = 0.5  # これ以下なら「減少」
 SWITCH_BEFORE = 6  # 乗り換え: 前の最推しを決める月数 (くらべる前の月より前)
 SWITCH_RECENT = 3  # 乗り換え: 今の最推しを決める月数 (いちばん新しい月まで)
+TIER_PEAK = 0.001  # 上から 0.1% まで = 頂点 (1 か月で全体の大きな割合を 1 人で出す人。人数の少ない月でも 1 人はいる)
 TIER_TOP = 0.01  # その月に貢献ランキングに出た全員の上から 1% まで = 大口
 TIER_MID = 0.10  # 上から 10% まで = 中堅 (それより下は少額)
 TIER_MONTHS = 12  # 大口・中堅・少額を出す月数
 STATE_ROOMS = 20  # 状態を出すルームの数 (最近の量の多い順)
+# 見えた回数と壁ぎわ (docs/ギフターの分類.md の「見えない範囲の共通ルール」)。どれも仮の値で、データの分布を見て決め直す
+WALL = 1.2  # そのイベント×ルームの 100 位のポイントの、これ倍までなら「壁ぎわ」(実際はもっと送っていた回があるかもしれない)
+WALL_RATE = 0.5  # 見えた回 (100 人に届いた回) の、これだけ以上が壁ぎわなら「壁ぎわの少額」
+MIN_OBS = 3  # 見えた回 (イベント×ルーム) がこれより少ない人は、型を決めない (未分類)
+PILLAR_SHARE = 0.3  # ルームの上位 100 人の合計のうち、これだけ以上を 1 人で出していれば「ルームの柱」
+PILLAR_ROOMS = 10  # 柱かどうかを出すルームの数 (送った量の多い順)
 CUT_TTL = 86400  # 月ごとの区切りを覚えておく時間 (古い月も集め直しで増えるので、1 日で読み直す)
 
 _cuts: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
@@ -52,10 +59,11 @@ def month_cuts(s: Store, month: str) -> dict[str, Any]:
         if not n:
             return None
         row = s.one("SELECT points FROM user_month WHERE month=? ORDER BY points DESC LIMIT 1 OFFSET ?",
-                    (month, max(0, int(n * frac) - 1)))
+                    (month, max(0, int(n * frac + 1e-9) - 1)))
         return row[0] if row is not None else None
 
-    out = {"month": month, "people": n, "top": at(TIER_TOP), "mid": at(TIER_MID)}
+    out = {"month": month, "people": n, "peak": at(max(TIER_PEAK, 1 / n)) if n else None,
+           "top": at(TIER_TOP), "mid": at(TIER_MID)}
     _cuts[key] = (time.time(), out)
     return out
 
@@ -63,6 +71,8 @@ def month_cuts(s: Store, month: str) -> dict[str, Any]:
 def tier(points: int, cuts: dict[str, Any]) -> str | None:
     if not points or cuts["top"] is None:
         return None
+    if cuts.get("peak") is not None and points >= cuts["peak"]:
+        return "頂点"
     return "大口" if points >= cuts["top"] else "中堅" if points >= (cuts["mid"] or 0) else "少額"
 
 
@@ -122,6 +132,43 @@ def gifter_states(s: Store, uid: int, now: float | None = None) -> dict[str, Any
         m = _add(month, -k)
         pt = totals.get(m, 0)
         cuts = month_cuts(s, m) if pt else {"top": None, "mid": None, "people": None}
-        tiers.append({"month": m, "points": pt, "tier": tier(pt, cuts), "top": cuts["top"], "mid": cuts["mid"],
-                      "people": cuts["people"]})
-    return {"month": month, "rooms": rooms, "switch": switch, "tiers": tiers}
+        tiers.append({"month": m, "points": pt, "tier": tier(pt, cuts), "peak": cuts.get("peak"), "top": cuts["top"],
+                      "mid": cuts["mid"], "people": cuts["people"]})
+    first = _add(month, -(TIER_MONTHS - 1))
+    seen = visibility(s, uid, first, month)
+    return {"month": month, "rooms": rooms, "switch": switch, "tiers": tiers, "visibility": seen["visibility"],
+            "pillars": seen["pillars"]}
+
+
+def visibility(s: Store, uid: int, first: str, last: str) -> dict[str, Any]:
+    """見えた回数・壁ぎわ率と、ルームの柱 (first〜last の月。イベントが終わった月)。
+
+    - 見えた回 = 貢献ランキング (上位 100 人) に出たイベント×ルーム。名前で推測した分は数えない
+    - 壁ぎわ = 100 人に届いたイベント×ルームで、ポイントが 100 位の WALL 倍まで。壁ぎわの多い人は、見えている額が下限
+    - ルームの柱 = そのルームの、期間のイベントの上位 100 人の合計のうち、PILLAR_SHARE 以上を出したか、出た回の半分以上で 1 位
+    """
+    rows = s.all(f"""SELECT c.room_id, c.point, c.rank, re.c_p100 FROM contributions c
+                     JOIN room_events re ON re.room_id=c.room_id AND re.event_id=c.event_id JOIN events e ON e.event_id=c.event_id
+                     WHERE c.user_id=? AND c.guessed IS NULL AND e.end IS NOT NULL AND {MONTH_SQL} BETWEEN ? AND ?""",
+                 (int(uid), first, last))
+    full = [r for r in rows if r["c_p100"]]
+    wall = sum(1 for r in full if (r["point"] or 0) <= WALL * r["c_p100"])
+    rate = wall / len(full) if full else None
+    seen = {"months": [first, last], "obs": len(rows), "full": len(full), "wall": wall, "wall_rate": rate,
+            "unclassified": len(rows) < MIN_OBS, "wall_low": bool(full) and len(full) >= MIN_OBS and rate is not None and rate >= WALL_RATE}
+    per: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        x = per.setdefault(r["room_id"], {"points": 0, "obs": 0, "first": 0})
+        x["points"] += r["point"] or 0
+        x["obs"] += 1
+        x["first"] += 1 if r["rank"] == 1 else 0
+    pillars = []
+    for rid, x in sorted(per.items(), key=lambda kv: -kv[1]["points"])[:PILLAR_ROOMS]:
+        total = s.scalar(f"""SELECT SUM(re.c_sum) FROM room_events re JOIN events e USING(event_id)
+                             WHERE re.room_id=? AND re.c_sum IS NOT NULL AND e.end IS NOT NULL AND {MONTH_SQL} BETWEEN ? AND ?""",
+                         (rid, first, last), default=0)
+        share = x["points"] / total if total else None
+        pillar = (share is not None and share >= PILLAR_SHARE) or (x["first"] >= 2 and x["first"] * 2 >= x["obs"])
+        pillars.append({"room_id": rid, "points": x["points"], "obs": x["obs"], "first": x["first"], "share": share,
+                        "pillar": pillar})
+    return {"visibility": seen, "pillars": pillars}

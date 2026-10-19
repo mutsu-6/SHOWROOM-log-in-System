@@ -42,7 +42,7 @@ def test_room_states_switch_and_tiers(tmp_path):
     assert by[30] == "ルームが休み"  # 6 月まで送っていたが、9 月にルーム 30 はイベントに出ていない (休眠にしない)
     assert st["switch"]["from"] == 10 and st["switch"]["to"] == 20
     sep = st["tiers"][-1]
-    assert sep["month"] == "2026-09" and sep["tier"] == "大口"  # 9 月に貢献ランキングに出た 200 人のうち、いちばん多い
+    assert sep["month"] == "2026-09" and sep["tier"] == "頂点"  # 9 月に貢献ランキングに出た 200 人のうち、いちばん多い (少ない月でも、いちばん上の 1 人は頂点)
     assert sep["people"] == 200
 
 
@@ -53,3 +53,30 @@ def test_room_state_rules():
     assert ga._room_state(per, "2026-09", True) == "休眠"
     assert ga._room_state(per, "2026-09", False) == "ルームが休み"  # イベントに出ていなければ休眠にしない
     assert ga._room_state({"2026-01": 5, "2026-09": 5}, "2026-09", True) == "復帰"
+
+
+def test_peak_tier_visibility_wall_and_pillar(tmp_path):
+    """頂点 (上位 0.1%、少ない月は 10 人)・見えた回数・壁ぎわ率・ルームの柱。"""
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        # 9 月: 1000 人が出た大きなイベント (ルーム 10・11 は 100 人に届く)。2 は 100 位のすぐ上 (壁ぎわ) を 3 回
+        for k, rid in enumerate((10, 11, 12)):
+            users = {1000 + k * 300 + i: 1000 - i for i in range(200)}
+            users[2] = 805  # 100 位 (= 901) より少ない? → 下の 200 人の中で、100 位の 1.2 倍まで
+            _event(s, 10 + k, "2026-09", {rid: users})
+        # 1 はルーム 50 (小さい) の柱: 3 回とも 1 位で、上位の合計の大半
+        for k in range(3):
+            _event(s, 20 + k, "2026-08", {50: {1: 9000, 7: 500, 8: 300}})
+            s.set_contributions(20 + k, 50, [{"user_id": 1, "point": 9000, "rank": 1}, {"user_id": 7, "point": 500, "rank": 2},
+                                             {"user_id": 8, "point": 300, "rank": 3}], NOW, final=True)
+        st1 = ga.gifter_states(s, 1, NOW)
+        st2 = ga.gifter_states(s, 2, NOW)
+        cuts = ga.month_cuts(s, "2026-09")
+    # 0.1% は 1 人未満なので、いちばん上の 1 人。2 はどのルームでも 100 位のすぐ上だが、3 ルームの合計ではいちばん多い
+    assert cuts["people"] >= 600 and cuts["peak"] == 805 * 3
+    assert ga.tier(805 * 3, cuts) == "頂点" and ga.tier(1000, cuts) == "大口" and st2["tiers"][-1]["tier"] == "頂点"
+    v2 = st2["visibility"]
+    assert v2["obs"] == 3 and v2["full"] == 3 and v2["wall"] == 3 and v2["wall_low"] and not v2["unclassified"]
+    p1 = {p["room_id"]: p for p in st1["pillars"]}
+    assert p1[50]["pillar"] and p1[50]["first"] == 3 and p1[50]["share"] > 0.9
+    assert st1["visibility"]["full"] == 0 and st1["visibility"]["wall_rate"] is None
