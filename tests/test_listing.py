@@ -16,6 +16,7 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(listing, "_search_cache", {})
     monkeypatch.setattr(listing, "_user_cache", {})
     monkeypatch.setattr(listing, "_name_misses", {})
+    monkeypatch.setattr(listing, "LISTENERS_TTL", 0)  # 一覧を使い回さない (テストの中で記録を足して、すぐ確かめるため)
     monkeypatch.setattr(listing, "gift_catalog", lambda state_dir, rooms=None: {
         1: {"gift_name": "星", "point": 1, "free": True}, 100: {"gift_name": "花火", "point": 100, "free": False}})
     now = time.time()

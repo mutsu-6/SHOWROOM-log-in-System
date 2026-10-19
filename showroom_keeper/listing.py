@@ -628,9 +628,10 @@ def _sender_rooms(state_dir: Path, user: int | None = None, since: float | None 
                                     WHERE room_key IN (SELECT room_key FROM sender_done) GROUP BY user_id""").fetchall()
             top = cur.execute(f"""SELECT user_id, room_key, points FROM (
                                      SELECT user_id, room_key, points, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY points DESC) AS n
-                                     FROM gift_senders WHERE room_key IN (SELECT room_key FROM sender_done)) WHERE n <= {TOP_ROOMS}""").fetchall()
+                                     FROM gift_senders WHERE room_key IN (SELECT room_key FROM sender_done)) WHERE n <= {TOP_ROOMS}
+                                  ORDER BY user_id, n""").fetchall()
             rows = [totals, top]
-            names = cur.execute("SELECT user_id, name, at FROM gift_sender_names").fetchall()
+            names = cur.execute("SELECT user_id, name, at FROM gift_sender_names ORDER BY user_id, at DESC").fetchall()
             picked = set()
     return sorted((picked & set(files)) | (set(files) - done)), rows, names
 
@@ -682,7 +683,43 @@ def _size(path: Path) -> int | None:
         return None
 
 
+LISTENERS_TTL = 60  # ギフターの一覧 (記録したギフト) を使い回す秒数 (何人もが続けて開いた時に、数え直さない)
+_listeners_cache: dict[tuple[str, Any, Any], tuple[float, dict[str, Any]]] = {}
+
+
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
+    """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。LISTENERS_TTL 秒は前の結果を使い回す。"""
+    key = (str(state_dir), days or None, room or None)
+    hit = _listeners_cache.get(key)
+    if hit and time.time() - hit[0] < LISTENERS_TTL:
+        return hit[1]
+    out = _list_listeners(state_dir, days, room)
+    if len(_listeners_cache) > 20:
+        _listeners_cache.clear()
+    _listeners_cache[key] = (time.time(), out)
+    return out
+
+
+def _from_table(rows: list[Any], sender_names: list[Any], names: dict[str, Any], catalog: dict[int, Any]) -> dict[str, Any]:
+    """すべての期間の一覧を、送り主の表の行 (人ごとの合計・多いルーム・名前。どれも人の順に並んだもの) から、そのまま組み立てる
+    (人ごとに途中の形を作ってから並べ直すと、何万人もいる時に遅い。サーバーで 7.5 秒。2026-10-19)。"""
+    totals, top = rows
+    out: dict[Any, dict[str, Any]] = {}
+    for uid, times, pt, free, first, last, name, n in totals:
+        pt, free = pt or 0, free or 0
+        out[uid] = {"user_id": uid, "name": name, "points": pt, "paid_points": pt - free, "free_points": free, "count": None,
+                    "times": times or 0, "first_at": first, "last_at": last, "names": [], "room_count": n, "rooms": []}
+    for uid, key, pt in top:  # ポイントの多い順
+        out[uid]["rooms"].append({"key": key, "name": (names.get(key) or {}).get("name") or key, "points": pt or 0})
+    for uid, name, _ in sender_names:  # 新しい順
+        u = out.get(uid)
+        if u is not None:
+            u["names"].append(name)
+    listeners = sorted(out.values(), key=lambda u: (u["points"], u["times"]), reverse=True)
+    return {"listeners": listeners, "total": len(listeners), "catalog": bool(catalog)}
+
+
+def _list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
     """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。
 
     全ルーム・すべての期間なら送り主の表 (gift_senders) から、期間を決めたらギフト 1 件ずつの表 (gift_events) から SQL でまとめる。
@@ -702,8 +739,13 @@ def list_listeners(state_dir: Path, days: float | None = None, room: str | None 
         keys, rows, sender_names = _sender_rooms(state_dir, since=since, table=True)
         files = _record_files(state_dir)
         records = [kg for key in keys for kg in _records(state_dir, key, since, files)]
-    catalog = gift_catalog(state_dir, list(dict.fromkeys([key for key, _ in records] + [r[1] for r in (rows[1] if rows else [])])))
+    # ギフトの一覧は、ファイルから読んだギフトがある時だけ取る (表から出した分はポイントが入っているので要らない。
+    # 取ると、古いルームの一覧を SHOWROOM に問い合わせて 2 秒ほど待つことがあった)。一覧があるかどうかは、残してある一覧で見る
+    catalog = (gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in records))) if records
+               else (_read_catalog(state_dir) or ({}, {}))[0])
     names = room_names(state_dir)
+    if rows and not records:
+        return _from_table(rows, sender_names, names, catalog)
     users: dict[Any, dict[str, Any]] = {}
     totals, top = rows or ([], [])
     for uid, times, pt, free, first, last, name, n in totals:  # 表から (人ごとの合計)
