@@ -130,3 +130,32 @@ def test_life_ladder_veteran_and_meteor(tmp_path):
     assert life[7]["meteor"]["type"] is None  # まだ 3 か月たっていない
     assert life[8]["meteor"]["type"] is False  # アクティブファンには残っている (100 位より下で続けているかもしれない)
     assert ga.stage_of(1) == "初見" and ga.stage_of(3) == "定着しかけ" and ga.stage_of(7) == "定着"
+
+
+def test_engage_event_dependency_contest_watch_and_cooling(tmp_path):
+    """イベント依存度 (イベント型・普段型)・段階ごとの大会での勝負型・見守り型・冷めかけ。"""
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        _event(s, 1, "2026-08", {10: {1: 1900, 2: 400}})
+        t1, t2 = _end("2026-07"), _end("2026-09")
+        for uid, a, b in ((1, 1000, 3000), (2, 1000, 3000)):
+            s.conn.execute("INSERT INTO cumulative_history(room_id, user_id, at, point, visits) VALUES (10, ?, ?, ?, 5)", (uid, t1, a))
+            s.conn.execute("INSERT INTO cumulative_history(room_id, user_id, at, point, visits) VALUES (10, ?, ?, ?, 9)", (uid, t2, b))
+        # 段階ごとの大会: 1 は 4 倍に伸ばした (ほかの人はほぼ同じ)
+        _event(s, 201, "2026-06", {20: {1: 100, 3: 100, 4: 100, 5: 100}})
+        _event(s, 202, "2026-07", {20: {1: 400, 3: 110, 4: 100, 5: 120}})
+        for eid, no in ((201, 1), (202, 2)):
+            s.conn.execute("INSERT INTO event_series(event_id, series_id, stage_no, how, at) VALUES (?, 201, ?, 'auto', 0)", (eid, no))
+        # 6 はルーム 30 を見守っている (ファン Lv12 が 2 か月、ポイントは無い)
+        for ym in ("202608", "202609"):
+            s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (30, ?, 6, 12)", (ym,))
+        # 7 はルーム 40 に来続けているが、送る量が減った
+        for m, pt in (("2026-04", 1000), ("2026-05", 1000), ("2026-06", 1000), ("2026-08", 500)):
+            _event(s, 300 + int(m[-2:]), m, {40: {7: pt}})
+        for ym in ("202604", "202605", "202606", "202607", "202608", "202609"):
+            s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (40, ?, 7, 20)", (ym,))
+        e = {u: ga.gifter_states(s, u, NOW)["engage"] for u in (1, 2, 3, 6, 7)}
+    assert e[1]["dependency"]["type"] == "イベント型" and e[2]["dependency"]["type"] == "普段型"
+    assert e[1]["contest"] is True and e[3]["contest"] is False and e[1]["contests"][0]["growth"] == 4
+    assert e[6]["rooms"][0]["watch"] and e[6]["dependency"]["ratio"] is None
+    assert e[7]["rooms"][0]["cool"] and not e[7]["rooms"][0]["watch"]

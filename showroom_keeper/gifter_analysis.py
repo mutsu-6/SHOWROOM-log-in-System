@@ -45,6 +45,17 @@ VETERAN_MONTHS = 12  # 古参は、最初に見えてからこの月数以上
 LIFE_ROOMS = 10  # 段階を出すルームの数 (直近 12 か月に送った量の多い順)
 METEOR_SHARE = 0.7  # 初めて見えた月に、それまでの合計のこれだけ以上を出し
 METEOR_GAP = 3  # そのあとこの月数、どこの貢献ランキングにもアクティブファンにも出ていなければ「流星型」
+# イベントとの付き合い方・見守り・冷めかけ (docs/ギフターの分類.md の軸 2 の勝負型、軸 3 のイベント型、軸 6 の見守り型、軸 5 の冷めかけ)
+EVENT_TYPE = 0.9  # イベント依存度 (イベントで送った分 ÷ 累計ランキングの増え分) がこれ以上なら「イベント型」
+EVERYDAY_TYPE = 0.5  # これ未満なら「普段型」(その間は「両方」)
+CONTEST_GROWTH = 1.5  # 段階ごとの大会で、最後の段階 ÷ 最初の段階 がこれ以上、かつ大会の中で上から 4 分の 1 なら「勝負型」
+CONTEST_SERIES = 3  # 勝負型を見る大会の数 (新しい順)
+WATCH_LEVEL = 10  # 見守り型: アクティブファンのこのレベル以上で
+WATCH_MONTHS = 2  # 直近 12 か月にこの月数以上いるのに、そのルームの貢献ランキングにも累計ランキングにも出ていない
+COOL_LEVEL = 0.7  # 冷めかけ: 直近 3 か月のファンレベルが前の 3 か月のこれだけ以上 (来ている) なのに
+COOL_POINTS = 0.5  # 直近 3 か月のポイントが前の 3 か月のこれだけ以下
+ENGAGE_ROOMS = 10  # 見守り・冷めかけを出すルームの数
+PER_VISIT_MIN = 8  # 1 来場あたりの少なさは、そのルームの累計ランキングにこれだけの人がいる時だけくらべる
 CUT_TTL = 86400  # 月ごとの区切りを覚えておく時間 (古い月も集め直しで増えるので、1 日で読み直す)
 
 _cuts: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
@@ -153,7 +164,7 @@ def gifter_states(s: Store, uid: int, now: float | None = None) -> dict[str, Any
     seen = visibility(s, uid, first, month)
     return {"month": month, "rooms": rooms, "switch": switch, "tiers": tiers, "visibility": seen["visibility"],
             "pillars": seen["pillars"], "focus": focus(s, uid, per, month, seen["visibility"]),
-            "life": life(s, uid, per, month)}
+            "life": life(s, uid, per, month), "engage": engage(s, uid, per, month)}
 
 
 def _months_between(a: str, b: str) -> int:
@@ -307,3 +318,93 @@ def visibility(s: Store, uid: int, first: str, last: str) -> dict[str, Any]:
         pillars.append({"room_id": rid, "points": x["points"], "obs": x["obs"], "first": x["first"], "share": share,
                         "pillar": pillar})
     return {"visibility": seen, "pillars": pillars}
+
+
+def _ym(m: str) -> str:
+    return m.replace("-", "")
+
+
+def engage(s: Store, uid: int, per: dict[int, dict[str, int]], month: str) -> dict[str, Any]:
+    """イベントとの付き合い方 (イベント型・普段型)、段階ごとの大会での勝負型、ルームごとの見守り型・冷めかけ。
+
+    - イベント依存度 = 累計ランキングの 2 回の値のあいだに終わったイベントで送った pt ÷ そのあいだの累計の増え分 (1 を超えたら 1)。
+      累計ランキングは上位 30 人にいる時しか値が無く、月 1 回ほどなので、取れない人は「分からない」(0 にしない)
+    - 勝負型 = 段階ごとの大会で、最後に出た段階の pt ÷ 最初に出た段階の pt が CONTEST_GROWTH 以上、かつその大会の中で上から 4 分の 1
+    - 見守り型 = アクティブファン (Lv WATCH_LEVEL 以上) に WATCH_MONTHS か月以上いるのに、そのルームの貢献ランキングにも累計ランキングにも出ていない
+    - 冷めかけ = ファンレベルは前の 3 か月と同じくらいなのに、ポイントが半分以下 (100 位より下に下がっただけのこともある)
+    """
+    uid = int(uid)
+    # --- イベント依存度
+    contrib = s.all("""SELECT c.room_id, e.end, c.point FROM contributions c JOIN events e ON e.event_id=c.event_id
+                       WHERE c.user_id=? AND e.end IS NOT NULL""", (uid,))
+    hist: dict[int, list[tuple[float, int]]] = {}
+    for r in s.all("SELECT room_id, at, point FROM cumulative_history WHERE user_id=? ORDER BY room_id, at", (uid,)):
+        hist.setdefault(r["room_id"], []).append((r["at"], r["point"] or 0))
+    dep_rooms, ev_all, grow_all = [], 0, 0
+    for rid, snaps in hist.items():
+        ev = grow = 0
+        for (a_at, a_pt), (b_at, b_pt) in zip(snaps, snaps[1:]):
+            if b_pt > a_pt:
+                grow += b_pt - a_pt
+                ev += sum(c["point"] or 0 for c in contrib if c["room_id"] == rid and a_at < c["end"] <= b_at)
+        if grow:
+            dep_rooms.append({"room_id": rid, "ratio": min(1.0, ev / grow), "event": ev, "growth": grow})
+            ev_all += ev
+            grow_all += grow
+    ratio = min(1.0, ev_all / grow_all) if grow_all else None
+    dependency = {"ratio": ratio, "rooms": sorted(dep_rooms, key=lambda x: -x["growth"])[:ENGAGE_ROOMS],
+                  "type": None if ratio is None else "イベント型" if ratio >= EVENT_TYPE else "普段型" if ratio < EVERYDAY_TYPE else "両方"}
+    # --- 段階ごとの大会での勝負型
+    contests = []
+    sids = s.all("""SELECT es.series_id, MAX(e.end) AS last FROM contributions c JOIN event_series es ON es.event_id=c.event_id
+                    JOIN events e ON e.event_id=c.event_id WHERE c.user_id=? AND es.series_id IS NOT NULL
+                    GROUP BY es.series_id ORDER BY last DESC LIMIT ?""", (uid, CONTEST_SERIES))
+    for row in sids:
+        stage_pts: dict[int, dict[int, int]] = {}  # user -> {段階: pt}
+        for ev in s.all("SELECT event_id, stage_no FROM event_series WHERE series_id=? AND series_id IS NOT NULL", (row["series_id"],)):
+            for c in s.all("SELECT user_id, point FROM contributions WHERE event_id=?", (ev["event_id"],)):
+                d = stage_pts.setdefault(c["user_id"], {})
+                d[ev["stage_no"] or 1] = d.get(ev["stage_no"] or 1, 0) + (c["point"] or 0)
+        growth = {u: d[max(d)] / d[min(d)] for u, d in stage_pts.items() if len(d) >= 2 and d[min(d)] > 0}
+        mine = growth.get(uid)
+        order = sorted(growth.values(), reverse=True)
+        cut = order[max(0, int(len(order) * 0.25 + 1e-9) - 1)] if order else None
+        name = s.one("SELECT name FROM events WHERE event_id=?", (row["series_id"],))
+        contests.append({"series_id": row["series_id"], "name": name["name"] if name else None,
+                         "stages": len(stage_pts.get(uid, {})), "growth": mine, "cut": cut, "people": len(growth),
+                         "contest": None if mine is None else bool(mine >= CONTEST_GROWTH and cut is not None and mine >= cut)})
+    judged = [c for c in contests if c["contest"] is not None]
+    contest = None if not judged else any(c["contest"] for c in judged)
+    # --- ルームごとの見守り型・冷めかけ
+    first = _add(month, -(TIER_MONTHS - 1))
+    fans: dict[int, dict[str, int]] = {}
+    for r in s.all("SELECT room_id, ym, level FROM active_fans WHERE user_id=? AND ym BETWEEN ? AND ?", (uid, _ym(first), _ym(month))):
+        fans.setdefault(r["room_id"], {})[r["ym"]] = r["level"] or 0
+    recent3 = [_ym(_add(month, -k)) for k in range(3)]
+    prior3 = [_ym(_add(month, -k)) for k in range(3, 6)]
+    pts_of = lambda rid, ms: sum(per.get(rid, {}).get(f"{m[:4]}-{m[4:]}", 0) for m in ms)  # noqa: E731
+    cand = sorted(fans, key=lambda rid: -max(fans[rid].values()))[:ENGAGE_ROOMS]
+    rooms = []
+    for rid in cand:
+        lv = fans[rid]
+        months_in = sum(1 for v in lv.values() if v >= WATCH_LEVEL)
+        window_pts = sum(pt for m, pt in per.get(rid, {}).items() if first <= m <= month)
+        cum = s.one("SELECT point, visits FROM cumulative WHERE room_id=? AND user_id=?", (rid, uid))
+        watch = months_in >= WATCH_MONTHS and not window_pts and cum is None
+        lv_recent = [lv[m] for m in recent3 if m in lv]
+        lv_prior = [lv[m] for m in prior3 if m in lv]
+        p_recent, p_prior = pts_of(rid, recent3), pts_of(rid, prior3)
+        cool = bool(lv_recent and lv_prior and p_prior > 0
+                    and sum(lv_recent) / len(lv_recent) >= COOL_LEVEL * sum(lv_prior) / len(lv_prior)
+                    and p_recent <= COOL_POINTS * p_prior)
+        per_visit = low = None
+        if cum is not None and cum["visits"]:
+            per_visit = (cum["point"] or 0) / cum["visits"]
+            others = sorted((r["point"] or 0) / r["visits"] for r in s.all("SELECT point, visits FROM cumulative WHERE room_id=?", (rid,))
+                            if r["visits"])
+            q1 = others[max(0, int(len(others) * 0.25 + 1e-9) - 1)] if len(others) >= PER_VISIT_MIN else None
+            low = q1 is not None and per_visit <= q1
+        rooms.append({"room_id": rid, "fan_months": len(lv), "level_max": max(lv.values()), "level_months": months_in,
+                      "points": window_pts, "recent": p_recent, "prior": p_prior, "watch": watch, "cool": cool,
+                      "per_visit": per_visit, "per_visit_low": low})
+    return {"dependency": dependency, "contests": contests, "contest": contest, "rooms": rooms}

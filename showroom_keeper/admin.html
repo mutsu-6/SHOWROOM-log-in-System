@@ -1712,6 +1712,36 @@ function gifterStates(st) {
       { label: "直近 12 か月の pt", num: true, value: (r) => r.points, html: (r) => num(r.points) },
     ], lf.rooms, { sort: 2, limit: 10, csvName: "ギフター_段階と寿命", note: `${STAGE_NOTE}。見えた月は上位 100 人に入った月なので、小さく送る人は段が低く出ます。線はどれも仮の値です` }) : "");
   }
+  const en = st.engage;
+  if (en) {
+    const dp = en.dependency;
+    const depNote = { "イベント型": "送った量のほとんど (9 割以上) がイベントの中", "普段型": "イベントの外でも多く送る (イベントは半分未満)", "両方": "イベントの中と外の両方で送る" };
+    h += `<h3>イベントとの付き合い方 <small class="muted">累計ランキングの増え分と、段階ごとの大会から</small></h3>
+      <div class="tiles">
+        ${tile("イベント依存度", dp.ratio == null ? "—" : pctText(dp.ratio), dp.ratio == null ? "累計ランキング (上位 30 人) に 2 回以上出ていないので分かりません"
+          : `<b>${esc(dp.type)}</b>: ${depNote[dp.type]}`)}
+        ${tile("勝負型", en.contest == null ? "—" : en.contest ? "<b>勝負型</b>" : "ちがう", en.contest == null ? "段階ごとの大会で、2 つ以上の段階に出ていないので決めません"
+          : "大会の最後に出た段階の pt ÷ 最初の段階の pt が 1.5 倍以上で、その大会の中で上から 4 分の 1", en.contest ? "warn" : "")}
+      </div>
+      <div class="hint" style="margin-top:0">イベント依存度 = 累計ランキングの 2 回の値のあいだに終わったイベントで送った pt ÷ そのあいだの累計の増え分。累計ランキングは上位 30 人だけ・月 1 回ほどなので、出ていない人は分かりません</div>`
+      + (en.contests.length ? dataTable("gp-contests", [
+        { label: "大会", value: (c) => c.name || "", html: (c) => `<a href="#series/${esc(c.series_id)}">${esc(c.name || `大会 ${c.series_id}`)}</a>`, cls: "name" },
+        { label: "出た段階", num: true, value: (c) => c.stages, html: (c) => num(c.stages) },
+        { label: "伸び", num: true, value: (c) => c.growth, html: (c) => c.growth == null ? '<span class="uid">1 段階だけ</span>' : `<b>${c.growth.toFixed(1)} 倍</b>${c.contest ? ' <span class="tag warn">勝負型</span>' : ""}` },
+        { label: "大会の上から 4 分の 1", num: true, value: (c) => c.cut, html: (c) => c.cut == null ? "-" : `${c.cut.toFixed(1)} 倍 <span class="uid">(${num(c.people)} 人)</span>` },
+      ], en.contests, { sort: 2, limit: 5, csvName: "ギフター_大会" }) : "");
+    const er = en.rooms.filter((r) => r.watch || r.cool || r.per_visit != null || r.level_months);
+    if (er.length) {
+      h += `<h3>見守り・冷めかけ <small class="muted">アクティブファン (直近 12 か月) に出たルーム</small></h3>` + dataTable("gp-engage", [
+        { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.watch ? ' <span class="tag" title="アクティブファン (Lv10 以上) に 2 か月以上いるのに、貢献ランキングにも累計ランキングにも出ていない">見守り</span>' : ""}${r.cool ? ' <span class="tag warn" title="ファンレベルは前の 3 か月と同じくらいなのに、ポイントが半分以下">冷めかけ</span>' : ""}`, cls: "name" },
+        { label: "ファンだった月", num: true, value: (r) => r.fan_months, html: (r) => `${num(r.fan_months)} <span class="uid">(Lv10 以上 ${num(r.level_months)})</span>` },
+        { label: "最高 Lv", num: true, value: (r) => r.level_max, html: (r) => num(r.level_max) },
+        { label: "直近 3 か月 / その前の pt", num: true, value: (r) => r.recent, html: (r) => `${num(r.recent)} <span class="uid">/ ${num(r.prior)}</span>` },
+        { label: "1 来場あたり", num: true, value: (r) => r.per_visit, html: (r) => r.per_visit == null ? "-" : `${num(Math.round(r.per_visit))} pt${r.per_visit_low ? ' <span class="uid">(少なめ)</span>' : ""}` },
+      ], er, { sort: 1, limit: 10, csvName: "ギフター_見守り",
+        note: "ファンレベルは有料ギフトで一気に上がるので、レベルだけでは長く見ている人か短く課金した人か分かりません。貢献ランキングに出ないのは、100 位より下で送っているだけのこともあります。1 来場あたり = 累計ランキングの pt ÷ 来場回数 (そのルームの累計の上位 30 人の中で下から 4 分の 1 なら少なめ)。線はどれも仮の値です" });
+    }
+  }
   const pl = (st.pillars || []).filter((p) => p.share != null || p.first);
   if (pl.length) {
     h += `<h3>ルームの中での重み <small class="muted">${v ? `${ym(v.months[0])}〜${ym(v.months[1])}` : ""}。そのルームの上位 100 人の合計のうち、この人が出した割合</small></h3>` + dataTable("gp-pillars", [
