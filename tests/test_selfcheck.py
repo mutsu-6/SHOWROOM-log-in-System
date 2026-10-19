@@ -318,3 +318,19 @@ def test_heavy_runs_are_kept(monkeypatch):
     with memory.heavy():
         pass
     assert len(memory.runs) == 1 and memory.runs[0]["seconds"] >= 0
+
+
+def test_long_step_during_showroom_pause_is_not_a_bug(checker, slow, monkeypatch):
+    from showroom_keeper import research
+
+    monkeypatch.setattr(checker, "_cpu_share", lambda now: (None, None))
+    monkeypatch.setattr(sweep, "state", lambda: {"busy_seconds": 3 * 3600, "doing": "貢献ランキング"})
+    th = research.Throttle(0.5)
+    monkeypatch.setattr(research, "THROTTLE", th)
+    found = []
+    checker._heavy_work(time.time(), found)
+    assert any("3 時間" in f["title"] or "180 分" in f["title"] for f in found)
+    th.paused_until = th._clock() + 3600  # 止められて休んでいる
+    found = []
+    checker._heavy_work(time.time(), found)
+    assert found == []

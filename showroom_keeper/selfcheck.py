@@ -543,8 +543,11 @@ class Checker:
                     or (e["kind"] == "heavy" and e["max"] >= SLOW_HEAVY):
                 found.append({"level": "warn", "title": f"{label}が遅くなっています: {e['name'][:60]}",
                               "detail": f"1 時間に {e['count']} 回・最大 {e['max']:.0f} 秒・平均 {e['avg']:.0f} 秒"})
+        from . import research
+
         busy = (sweep.state() or {}).get("busy_seconds") or 0
-        if busy > SLOW_STEP:
+        # SHOWROOM に止められて休んでいる間は、仕事が長く続くのは当たり前 (休みを縮めたり、動かし直したりはしない)
+        if busy > SLOW_STEP and not research.THROTTLE.state()["paused"]:
             found.append({"level": "warn", "title": f"全ルームの収集の仕事が {busy // 60:.0f} 分続いています",
                           "detail": f"「{sweep.state().get('doing') or ''}」。どこで止まっているかはログにあります"})
         iowait, cpu = self._cpu_share(now)
