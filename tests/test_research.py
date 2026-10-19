@@ -1157,6 +1157,21 @@ def test_old_analysis_is_returned_at_once_and_counted_again_behind(collected, mo
     assert research.analyze(collected, [])["candidate_count"] == 3 and research._analysis  # ファイルから読んだ
 
 
+def test_counting_again_behind_also_prepares_the_last_opened_room(collected, monkeypatch):
+    """裏で数え直したら、いちばん後に開いた見るルームの集計も続けて作っておく (次に開いた人が待たない)。"""
+    collected = collected[0]
+    research.analyze(collected, ["support"])
+    research.forget_analysis()
+    research.analyze(collected, ["support"])  # 前の結果をすぐ返し、裏で数え直す
+    for t in [t for t in threading.enumerate() if t.name == "analysis"]:
+        t.join(30)
+    made = []
+    real = research._analyze_view
+    monkeypatch.setattr(research, "_analyze_view", lambda *a: made.append(a) or real(*a))
+    again = research.analyze(collected, ["support"])
+    assert not made and "stale" not in again and again["base_at"] == research._get_base(collected)[1]["at"]
+
+
 def test_old_analysis_waits_while_memory_is_tight(collected, monkeypatch):
     """メモリの空きが少ない時 (視聴のブラウザと重なった時) は、古くなった分析を裏で数え直さず、前の結果を出し続ける。"""
     from showroom_keeper import memory
@@ -1183,14 +1198,14 @@ def test_pair_scan_merges_recorded_gifts_in_one_pass(tmp_path, chunk):
     with Store(tmp_path) as s:
         s.conn.executemany("INSERT INTO user_room(user_id, room_id, cumulative, events) VALUES (?, ?, ?, ?)",
                            [(2, 10, 50, 0), (2, 11, 0, 30), (4, 10, 0, 0), (6, 11, 5, 0), (8, 10, 1, 0), (8, 11, 1, 0), (8, 13, 1, 0)])
-        s.conn.execute("CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)")
+        s.conn.execute("CREATE TEMP TABLE u (user_id INTEGER PRIMARY KEY, total INTEGER, n INTEGER)")
         # 1: 記録だけの人 (user_room より前)、2: 記録の方が大きい、5: 記録だけの人 (間)、7: 記録だけの人 (間)、9: 記録だけの人 (後)
-        scan = research._PairScan(s, {1: {10: 7}, 2: {11: 40}, 5: {12: 3}, 7: {10: 50, 11: 1}, 9: {12: 2}}, {10}, chunk=chunk)
+        scan = research._PairScan(s, {1: {10: 7}, 2: {11: 40}, 5: {12: 3}, 7: {10: 50, 11: 1}, 9: {12: 2}}, chunk=chunk)
         u = {r[0]: tuple(r[1:]) for r in s.all("SELECT * FROM u")}
-    assert u == {1: (7, 7, 1), 2: (90, 50, 2), 5: (3, 0, 1), 6: (5, 0, 1), 7: (51, 50, 2), 8: (3, 1, 3), 9: (2, 0, 1)}
+    assert u == {1: (7, 1), 2: (90, 2), 5: (3, 1), 6: (5, 1), 7: (51, 2), 8: (3, 3), 9: (2, 1)}
     assert scan.room(10) == [4, 108, 3, 2, 50]  # 50 pt は 2 と 7 が同じ。先 (ID の小さい 2) を取る
     assert scan.room(11) == [4, 47, 3, 2, 40]
-    assert dict(scan.fan_rooms) == {11: 3, 13: 1}
+    assert scan.room(13) == [1, 1, 1, 8, 1] and scan.room(12) == [2, 5, 0, 5, 3]
     assert list(scan.user_ends) == [2, 4, 7] and sorted(scan.user_rooms) == [10, 10, 10, 11, 11, 11, 13]
 
 

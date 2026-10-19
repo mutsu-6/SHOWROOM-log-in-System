@@ -832,6 +832,7 @@ _analysis: dict[Any, tuple[float, dict[str, Any]]] = {}  # 見るルームごと
 _bases: dict[str, list[Any]] = {}  # 土台 (見るルームに関係ない、全ルーム分の重い集計): state_dir → [確かめた時刻, 土台]
 _analysis_lock = threading.Lock()  # 土台を同時に何本も数えない
 _view_lock = threading.Lock()  # 見るルームごとの集計も 1 本ずつ
+_last_view: dict[str, tuple[list[str], int, Any]] = {}  # いちばん後に開いた見るルーム: state_dir → (見るルーム, 人数, 結果の鍵)
 _analysis_running: set[Any] = set()
 _analysis_guard = threading.Lock()
 SIGNUP_BASE_LIMIT = SIGNUP_YEAR_LIMIT + 400  # 土台に残す、登録した年ごとの上位の人数 (見るルームのギフターを除いても足りるように)
@@ -931,6 +932,7 @@ def analyze(state_dir: Path, support: list[str], limit: int = 300, max_age: floa
 
 def _view(state_dir: Path, base: dict[str, Any], support: list[str], limit: int, key: Any) -> dict[str, Any]:
     """土台に見るルームを当てはめた結果 (同じ土台から作ったものがあれば、それを使う)。"""
+    _last_view[str(Path(state_dir).resolve())] = (list(support), limit, key)
     hit = _analysis.get(key)
     if hit is None:
         hit = _load_analysis(state_dir, key)
@@ -956,7 +958,12 @@ def _view(state_dir: Path, base: dict[str, Any], support: list[str], limit: int,
 
 def _refresh_analysis(state_dir: Path, limit: int) -> None:
     try:
-        _run_base(state_dir, limit, ANALYSIS_TTL)
+        base = _run_base(state_dir, limit, ANALYSIS_TTL)
+        # いちばん後に開いた見るルームの集計も、続けて作っておく (数え直したあと、最初に開いた人が
+        # 見るルームの集計を待たないように。サーバーで 33 秒。2026-10-20 に Cursor が測った)
+        last = _last_view.get(str(Path(state_dir).resolve()))
+        if last is not None and not memory.tight():
+            _view(state_dir, base, last[0], last[1], last[2])
     except Exception as e:  # noqa: BLE001 - 数え直せなくても、前の結果を使い続ける
         log.warning("分析を数え直せませんでした: %s", e)
     finally:
@@ -992,29 +999,29 @@ SCAN_CHUNK = 50000  # 土台で user_room を一度に読む行数 (読むたび
 
 class _PairScan:
     """ギフター × ルームの送ったポイント (累計ランキング・貢献ランキング・記録したギフトの大きい方) を 1 回だけ読んで、
-    人ごとのまとめ (表 u)・ルームごとのまとめ (room_rows)・応援ルームのギフターが送るルーム (fan_rooms)・
-    ルーム同士の重なりに使う人ごとのルームの並び (user_rooms・user_ends) を一度に作る。
+    人ごとのまとめ (表 u)・ルームごとのまとめ (room_rows)・ルーム同士の重なりに使う人ごとのルームの並び (user_rooms・user_ends)
+    を一度に作る。
 
     user_room は人の順に読めるので、人ごとに読み終えた所でまとめる (並べ替えも、写しの一時表も要らない)。
     - SCAN_CHUNK 行ずつ、それぞれを 1 つのトランザクションで読み、u に書く。前は u に 1 行書くたびに 1 回ずつ書き終えていて
-      (自動コミット)、100 万人なら 100 万回ファイルに書いていた (手元で 12 倍遅い。サーバーは書くのが遅く、Python で数える所が 160 秒。
-      2026-10-20 に Cursor が測った)。読み込みも区切るので、そのあいだ止まっていた書き込み待ち (WAL) を本体に移せる
+      (自動コミット)、100 万人なら 100 万回ファイルに書いていた。読み込みも区切るので、そのあいだ止まっていた書き込み待ち (WAL) を本体に移せる
     - ルームごとのまとめは、ルームの番号 → 並びの位置にして、数の並び (array) で持つ (ルームごとに list を作らない。メモリを小さく)
+    - 記録したギフトのない人 (ほとんど) は、行を読んだその場でルームに足す (人ごとに dict を作り直さない。サーバーで、
+      1 人ずつまとめる所が 24 秒・読んだ行を回す所が 8.5 秒かかっていた。2026-10-20 に Cursor が測った)。
+      複数のルームに送る人の数 (multi) は、ギフターの数から 1 つのルームにだけ送る人の数を引いて出す
     """
 
-    def __init__(self, s: Store, recorded: dict[int, dict[int, int]], sup: set[int], chunk: int = SCAN_CHUNK):
+    def __init__(self, s: Store, recorded: dict[int, dict[int, int]], chunk: int = SCAN_CHUNK):
         self.at: dict[int, int] = {}  # ルーム → 並びの位置
         self.ids = array("q")  # 位置 → ルーム
         self.gifters = array("q")
         self.points = array("q")
-        self.multi = array("q")
+        self.singles = array("q")  # 1 つのルームにだけ送る人の数
         self.top_user = array("q")
         self.top_points = array("q")
-        self.fan_rooms: dict[int, int] = defaultdict(int)  # 応援ルームのギフターが送っている、応援ルームでないルーム → 人数
         self.user_rooms = array("q")  # 2〜PAIR_USER_ROOMS ルームに送っている人の、ルームの番号を人ごとに続けて並べたもの
         self.user_ends = array("q")  # 人ごとの終わりの位置
-        self.sup = sup
-        self.batch: list[tuple[int, int, int, int]] = []
+        self.batch: list[tuple[int, int, int]] = []
         self.s = s
         rec_users = sorted(recorded)
         k = 0
@@ -1022,6 +1029,8 @@ class _PairScan:
         c = s.conn
         read = c.cursor()
         read.row_factory = None  # ただの tuple で受け取る (速く、並べた位置で探せる)
+        at, ids, gifters, points, top_user, top_points = self.at, self.ids, self.gifters, self.points, self.top_user, self.top_points
+        user_rooms = self.user_rooms
         while True:
             c.execute("BEGIN")
             try:
@@ -1037,23 +1046,55 @@ class _PairScan:
                     start = rows[-1][0]  # いちばん後の人は続きがあるかもしれないので、次に読み直す
                     rows = rows[:bisect_left(rows, (start,))]
                     limit = chunk
-                cur, mine = None, {}
+                cur = None
+                mine: dict[int, int] | None = None  # 記録したギフトのある人だけ、まとめてから足す
+                n = total = first = 0
                 for uid, rid, pt in rows:
                     if uid != cur:
                         if cur is not None:
-                            self._user(cur, mine, recorded.get(cur))
+                            if mine is None:
+                                self._end(cur, n, total, first)
+                            else:
+                                self._user(cur, mine)
                         while k < len(rec_users) and rec_users[k] < uid:  # 記録したギフトにだけ出てくる人
-                            self._user(rec_users[k], {}, recorded[rec_users[k]])
+                            self._user(rec_users[k], dict(recorded[rec_users[k]]))
                             k += 1
+                        cur, n, total, first = uid, 0, 0, len(user_rooms)
                         if k < len(rec_users) and rec_users[k] == uid:
                             k += 1
-                        cur, mine = uid, {}
-                    mine[rid] = pt
+                            mine = dict(recorded[uid])
+                        else:
+                            mine = None
+                    if mine is not None:
+                        if pt > mine.get(rid, 0):
+                            mine[rid] = pt
+                        continue
+                    n += 1
+                    total += pt
+                    user_rooms.append(rid)
+                    i = at.get(rid)
+                    if i is None:
+                        at[rid] = len(ids)
+                        ids.append(rid)
+                        gifters.append(1)
+                        points.append(pt)
+                        self.singles.append(0)
+                        top_user.append(uid)
+                        top_points.append(pt)
+                    else:
+                        gifters[i] += 1
+                        points[i] += pt
+                        if pt > top_points[i]:  # 同じポイントなら先 (ユーザー ID の小さい人)
+                            top_user[i] = uid
+                            top_points[i] = pt
                 if cur is not None:
-                    self._user(cur, mine, recorded.get(cur))
+                    if mine is None:
+                        self._end(cur, n, total, first)
+                    else:
+                        self._user(cur, mine)
                 if last:
                     for uid in rec_users[k:]:
-                        self._user(uid, {}, recorded[uid])
+                        self._user(uid, dict(recorded[uid]))
                 self._flush()
             except BaseException:
                 c.execute("ROLLBACK")
@@ -1061,49 +1102,49 @@ class _PairScan:
             c.execute("COMMIT")
             if last:
                 break
+        self.multi = array("q", (g - one for g, one in zip(gifters, self.singles)))
+        del self.singles
 
-    def _user(self, uid: int, mine: dict[int, int], recorded: dict[int, int] | None) -> None:
-        if recorded:
-            for rid, pt in recorded.items():
-                if pt > mine.get(rid, 0):
-                    mine[rid] = pt
-        if not mine:
-            return
-        n = len(mine)
-        many = int(n > 1)
-        total = support = 0
-        at, gifters, points, multi, top_user, top_points = self.at, self.gifters, self.points, self.multi, self.top_user, self.top_points
-        for rid, pt in mine.items():
-            total += pt
-            i = at.get(rid)
-            if i is None:
-                at[rid] = len(self.ids)
-                self.ids.append(rid)
-                gifters.append(1)
-                points.append(pt)
-                multi.append(many)
-                top_user.append(uid)
-                top_points.append(pt)
-            else:
-                gifters[i] += 1
-                points[i] += pt
-                multi[i] += many
-                if pt > top_points[i]:  # 同じポイントなら先 (ユーザー ID の小さい人)
-                    top_user[i] = uid
-                    top_points[i] = pt
-            if rid in self.sup:
-                support += pt
-        if support > 0:
-            for rid in mine:
-                if rid not in self.sup:
-                    self.fan_rooms[rid] += 1
-        if 2 <= n <= PAIR_USER_ROOMS:
-            self.user_rooms.extend(mine)
+    def _end(self, uid: int, n: int, total: int, first: int) -> None:
+        """1 人の行を読み終えた (ルームには足してある)。first は、この人のルームを user_rooms に並べ始めた位置。"""
+        if n == 1:
+            self.singles[self.at[self.user_rooms[first]]] += 1
+        if not 2 <= n <= PAIR_USER_ROOMS:
+            del self.user_rooms[first:]
+        else:
             self.user_ends.append(len(self.user_rooms))
-        self.batch.append((uid, total, support, n))
+        self.batch.append((uid, total, n))
+
+    def _user(self, uid: int, mine: dict[int, int]) -> None:
+        """記録したギフトのある人: 記録と user_room の大きい方をまとめた mine (ルーム → pt) を足す。"""
+        first = len(self.user_rooms)
+        n = total = 0
+        for rid, pt in mine.items():
+            if pt <= 0:
+                continue
+            n += 1
+            total += pt
+            self.user_rooms.append(rid)
+            i = self.at.get(rid)
+            if i is None:
+                self.at[rid] = len(self.ids)
+                self.ids.append(rid)
+                self.gifters.append(1)
+                self.points.append(pt)
+                self.singles.append(0)
+                self.top_user.append(uid)
+                self.top_points.append(pt)
+            else:
+                self.gifters[i] += 1
+                self.points[i] += pt
+                if pt > self.top_points[i]:
+                    self.top_user[i] = uid
+                    self.top_points[i] = pt
+        if n:
+            self._end(uid, n, total, first)
 
     def _flush(self) -> None:
-        self.s.conn.executemany("INSERT INTO u VALUES (?, ?, ?, ?)", self.batch)
+        self.s.conn.executemany("INSERT INTO u VALUES (?, ?, ?)", self.batch)
         self.batch = []
 
     def room(self, rid: int) -> list[int] | None:
@@ -1121,9 +1162,21 @@ def _name_sql(table: str) -> str:
             f" (SELECT name FROM users n WHERE n.user_id={table}.user_id), '')")
 
 
+def _fill_temp(c: sqlite3.Connection, sql: str, rows: list[tuple[Any, ...]]) -> None:
+    """一時表に、まとめて 1 回で書く (1 行ずつ書き終えると遅い。rows は主キーの順に並べておくと、さらに速い)。
+    一時表だけに書くので、research.db の書き込みは止めない。"""
+    c.execute("BEGIN")
+    try:
+        c.executemany(sql, rows)
+    except BaseException:
+        c.execute("ROLLBACK")
+        raise
+    c.execute("COMMIT")
+
+
 def _rec_names(s: Store, rec: _Recorded) -> None:
     s.conn.execute("CREATE TEMP TABLE IF NOT EXISTS rname (user_id INTEGER PRIMARY KEY, name TEXT)")
-    s.conn.executemany("INSERT OR REPLACE INTO rname VALUES (?, ?)", list(rec.names.items()))
+    _fill_temp(s.conn, "INSERT OR REPLACE INTO rname VALUES (?, ?)", sorted(rec.names.items()))
 
 
 def _analyze_base(state_dir: Path, limit: int) -> dict[str, Any]:
@@ -1151,8 +1204,8 @@ def _analyze_base(state_dir: Path, limit: int) -> dict[str, Any]:
         try:
             c.execute("PRAGMA b.journal_mode=OFF")
             c.execute("PRAGMA b.synchronous=OFF")
-            c.execute("CREATE TABLE b.u (user_id INTEGER PRIMARY KEY, total INTEGER, support INTEGER, n INTEGER)")
-            scan = _PairScan(s, merged, set())
+            c.execute("CREATE TABLE b.u (user_id INTEGER PRIMARY KEY, total INTEGER, n INTEGER)")
+            scan = _PairScan(s, merged)
             del merged
             c.execute("CREATE INDEX b.u_total ON u(total)")
             c.execute("""CREATE TABLE b.rs (room_id INTEGER PRIMARY KEY, gifters INTEGER, points INTEGER, multi INTEGER,
@@ -1225,20 +1278,25 @@ def _support_points(s: Store, rooms: _Rooms, rec: _Recorded, sup: set[int]) -> d
 
 
 def _fan_rooms(s: Store, rooms: _Rooms, rec: _Recorded, fans: list[int], sup: set[int]) -> dict[int, int]:
-    """見るルームのギフターが送っている、見るルームでないルーム → 人数。"""
-    out: dict[int, int] = defaultdict(int)
-    for part in _chunks(fans):
-        mine: dict[int, set[int]] = defaultdict(set)
-        for uid, rid in s.conn.execute(f"""SELECT user_id, room_id FROM user_room WHERE user_id IN ({','.join('?' * len(part))})
-                                           AND MAX(cumulative, events) > 0""", part):
-            mine[uid].add(rid)
-        for uid in part:
-            for key, pt in rec.by_user.get(uid, {}).items():
-                if pt:
-                    mine[uid].add(rooms.id(key))
-        for rids in mine.values():
-            for rid in rids - sup:
-                out[rid] += 1
+    """見るルームのギフターが送っている、見るルームでないルーム → 人数。
+
+    見るルームのギフター (一時表 fan) の行を、SQLite の中で数える (前は Python で 1 行ずつ人ごとの set に入れていて、
+    ギフターの多いルームほど遅かった)。記録したギフトにだけあるルームは一時表 fan_rec に入れて、user_room と重ねずに足す。
+    """
+    c = s.conn
+    c.execute("CREATE TEMP TABLE IF NOT EXISTS fan_rec (user_id INTEGER, room_id INTEGER, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID")
+    c.execute("DELETE FROM fan_rec")
+    _fill_temp(c, "INSERT OR IGNORE INTO fan_rec VALUES (?, ?)",
+               sorted((uid, rooms.id(key)) for uid in fans for key, pt in rec.by_user.get(uid, {}).items() if pt))
+    out = {}
+    for rid, n in c.execute("""SELECT room_id, COUNT(*) FROM (
+                                   SELECT room_id FROM user_room WHERE user_id IN (SELECT user_id FROM fan) AND MAX(cumulative, events) > 0
+                                   UNION ALL
+                                   SELECT room_id FROM fan_rec f WHERE NOT EXISTS (SELECT 1 FROM user_room r WHERE r.user_id=f.user_id
+                                       AND r.room_id=f.room_id AND MAX(r.cumulative, r.events) > 0))
+                               GROUP BY room_id"""):
+        if rid not in sup:
+            out[rid] = n
     return out
 
 
@@ -1263,7 +1321,7 @@ def _analyze_view(state_dir: Path, base: dict[str, Any], support: list[str], lim
             fan_count = len(fan_order)
             fan_ids = fan_order[:limit]
             c.execute("CREATE TEMP TABLE fan (user_id INTEGER PRIMARY KEY)")
-            c.executemany("INSERT INTO fan VALUES (?)", [(u,) for u in fan_order])
+            _fill_temp(c, "INSERT INTO fan VALUES (?)", [(u,) for u in sorted(fan_order)])
             left = tuple(LEFT_NAMES)
             alive = f"{_name_sql('u')} NOT IN ({','.join('?' * len(left))})"
             # 誘導の候補: 見るルームに送っていない人 (ポイントの多い順。total の索引を上から読んで、見るルームのギフターを飛ばす)
@@ -1562,8 +1620,11 @@ def _room_pairs(s: Store, rooms: _Rooms, scan: "_PairScan") -> list[dict[str, An
     flat, ends = scan.user_rooms, scan.user_ends
     start = 0
     for end in ends:
-        mine = sorted(at[r] for r in flat[start:end] if r in at)
+        mine = [at[r] for r in flat[start:end] if r in at]
         start = end
+        if len(mine) < 2:  # 上位のルームの組にならない人 (多い) は、並べ替えない
+            continue
+        mine.sort()
         for i, x in enumerate(mine):
             base = x * n
             for y in mine[i + 1:]:
