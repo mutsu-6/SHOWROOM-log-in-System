@@ -236,6 +236,7 @@ def db_path(state_dir: Path) -> Path:
     return Path(state_dir) / DB_NAME
 
 
+JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024  # research.db-wal を縮める大きさ (バイト)
 PROGRESS_THIN_GAP = 6 * 3600  # 終わったイベントの推移は、最後の 24 時間を除いてこの間隔に 1 回だけ残す (秒)
 PROGRESS_THIN_AFTER = 7 * 86400  # 終わってこれだけたち、走り方を作り終えたイベントの推移を間引く (秒)
 
@@ -251,6 +252,9 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        # 書き込み待ちのファイル (research.db-wal) を、本体に移し終えたらこの大きさまで縮める (接続ごとの設定)。
+        # 無いと、長い読み込みの間にたまった分の大きさのまま残る (サーバーで 607MB。2026-10-20 に Cursor が測った)
+        self.conn.execute(f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT}")
         with _ready_lock:
             if str(path) not in _ready:
                 self.conn.execute("PRAGMA journal_mode=WAL")
