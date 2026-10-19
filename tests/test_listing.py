@@ -419,3 +419,28 @@ def test_gifter_page_reads_gifts_from_the_table_not_the_files(tmp_path, monkeypa
     record_gift(tmp_path, "room_a", 1, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now})
     d = research.gifter_detail(tmp_path, 7, [])
     assert sum(r["points"] for r in d["recorded_types"]["stars"]) == 305
+
+
+def test_warm_listeners_waits_while_memory_is_tight(tmp_path, monkeypatch):
+    """メモリの空きが少ない時は、前の結果があれば、ギフターの一覧を先に数え直さない (次の機会に回す)。"""
+    from showroom_keeper import memory
+
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(listing, "_listeners_cache", {})
+    calls = []
+    real = listing._list_listeners
+    monkeypatch.setattr(listing, "_list_listeners", lambda *a: calls.append(a) or real(*a))
+    monkeypatch.setattr(memory, "free_mb", lambda: 100.0)
+    listing.warm_listeners(tmp_path)  # 前の結果が無ければ、空きが少なくても数える
+    listing.warm_listeners(tmp_path)
+    assert len(calls) == 1
+    monkeypatch.setattr(memory, "free_mb", lambda: 1500.0)
+    listing.warm_listeners(tmp_path)
+    assert len(calls) == 2
+
+
+def test_release_memory_does_not_fail():
+    from showroom_keeper import memory
+
+    memory.release()
+    memory.release()

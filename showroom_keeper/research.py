@@ -19,6 +19,7 @@ SHOWROOM が混んでいる・止められていそうなときは間隔を自�
 
 from __future__ import annotations
 
+import heapq
 import logging
 import math
 import threading
@@ -31,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from . import memory
 from .research_store import MONTH_SQL, Store, db_path
 from .status import JST
 
@@ -852,7 +854,8 @@ def analyze(state_dir: Path, support: list[str], limit: int = 300, max_age: floa
         return hit[1]
     if hit and max_age > 0:
         with _analysis_guard:
-            if key not in _analysis_running:
+            # メモリの空きが少ない時 (視聴のブラウザと重なった時) は数え直さず、前の結果を出す (次に開いた時にまた確かめる)
+            if key not in _analysis_running and not memory.tight():
                 _analysis_running.add(key)
                 threading.Thread(target=_refresh_analysis, args=(Path(state_dir), list(support), limit, key),
                                  name="analysis", daemon=True).start()
@@ -881,7 +884,8 @@ def _run_analysis(state_dir: Path, support: list[str], limit: int, key: Any, max
         result["analysis_seconds"] = round(result["analyzed_at"] - started, 1)
         _analysis[key] = (result["analyzed_at"], result)
         _save_analysis(state_dir, key, result)
-        return result
+    memory.release()  # 数えるのに使った一時のメモリを OS に返す (数十 MB 増えたままにしない)
+    return result
 
 
 def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
@@ -901,7 +905,9 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
         c.execute("CREATE TEMP TABLE rname (user_id INTEGER PRIMARY KEY, name TEXT)")
         c.executemany("INSERT INTO rname VALUES (?, ?)", list(rec.names.items()))
         # 何百万行もの一時表を並べ替えるので、この接続の作業用のメモリを広げる (既定の 2MB だとディスクを何度も読み書きする)
-        c.execute(f"PRAGMA cache_size=-{ANALYSIS_CACHE_KB}")
+        # (メモリの空きが少ない時は、空きの 8 分の 1 まで。ブラウザを追い出さない)
+        free = memory.free_mb()
+        c.execute(f"PRAGMA cache_size=-{ANALYSIS_CACHE_KB if free is None else max(8192, min(ANALYSIS_CACHE_KB, int(free * 1024 / 8)))}")
         # ギフター × ルームの送ったポイント (累計ランキング・貢献ランキング・記録の大きい方)。
         # user_room は (人, ルーム) で 1 行ずつなので、そのまま写し、記録の分 (少ない) だけ足し合わせる
         # (前は 2 つを合わせてから全部を並べ替えてまとめていて、サーバーで 22 秒かかっていた。2026-10-19)
@@ -938,20 +944,24 @@ def _analyze(state_dir: Path, support: list[str], limit: int) -> dict[str, Any]:
                                                      ORDER BY total DESC, user_id LIMIT ?""", (*band, SIGNUP_YEAR_LIMIT))
                               if r[0] not in overall]
         gifter_count = s.scalar("SELECT COUNT(*) FROM u")
-        # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか
-        similar = []
-        for r in s.all("""SELECT room_id, COUNT(*) AS gifters, SUM(user_id IN (SELECT user_id FROM fan)) AS shared FROM pair
-                          WHERE room_id NOT IN (SELECT room_id FROM sup) GROUP BY room_id HAVING shared > 0
-                          ORDER BY shared DESC, CAST(shared AS REAL) / (gifters + ? - shared) DESC LIMIT 100""", (fan_count,)):
-            key, label = rooms.label(r["room_id"])
-            similar.append({"key": key, "name": label, "gifters": r["gifters"], "shared": r["shared"],
-                            "overlap": round(r["shared"] / (r["gifters"] + fan_count - r["shared"]), 3),
-                            "candidates": r["gifters"] - r["shared"]})
         # ルームごとのまとめ (ギフターの数・分かったポイント・複数のルームに送る人・いちばん送っている人)。
         # MAX(p.s) と一緒に選んだ p.user_id は、SQLite ではその最大の行の値になる
         c.execute("""CREATE TEMP TABLE rs AS SELECT p.room_id, COUNT(*) AS gifters, SUM(p.s) AS points,
                        SUM(u.n > 1) AS multi, p.user_id AS top_user, MAX(p.s) AS top_points
                      FROM pair p JOIN u USING(user_id) GROUP BY p.room_id""")
+        # 似ているルーム: 応援ルームのギフターが、ほかにどのルームに送っているか。
+        # 応援ルームのギフター (fan) から引いて数える (前は pair を全部読んで 1 行ずつ fan を引いていて、サーバーで 11 秒。
+        # 応援ルームが無い時も読んでいた。2026-10-19)。ギフターの数は上の rs から
+        similar = []
+        if fan_count:
+            for r in s.all("""SELECT x.room_id, rs.gifters, x.shared FROM (
+                                SELECT p.room_id, COUNT(*) AS shared FROM fan JOIN pair p USING(user_id)
+                                WHERE p.room_id NOT IN (SELECT room_id FROM sup) GROUP BY p.room_id) x JOIN rs USING(room_id)
+                              ORDER BY x.shared DESC, CAST(x.shared AS REAL) / (rs.gifters + ? - x.shared) DESC LIMIT 100""", (fan_count,)):
+                key, label = rooms.label(r["room_id"])
+                similar.append({"key": key, "name": label, "gifters": r["gifters"], "shared": r["shared"],
+                                "overlap": round(r["shared"] / (r["gifters"] + fan_count - r["shared"]), 3),
+                                "candidates": r["gifters"] - r["shared"]})
         givers = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM rs")} if sup_ids else {}
         room_count = s.scalar("SELECT COUNT(*) FROM rs")
         multi_count = s.scalar(f"SELECT COUNT(*) FROM u WHERE n > 1 AND {name} NOT IN ({','.join('?' * len(left))})", left)
@@ -1030,7 +1040,7 @@ def coverage(state_dir: Path, max_age: float = ANALYSIS_TTL, now: float | None =
         if max_age == ANALYSIS_TTL:
             # 古くなった時は、前の結果をすぐ返して、裏で数え直す (重い表を読むので、ページを開いた人を待たせない)
             with _coverage_lock:
-                if key not in _coverage_running:
+                if key not in _coverage_running and not memory.tight():  # 空きが少なければ前の結果のまま (次の機会に)
                     _coverage_running.add(key)
                     threading.Thread(target=_refresh_coverage, args=(state_dir, key), name="coverage", daemon=True).start()
             return hit[1]
@@ -1064,6 +1074,7 @@ def _refresh_coverage(state_dir: Path, key: str) -> None:
     finally:
         with _coverage_lock:
             _coverage_running.discard(key)
+        memory.release()
 
 
 def _coverage(s: Store, now: float) -> dict[str, Any]:
@@ -1208,19 +1219,42 @@ def _room_pairs(s: Store, rooms: _Rooms) -> list[dict[str, Any]]:
     """
     c = s.conn
     c.execute("CREATE TEMP TABLE top_rooms AS SELECT room_id, gifters FROM rs ORDER BY gifters DESC LIMIT ?", (PAIR_ROOMS,))
-    c.execute("""CREATE TEMP TABLE tp AS SELECT p.user_id, p.room_id FROM pair p JOIN u USING(user_id)
-                 WHERE p.room_id IN (SELECT room_id FROM top_rooms) AND u.n BETWEEN 2 AND ?""", (PAIR_USER_ROOMS,))
-    c.execute("CREATE INDEX temp.tp_user ON tp(user_id)")
     gifters = {r[0]: r[1] for r in s.all("SELECT room_id, gifters FROM top_rooms")}
+    # 組ごとの共通のギフターの数を、人ごとに (pair は人の順に並んでいる) 数えて、ルームの番号 × 番号の表に足す。
+    # 前は SQL で組 (何百万) を全部並べ替えてまとめていて、作業用のファイルとメモリを多く使っていた (サーバーで 4 秒。
+    # 組の多いデータでは 37 秒。Python で数えると 3 秒ほど・表はルーム数 × ルーム数だけ)
+    ids = sorted(gifters)
+    at = {rid: i for i, rid in enumerate(ids)}
+    n = len(ids)
+    counts = [0] * (n * n)
+
+    def add(mine: list[int]) -> None:
+        if len(mine) >= 2:
+            mine.sort()
+            for i, x in enumerate(mine):
+                base = x * n
+                for y in mine[i + 1:]:
+                    counts[base + y] += 1
+
+    cur, mine = None, []
+    # 送っているルームの数 (u.n) で絞るのは、上位のルームに限る前の数 (前と同じ)
+    for uid, rid in c.execute("""SELECT p.user_id, p.room_id FROM pair p JOIN u USING(user_id)
+                                 WHERE p.room_id IN (SELECT room_id FROM top_rooms) AND u.n BETWEEN 2 AND ?
+                                 ORDER BY p.user_id""", (PAIR_USER_ROOMS,)):
+        if uid != cur:
+            add(mine)
+            cur, mine = uid, []
+        mine.append(at[rid])
+    add(mine)
+    found = heapq.nlargest(1000, ((v, i) for i, v in enumerate(counts) if v >= PAIR_MIN_SHARED))
+    del counts
     out = []
-    for r in s.all("""SELECT a.room_id AS ra, b.room_id AS rb, COUNT(*) AS shared FROM tp a
-                      JOIN tp b ON a.user_id = b.user_id AND a.room_id < b.room_id
-                      GROUP BY ra, rb HAVING shared >= ? ORDER BY shared DESC LIMIT 1000""", (PAIR_MIN_SHARED,)):
-        a, b = r["ra"], r["rb"]
+    for shared, i in found:
+        a, b = ids[i // n], ids[i % n]
         if gifters[b] > gifters[a] or (gifters[b] == gifters[a] and rooms.label(b)[0] < rooms.label(a)[0]):
             a, b = b, a
         out.append({"a": rooms.label(a)[0], "a_name": rooms.label(a)[1], "b": rooms.label(b)[0], "b_name": rooms.label(b)[1],
-                    "shared": r["shared"], "overlap": round(r["shared"] / (gifters[a] + gifters[b] - r["shared"]), 3)})
+                    "shared": shared, "overlap": round(shared / (gifters[a] + gifters[b] - shared), 3)})
     out.sort(key=lambda p: (-p["shared"], -p["overlap"]))
     return out[:100]
 

@@ -1049,3 +1049,22 @@ def test_old_analysis_is_returned_at_once_and_counted_again_behind(collected, mo
     assert started and research.analyze(collected, [])["analyzed_at"] > first["analyzed_at"]
     research._analysis.clear()  # 起動し直した
     assert research.analyze(collected, [])["candidate_count"] == 3 and research._analysis  # ファイルから読んだ
+
+
+def test_old_analysis_waits_while_memory_is_tight(collected, monkeypatch):
+    """メモリの空きが少ない時 (視聴のブラウザと重なった時) は、古くなった分析を裏で数え直さず、前の結果を出し続ける。"""
+    from showroom_keeper import memory
+
+    collected = collected[0]
+    first = research.analyze(collected, [])
+    research.forget_analysis()
+    started = []
+    monkeypatch.setattr(research, "_refresh_analysis", lambda *a: started.append(a))
+    monkeypatch.setattr(memory, "free_mb", lambda: 100.0)
+    again = research.analyze(collected, [])
+    assert again.get("stale") is True and again["analyzed_at"] == first["analyzed_at"] and not started
+    assert research.analyze(collected, [], max_age=0)["analyzed_at"] > first["analyzed_at"]  # 「集計し直す」は待って数える
+    monkeypatch.setattr(memory, "free_mb", lambda: 1500.0)
+    research.forget_analysis()
+    research.analyze(collected, [])
+    assert started  # 空きが戻れば、次に開いた時に数え直す

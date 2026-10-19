@@ -290,6 +290,12 @@ class Store:
                                      WHERE guessed IS NOT NULL""")
                 # まだ貢献ランキングを取っていないルーム・イベントだけの索引 (次に取るものを選ぶ時に、取り終えた分を読まない)
                 self.conn.execute("CREATE INDEX IF NOT EXISTS room_events_pending ON room_events(event_id) WHERE final=0")
+                # 走り方をまだ作っていない・推移をまだ間引いていないイベントだけの索引 (room_analysis.step が収集の仕事のたびに探す。
+                # 前は終わった全部のイベント 3 万件を順に見ていて、ほとんど 0 件なのに 1 回 0.1〜0.15 秒かかっていた。2026-10-19 に Cursor が測った)
+                self.conn.execute("""CREATE INDEX IF NOT EXISTS events_style_todo ON events(end)
+                                     WHERE progress_at IS NOT NULL AND end IS NOT NULL AND style_at IS NULL""")
+                self.conn.execute("""CREATE INDEX IF NOT EXISTS events_thin_todo ON events(end)
+                                     WHERE style_at IS NOT NULL AND thinned_at IS NULL""")
                 _import_json(self)
                 _mark_guessed(self)
                 _ready.add(str(path))
