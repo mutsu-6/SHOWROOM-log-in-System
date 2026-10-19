@@ -1678,6 +1678,23 @@ function gifterStates(st) {
         ${v.wall_low ? tile("見えている額は下限", "<b>壁ぎわ</b>", "ルームごとには 100 位のすぐ上。見えない回にも送っている見込みなので、少額・減少・休眠の判定は控えめに読む", "warn") : ""}
       </div>`;
   }
+  const f = st.focus;
+  if (f && f.rooms) {
+    const span = `${ym(f.months[0])}〜${ym(f.months[1])}`;
+    const typeNote = { "一本推し": "送った量のほとんどが 1 つのルーム (集中度 0.8 以上)", "本命と掛け持ち": "一番のルームが半分以上で、ほかにも送るルームがある",
+      "箱推し・分散": "多くのルームにほどほどに (実効ルーム数 3 以上)", "数ルームに分散": "2〜3 のルームに同じくらいずつ" };
+    h += `<h3>集中のしかた <small class="muted">${span}。貢献ランキングで分かった分の、ルームごとの割合から</small></h3>
+      <div class="tiles">
+        ${tile("型", f.type ? `<b>${esc(f.type)}</b>` : "未分類", f.type ? typeNote[f.type] : "見えた回が少ないので決めません")}
+        ${tile("一番のルームの割合", pctText(f.top_share), `送ったルーム ${num(f.rooms)} ・ 実効ルーム数 ${f.effective ? f.effective.toFixed(1) : "—"}`)}
+        ${tile("集中度", f.index == null ? "—" : f.index.toFixed(2), "各ルームの割合の 2 乗の合計 (1 = 1 ルームだけ)")}
+        ${tile("見えないルーム", `${num(f.fan_only_rooms)} <small>ルーム</small>`, "アクティブファンに出たのに、貢献ランキングには出ていないルーム (小口で送っているかもしれない)", f.fan_only_rooms && f.type === "一本推し" ? "warn" : "")}
+        ${tile("渡り鳥", f.bird == null ? "—" : f.bird ? "<b>渡り鳥</b>" : "ちがう", f.bird == null ? "送った四半期が 3 つより少ないので決めません"
+          : `直近 1 年で送り先が替わった回 ${num(f.moves)} (3 か月ごとにくらべて、近さ 0.3 未満)`, f.bird ? "warn" : "")}
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:4px">${f.quarters.map((q, i) => `<span class="tag" title="${ym(q.from)}〜${ym(q.to)} ・ 送ったルーム ${num(q.rooms)}${i && f.similarity[i - 1] != null ? ` ・ 前の 3 か月との近さ ${f.similarity[i - 1].toFixed(2)}` : ""}">${ym(q.to).slice(2)} ${q.top_name ? esc(q.top_name) : "-"}${i && f.similarity[i - 1] != null && f.similarity[i - 1] < 0.3 ? " ↻" : ""}</span>`).join("")}</div>
+      <div class="hint">3 か月ごとの、いちばん多く送ったルーム (↻ は前の 3 か月から送り先が大きく替わった)。上位 100 人に入らなかったルームの小口は見えないので、集中度は高めに出ます (見かけの一本推し)。線はどれも仮の値です</div>`;
+  }
   const pl = (st.pillars || []).filter((p) => p.share != null || p.first);
   if (pl.length) {
     h += `<h3>ルームの中での重み <small class="muted">${v ? `${ym(v.months[0])}〜${ym(v.months[1])}` : ""}。そのルームの上位 100 人の合計のうち、この人が出した割合</small></h3>` + dataTable("gp-pillars", [

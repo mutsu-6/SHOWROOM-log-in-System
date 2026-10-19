@@ -30,6 +30,14 @@ WALL_RATE = 0.5  # 見えた回 (100 人に届いた回) の、これだけ以�
 MIN_OBS = 3  # 見えた回 (イベント×ルーム) がこれより少ない人は、型を決めない (未分類)
 PILLAR_SHARE = 0.3  # ルームの上位 100 人の合計のうち、これだけ以上を 1 人で出していれば「ルームの柱」
 PILLAR_ROOMS = 10  # 柱かどうかを出すルームの数 (送った量の多い順)
+# 集中のしかた (docs/ギフターの分類.md の軸 4)。線はどれも仮の値
+ONE_ROOM = 0.8  # 集中度 (各ルームの割合の 2 乗の合計) がこれ以上なら「一本推し」
+MAIN_SHARE = 0.5  # 一番のルームの割合がこれ以上 (一本推しでない) なら「本命と掛け持ち」
+SPREAD_ROOMS = 3.0  # 実効ルーム数 (1 ÷ 集中度) がこれ以上なら「箱推し・分散」
+QUARTERS = 8  # 渡り鳥を見る四半期 (3 か月) の数 (2 年)
+MOVED = 0.3  # 隣り合う四半期の送り先の近さ (コサイン類似度) がこれ未満なら「送り先が替わった」
+BIRD_MOVES = 2  # 直近 1 年 (4 回の替わり目) に、これだけ以上替わったら「渡り鳥」
+BIRD_QUARTERS = 3  # 送った四半期がこれより少なければ、渡り鳥かどうかは決めない
 CUT_TTL = 86400  # 月ごとの区切りを覚えておく時間 (古い月も集め直しで増えるので、1 日で読み直す)
 
 _cuts: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
@@ -137,7 +145,66 @@ def gifter_states(s: Store, uid: int, now: float | None = None) -> dict[str, Any
     first = _add(month, -(TIER_MONTHS - 1))
     seen = visibility(s, uid, first, month)
     return {"month": month, "rooms": rooms, "switch": switch, "tiers": tiers, "visibility": seen["visibility"],
-            "pillars": seen["pillars"]}
+            "pillars": seen["pillars"], "focus": focus(s, uid, per, month, seen["visibility"])}
+
+
+def _cos(a: dict[int, float], b: dict[int, float]) -> float:
+    dot = sum(v * b.get(k, 0) for k, v in a.items())
+    na, nb = sum(v * v for v in a.values()) ** 0.5, sum(v * v for v in b.values()) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def focus(s: Store, uid: int, per: dict[int, dict[str, int]], month: str, seen: dict[str, Any]) -> dict[str, Any]:
+    """集中のしかた: 一本推し・本命と掛け持ち・数ルームに分散・箱推し・分散と、渡り鳥。
+
+    - 直近 12 か月の、ルームごとの割合 s = そのルームに送った pt ÷ 全部。集中度 H = Σ s²、実効ルーム数 = 1 ÷ H
+    - 上位 100 人に入らなかったルームの小口は見えないので、集中度は高めに出る (見かけの一本推し)。
+      アクティブファンに出たのに貢献ランキングに出ていないルームの数 (見えないルーム) を一緒に出す
+    - 渡り鳥: 四半期ごとの送り先の近さが、くり返し低い人 (乗り換えが一度きりの変化なのに対し、くり返す性質)
+    """
+    first = _add(month, -(TIER_MONTHS - 1))
+    recent = {rid: sum(pt for m, pt in v.items() if first <= m <= month) for rid, v in per.items()}
+    recent = {rid: pt for rid, pt in recent.items() if pt > 0}
+    total = sum(recent.values())
+    out: dict[str, Any] = {"months": [first, month], "rooms": len(recent)}
+    if total:
+        shares = sorted((pt / total for pt in recent.values()), reverse=True)
+        h = sum(x * x for x in shares)
+        out.update(index=h, effective=1 / h, top_share=shares[0])
+        if seen.get("unclassified"):
+            out["type"] = None
+        elif h >= ONE_ROOM:
+            out["type"] = "一本推し"
+        elif shares[0] >= MAIN_SHARE:
+            out["type"] = "本命と掛け持ち"
+        elif 1 / h >= SPREAD_ROOMS:
+            out["type"] = "箱推し・分散"
+        else:
+            out["type"] = "数ルームに分散"
+    # 見えないルーム: その期間にアクティブファンに出たのに、貢献ランキングには出ていないルーム
+    ym = (first.replace("-", ""), month.replace("-", ""))
+    fan_rooms = {r[0] for r in s.all("SELECT DISTINCT room_id FROM active_fans WHERE user_id=? AND ym BETWEEN ? AND ?",
+                                     (int(uid), *ym))}
+    out["fan_only_rooms"] = len(fan_rooms - set(recent))
+    # 渡り鳥: 四半期 (3 か月) ごとの送り先の割合
+    quarters = []
+    for q in range(QUARTERS - 1, -1, -1):
+        last = _add(month, -3 * q)
+        start = _add(last, -2)
+        vec = {rid: float(sum(pt for m, pt in v.items() if start <= m <= last)) for rid, v in per.items()}
+        quarters.append({"from": start, "to": last, "vec": {k: x for k, x in vec.items() if x > 0}})
+    sent = [q for q in quarters if q["vec"]]
+    sims = []
+    for a, b in zip(quarters, quarters[1:]):
+        sims.append(_cos(a["vec"], b["vec"]) if a["vec"] and b["vec"] else None)
+    year = [x for x in sims[-4:] if x is not None]
+    moves = sum(1 for x in year if x < MOVED)
+    out["quarters"] = [{"from": q["from"], "to": q["to"], "rooms": len(q["vec"]),
+                        "top": max(q["vec"], key=lambda k: q["vec"][k]) if q["vec"] else None} for q in quarters]
+    out["similarity"] = sims
+    out["moves"] = moves
+    out["bird"] = None if len(sent) < BIRD_QUARTERS else moves >= BIRD_MOVES
+    return out
 
 
 def visibility(s: Store, uid: int, first: str, last: str) -> dict[str, Any]:

@@ -80,3 +80,26 @@ def test_peak_tier_visibility_wall_and_pillar(tmp_path):
     p1 = {p["room_id"]: p for p in st1["pillars"]}
     assert p1[50]["pillar"] and p1[50]["first"] == 3 and p1[50]["share"] > 0.9
     assert st1["visibility"]["full"] == 0 and st1["visibility"]["wall_rate"] is None
+
+
+def test_focus_types_and_wandering(tmp_path):
+    """集中のしかた: 一本推し・本命と掛け持ち・箱推し・分散と、送り先が 3 か月ごとに替わる渡り鳥。"""
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        eid = 0
+        for m in ("2026-07", "2026-08", "2026-09"):
+            eid += 1
+            _event(s, eid, m, {10: {1: 950, 2: 600, 3: 100}, 11: {1: 50, 2: 200, 3: 100}, 12: {2: 200, 3: 100},
+                               13: {3: 100}, 14: {3: 100}})
+        # 4 は四半期ごとに送り先が替わる (20 → 21 → 22 → 23)
+        for k, (m, rid) in enumerate((("2025-12", 20), ("2026-03", 21), ("2026-06", 22), ("2026-09", 23))):
+            for j in range(2):
+                eid += 1
+                _event(s, eid, m, {rid: {4: 500}})
+        s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (99, '202609', 1, 12)")
+        f = {u: ga.gifter_states(s, u, NOW)["focus"] for u in (1, 2, 3, 4)}
+    assert f[1]["type"] == "一本推し" and f[1]["fan_only_rooms"] == 1 and f[1]["top_share"] == 0.95
+    assert f[2]["type"] == "本命と掛け持ち"
+    assert f[3]["type"] == "箱推し・分散" and round(f[3]["effective"]) == 5
+    assert f[4]["bird"] is True and f[4]["moves"] >= 2 and f[1]["bird"] is None  # 1 は 1 四半期だけなので決めない
+    assert [q["top"] for q in f[4]["quarters"] if q["top"]] == [20, 21, 22, 23]
