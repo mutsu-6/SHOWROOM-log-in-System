@@ -45,6 +45,7 @@ VETERAN_MONTHS = 12  # 古参は、最初に見えてからこの月数以上
 LIFE_ROOMS = 10  # 段階を出すルームの数 (直近 12 か月に送った量の多い順)
 METEOR_SHARE = 0.7  # 初めて見えた月に、それまでの合計のこれだけ以上を出し
 METEOR_GAP = 3  # そのあとこの月数、どこの貢献ランキングにもアクティブファンにも出ていなければ「流星型」
+# 流星型は、初めて見えた月の量がその月の中堅の下限 (上から 10%) 以上の人だけ (1 回だけ少し送った人まで当たらないように)
 # イベントとの付き合い方・見守り・冷めかけ (docs/ギフターの分類.md の軸 2 の勝負型、軸 3 のイベント型、軸 6 の見守り型、軸 5 の冷めかけ)
 EVENT_TYPE = 0.9  # イベント依存度 (イベントで送った分 ÷ 累計ランキングの増え分) がこれ以上なら「イベント型」
 EVERYDAY_TYPE = 0.5  # これ未満なら「普段型」(その間は「両方」)
@@ -186,7 +187,8 @@ def life(s: Store, uid: int, per: dict[int, dict[str, int]], month: str) -> dict
     - 見えた月 = そのルームの貢献ランキング (上位 100 人) に出た月。小さく送る人は段が低く出る
     - 古参 = そのルームの直近 12 か月のギフターの中で、最初に見えた月が早い順に上から VETERAN_SHARE まで、かつ VETERAN_MONTHS 以上前から
     - 流星型 = 初めて見えた月に、それまでの合計の METEOR_SHARE 以上を出し、そのあと METEOR_GAP か月どこにも出ていない
-      (100 位より下で続けている人もいるので、アクティブファンに出ていれば流星にしない)
+      (100 位より下で続けている人もいるので、アクティブファンに出ていれば流星にしない)。
+      その月の量が、その月の中堅の下限より少ない人は流星にしない (1 回だけ少し送った人は「大きく出して消えた」ではない)
     """
     first = _add(month, -(TIER_MONTHS - 1))
     recent = sorted(((rid, sum(pt for m, pt in v.items() if first <= m <= month)) for rid, v in per.items()), key=lambda x: -x[1])
@@ -221,9 +223,11 @@ def life(s: Store, uid: int, per: dict[int, dict[str, int]], month: str) -> dict
             fan_after = s.one("SELECT 1 FROM active_fans WHERE user_id=? AND ym > ? AND ym <= ? LIMIT 1",
                               (int(uid), m0.replace("-", ""), until.replace("-", ""))) is not None
             gap_ok = until <= month  # そのあと METEOR_GAP か月が、集め終わった月の中にある
+            floor = month_cuts(s, m0)["mid"]
+            big = floor is not None and months[m0] >= floor
             meteor = {"first": m0, "share": share, "later_months": sum(1 for m, v in months.items() if v > 0 and m > m0),
-                      "fan_after": fan_after,
-                      "type": None if not gap_ok else bool(share >= METEOR_SHARE and not after and not fan_after)}
+                      "fan_after": fan_after, "points": months[m0], "floor": floor,
+                      "type": None if not gap_ok else bool(big and share >= METEOR_SHARE and not after and not fan_after)}
     return {"rooms": rooms, "meteor": meteor}
 
 
@@ -455,11 +459,14 @@ def _covered(times: list[float], width: float) -> float:
 
 def recorded_types(uid: int, gifts: list[tuple[float, int, str]], points: dict[tuple[int, str], int],
                    free: dict[tuple[int, str], int], others: dict[str, list[tuple[float, int]]],
-                   events: dict[str, list[tuple[float, float]]], starts: dict[str, list[float]]) -> dict[str, Any]:
+                   events: dict[str, list[tuple[float, float]]], starts: dict[str, list[float]],
+                   unknown: dict[tuple[int, str], int] | None = None) -> dict[str, Any]:
     """記録しているルームのギフト 1 件ずつからの型。
 
     - gifts: その人のギフト (時刻, pt, ルーム)。points / free: (人, ルーム) ごとの記録したポイントと、そのうち無料
     - others: ルームごとの、記録した全員のギフト (時刻, 人)。events: ルームごとのイベントの (始まり, 終わり)。starts: ルームごとの配信の始まり
+    - unknown: (人, ルーム) ごとの、ギフトの一覧に無かったギフトの回数。ポイントを 0 で数えたので (有料の分が抜けているかもしれない)、
+      1 回でもあれば星だけの大貢献は決めない
     """
     from bisect import bisect_left, bisect_right
 
@@ -505,8 +512,10 @@ def recorded_types(uid: int, gifts: list[tuple[float, int, str]], points: dict[t
         ranked = sorted((points.get((u, key), 0) for u in everyone), reverse=True)
         place = 1 + sum(1 for p in ranked if p > mine)
         share = free.get((uid, key), 0) / mine
-        stars.append({"key": key, "points": mine, "free_share": share, "place": place, "gifters": len(ranked),
-                      "star": len(ranked) >= STAR_MIN_GIFTERS and share >= STAR_SHARE and place <= max(1, STAR_TOP * len(ranked))})
+        miss = (unknown or {}).get((uid, key), 0)
+        stars.append({"key": key, "points": mine, "free_share": share, "place": place, "gifters": len(ranked), "unknown": miss,
+                      "star": None if miss else
+                      len(ranked) >= STAR_MIN_GIFTERS and share >= STAR_SHARE and place <= max(1, STAR_TOP * len(ranked))})
     out["stars"] = stars
     # 盛り上がり型: 他の人のギフトの HYPE_SECONDS 秒のうちに送った割合 ÷ 偶然の期待値 (その日のルームで、他の人のギフトの後の時間の割合)
     obs = exp_ = 0.0

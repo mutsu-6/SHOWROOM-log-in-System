@@ -122,14 +122,24 @@ CREATE TABLE IF NOT EXISTS room_gift_pos (room_key TEXT PRIMARY KEY, pos INTEGER
 -- 記録したギフトの送り主 (ルームごと)。上の検索欄で、ランキングに出ない少額の人も探すため。
 -- 記録のファイルの新しい分だけを、収集の合間に足す (explore.update_gift_senders。ファイル全部を読み直さない)
 -- points・free_points (そのうち無料) は、足した時のギフトの一覧で数える。ギフターのページ・一覧・分析は、全員の合計をここから読む
+-- unknown = 足した時のギフトの一覧に無かったギフトの回数 (ポイントが分からず 0 で数えた。有料の分が抜けて、無料の割合が高く見える)
 CREATE TABLE IF NOT EXISTS gift_senders (
     room_key TEXT, user_id INTEGER, times INTEGER, last_at REAL, name TEXT, points INTEGER DEFAULT 0, free_points INTEGER DEFAULT 0,
-    first_at REAL, PRIMARY KEY (room_key, user_id)) WITHOUT ROWID;
+    first_at REAL, unknown INTEGER DEFAULT 0, PRIMARY KEY (room_key, user_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS gift_senders_user ON gift_senders(user_id);
 -- 送り主が使っていた名前と、そろえた形 (explore._fold。探す時にくらべる)
 CREATE TABLE IF NOT EXISTS gift_sender_names (
     user_id INTEGER, name TEXT, folded TEXT, at REAL, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS gift_sender_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
+-- イベントごとの、貢献ランキングに出たいちばん大きいユーザー ID (名前で推測した分を除く。uid が NULL なら、まだ出た人がいない)。
+-- 登録時期の目印に使う。前は分析のたびに貢献ランキングの表を全部読んでいた (サーバーで 27 秒。2026-10-19)
+CREATE TABLE IF NOT EXISTS event_max_user (event_id INTEGER PRIMARY KEY, uid INTEGER);
+-- 記録しているルームの来場の知らせ (live_events の visit)。ギフターのページの来場の時間帯・関わり方で使う。
+-- live_events のファイルの新しい分だけを、収集の合間とページを開く前に足す (explore.update_live_visits。前はファイル全部を読み直していた)
+CREATE TABLE IF NOT EXISTS live_visits (
+    user_id INTEGER, at INTEGER, room_key TEXT, n INTEGER, PRIMARY KEY (user_id, at, room_key)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS live_visits_room ON live_visits(room_key);
+CREATE TABLE IF NOT EXISTS live_visit_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
 -- SHOWROOM のお知らせ (ログインが要る)
 CREATE TABLE IF NOT EXISTS notices (notice_id INTEGER PRIMARY KEY, label TEXT, title TEXT, created_at REAL, contents TEXT, at REAL);
 -- ルームの 1 日ごとの様子 (配信中のルームの一覧から。フォロワー・配信の数・視聴者数)。ROOM_DAILY_KEEP 日で消す
@@ -228,15 +238,15 @@ class Store:
                                    ("user_rooms", "room_key TEXT"), ("event_series", "parents TEXT"),
                                    ("event_series", "route TEXT"), ("event_series", "brand TEXT"),
                                    ("gift_senders", "points INTEGER DEFAULT 0"), ("gift_senders", "free_points INTEGER DEFAULT 0"),
-                                   ("gift_senders", "first_at REAL")):
+                                   ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                         if (table, col.split()[0]) == ("room_events", "c_p100"):
                             # 100 位のポイントを、前に集めた分からも作り直す (build_room_stats が少しずつ)
                             self.conn.execute("DELETE FROM meta WHERE k='room_stats_upto'")
-                        if (table, col.split()[0]) == ("gift_senders", "points"):
-                            # ポイントの列が無かった表: 記録のファイルの最初から足し直す
+                        if (table, col.split()[0]) in (("gift_senders", "points"), ("gift_senders", "unknown")):
+                            # ポイント・一覧に無いギフトの列が無かった表: 記録のファイルの最初から足し直す
                             self.conn.execute("DELETE FROM gift_senders")
                             self.conn.execute("DELETE FROM gift_sender_pos")
                         if (table, col.split()[0]) == ("event_series", "route"):
@@ -449,6 +459,22 @@ class Store:
                            failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
                            c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
             self._names(c, rows, now)
+            top = max((int(r["user_id"]) for r in rows if not r.get("guessed")), default=None)
+            if top is not None:
+                c.execute("""INSERT INTO event_max_user(event_id, uid) VALUES (?, ?)
+                             ON CONFLICT(event_id) DO UPDATE SET uid=MAX(COALESCE(uid, 0), excluded.uid)""", (event_id, top))
+
+    def build_event_max_user(self, step: int = 500) -> bool:
+        """前に集めた貢献ランキングから、event_max_user を少しずつ作る (イベントごとに主キーで引く)。することが無ければ False。"""
+        todo = [r[0] for r in self.all("""SELECT e.event_id FROM events e LEFT JOIN event_max_user m USING(event_id)
+                                          WHERE m.event_id IS NULL LIMIT ?""", (step,))]
+        if not todo:
+            return False
+        with self.tx() as c:
+            for eid in todo:
+                top = c.execute("SELECT MAX(user_id) FROM contributions WHERE event_id=? AND guessed IS NULL", (eid,)).fetchone()[0]
+                c.execute("INSERT OR IGNORE INTO event_max_user(event_id, uid) VALUES (?, ?)", (eid, top))
+        return True
 
     # ---------------------------------------------------------------- 月ごとの集計 (user_month)
     def _user_month_ready(self, c: sqlite3.Connection, event_id: int) -> bool:

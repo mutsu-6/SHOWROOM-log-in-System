@@ -117,11 +117,11 @@ def test_life_ladder_veteran_and_meteor(tmp_path):
             if m >= "2026-08":
                 rows.update({20 + i: 100 for i in range(6)})  # 新しく来た人たち
             _event(s, eid, m, {10: rows})
-        _event(s, 100, "2026-05", {30: {5: 9000, 6: 9000, 8: 9000}})
+        _event(s, 100, "2026-05", {30: {5: 9000, 6: 9000, 8: 9000, 9: 50}})
         _event(s, 101, "2026-06", {30: {6: 500}})
         _event(s, 102, "2026-08", {30: {7: 9000}})
         s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (30, '202606', 8, 15)")
-        life = {u: ga.gifter_states(s, u, NOW)["life"] for u in (1, 5, 6, 7, 8, 20)}
+        life = {u: ga.gifter_states(s, u, NOW)["life"] for u in (1, 5, 6, 7, 8, 9, 20)}
     r1 = life[1]["rooms"][0]
     assert r1["months_seen"] == 10 and r1["stage"] == "定着" and r1["veteran"] and r1["first"] == "2025-06"
     assert life[20]["rooms"][0]["stage"] == "2 回目" and not life[20]["rooms"][0]["veteran"]
@@ -129,6 +129,7 @@ def test_life_ladder_veteran_and_meteor(tmp_path):
     assert life[6]["meteor"]["type"] is False  # 次の月も出た
     assert life[7]["meteor"]["type"] is None  # まだ 3 か月たっていない
     assert life[8]["meteor"]["type"] is False  # アクティブファンには残っている (100 位より下で続けているかもしれない)
+    assert life[9]["meteor"]["type"] is False and life[9]["meteor"]["floor"] == 9000  # 1 回だけ少し送った人は流星にしない
     assert ga.stage_of(1) == "初見" and ga.stage_of(3) == "定着しかけ" and ga.stage_of(7) == "定着"
 
 
@@ -182,6 +183,9 @@ def test_recorded_types_late_regular_star_and_hype():
     others = {"a": [(t0 + u, u) for u in range(1, 13)]}
     r = ga.recorded_types(1, [(t0, 5000, "a")], pts, {(1, "a"): 4800}, others, {}, {"a": []})
     assert r["stars"][0]["star"] and r["stars"][0]["place"] == 1
+    # ギフトの一覧に無いギフトを送っていたら (有料の分が 0 pt で抜けているかもしれない)、決めない
+    r = ga.recorded_types(1, [(t0, 5000, "a")], pts, {(1, "a"): 4800}, others, {}, {"a": []}, {(1, "a"): 3})
+    assert r["stars"][0]["star"] is None and r["stars"][0]["unknown"] == 3
     # 盛り上がり型: いつも他の人のギフトの 10 秒あと (他の人は 1 時間に 1 回)
     theirs = [t0 + h * 3600 for h in range(30)]
     mine = [(t + 10, 50, "a") for t in theirs[:25]]
@@ -221,3 +225,17 @@ def test_involvement_includes_free_only_rooms():
     paid = {"a": {u: 100 for u in range(10, 20)}}
     rows = ga.involvement(5, comments, paid, [], {"a"})
     assert len(rows) == 1 and rows[0]["key"] == "a" and rows[0]["paid"] == 0 and rows[0]["type"] == "ふつう"
+
+
+def test_gifter_page_names_rooms_first_seen_late(tmp_path):
+    """ページの後半 (分類) で初めて出るルーム (アクティブファンだけのルームなど) の名前を引いても、閉じた接続で止まらない。"""
+    from showroom_keeper import research
+
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (10, 99)], "live", NOW)
+        _event(s, 1, "2026-09", {10: {1: 500}})
+        for ym in ("202608", "202609"):
+            s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (99, ?, 1, 15)", (ym,))
+    d = research.gifter_detail(tmp_path, 1, [])
+    assert d["found"] and any(r["name"] == "ルーム99" for r in d["states"]["engage"]["rooms"])

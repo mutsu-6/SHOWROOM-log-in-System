@@ -1703,7 +1703,7 @@ function gifterStates(st) {
       <div class="tiles">
         ${tile("初めて見えた月", me.first ? ym(me.first) : "—", me.first ? `その月にそれまでの合計の ${pctText(me.share)} ・ そのあと ${num(me.later_months)} か月見えた` : "")}
         ${tile("流星型", me.type == null ? "—" : me.type ? "<b>流星型</b>" : "ちがう", me.type == null ? "初めて見えてから 3 か月たっていないので決めません"
-          : "初めて見えた月に合計の 7 割以上を出し、そのあと 3 か月どこにも (アクティブファンにも) 出ていない", me.type ? "warn" : "")}
+          : `初めて見えた月に、その月の中堅の下限 (${me.floor != null ? num(me.floor) + " pt" : "—"}) 以上かつ合計の 7 割以上を出し、そのあと 3 か月どこにも (アクティブファンにも) 出ていない`, me.type ? "warn" : "")}
       </div>` + (lf.rooms.length ? dataTable("gp-life", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.veteran ? ' <span class="tag live" title="このルームの直近 12 か月のギフターの中で、最初に見えた月が早い順に上から 4 分の 1 まで (12 か月以上前から)">古参</span>' : ""}`, cls: "name" },
       { label: "段", value: (r) => r.months_seen, html: (r) => `<b title="${esc(STAGE_NOTE)}">${esc(r.stage)}</b>` },
@@ -1773,7 +1773,7 @@ function recordedTypes(x) {
     h += dataTable("gp-stars", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.star ? ' <span class="tag live" title="無料のギフトが 9 割以上で、記録したギフターの中で上から 1 割まで">星だけの大貢献</span>' : ""}`, cls: "name" },
       { label: "記録した pt", num: true, value: (r) => r.points, html: (r) => num(r.points) },
-      { label: "無料の割合", num: true, value: (r) => r.free_share, html: (r) => pctText(r.free_share) },
+      { label: "無料の割合", num: true, value: (r) => r.free_share, html: (r) => `${pctText(r.free_share)}${r.unknown ? `<div class="uid" title="ギフトの一覧に無いギフトは、ポイントが分からず 0 で数えています。有料の分が抜けているかもしれないので、星だけの大貢献は決めません">一覧に無いギフト ${num(r.unknown)} 回</div>` : ""}` },
       { label: "記録したギフターの中の順位", num: true, value: (r) => r.place, html: (r) => `${num(r.place)} <span class="uid">/ ${num(r.gifters)} 人</span>` },
     ], x.stars, { sort: 1, limit: 6, csvName: "ギフター_無料の割合" });
   }

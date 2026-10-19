@@ -497,6 +497,7 @@ class _Recorded:
         self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.points = _PairPoints(self.by_user)  # (人, ルーム) → pt (by_user と同じものを、別の形で見る。メモリを 2 重に使わない)
         self.free: dict[tuple[int, str], int] = defaultdict(int)  # そのうち無料のギフトのポイント (無料の分がある組だけ)
+        self.unknown: dict[tuple[int, str], int] = {}  # ギフトの一覧に無かったギフトの回数 (ある組だけ。ポイントを 0 で数えている)
         self.names: dict[int, str] = {}
         self.first_at: dict[int, float] = {}
         from .explore import update_all_gift_senders
@@ -505,10 +506,10 @@ class _Recorded:
         try:
             update_all_gift_senders(state_dir, s)  # 前に足したあとの新しい分だけ (ふだんは 10 分ごとに収集の合間に足してある)
             if user is None:
-                rows = s.all("SELECT room_key, user_id, points, free_points, first_at, last_at, name FROM gift_senders")
+                rows = s.all("SELECT room_key, user_id, points, free_points, first_at, last_at, name, unknown FROM gift_senders")
             else:
                 keys = [r[0] for r in s.all("SELECT room_key FROM gift_senders WHERE user_id=?", (int(user),))]
-                rows = [r for k in keys for r in s.all("""SELECT room_key, user_id, points, free_points, first_at, last_at, name
+                rows = [r for k in keys for r in s.all("""SELECT room_key, user_id, points, free_points, first_at, last_at, name, unknown
                                                           FROM gift_senders WHERE room_key=?""", (k,))]
         finally:
             if store is None:
@@ -518,6 +519,8 @@ class _Recorded:
             uid, key = int(r["user_id"]), r["room_key"]
             if r["free_points"]:
                 self.free[(uid, key)] += r["free_points"]
+            if r["unknown"]:
+                self.unknown[(uid, key)] = r["unknown"]
             self.by_user[uid][key] += r["points"] or 0
             if r["first_at"] is not None and r["first_at"] < self.first_at.get(uid, float("inf")):
                 self.first_at[uid] = r["first_at"]
@@ -671,8 +674,9 @@ class _Signup:
 
     @classmethod
     def build(cls, s: Store, rec: _Recorded) -> _Signup:
-        seen = [(r[0], r[1]) for r in s.all("""SELECT e.end, m.uid FROM (SELECT event_id, MAX(user_id) AS uid FROM contributions
-                                               WHERE guessed IS NULL GROUP BY event_id) m JOIN events e USING(event_id) WHERE e.end IS NOT NULL""")]
+        # イベントごとのいちばん大きいユーザー ID は event_max_user に持っている (貢献ランキングを保存する時と、前の分は収集の合間に作る)
+        seen = [(r[0], r[1]) for r in s.all("""SELECT e.end, m.uid FROM event_max_user m JOIN events e USING(event_id)
+                                               WHERE m.uid IS NOT NULL AND e.end IS NOT NULL""")]
         seen += [(at, uid) for uid, at in rec.first_at.items()]
         steps, top = [], 0
         for at, uid in sorted(seen):
@@ -954,12 +958,35 @@ def coverage(state_dir: Path, max_age: float = ANALYSIS_TTL, now: float | None =
     """
     key = str(Path(state_dir).resolve())
     hit = _coverage_cache.get(key)
-    if hit and time.time() - hit[0] < max_age and now is None:
-        return hit[1]
+    if hit and now is None:
+        if time.time() - hit[0] < max_age:
+            return hit[1]
+        if max_age == ANALYSIS_TTL:
+            # 古くなった時は、前の結果をすぐ返して、裏で数え直す (重い表を読むので、ページを開いた人を待たせない)
+            with _coverage_lock:
+                if key not in _coverage_running:
+                    _coverage_running.add(key)
+                    threading.Thread(target=_refresh_coverage, args=(state_dir, key), name="coverage", daemon=True).start()
+            return hit[1]
     with Store(state_dir) as s:
         result = _coverage(s, time.time() if now is None else now)
     _coverage_cache[key] = (time.time(), result)
     return result
+
+
+_coverage_lock = threading.Lock()
+_coverage_running: set[str] = set()
+
+
+def _refresh_coverage(state_dir: Path, key: str) -> None:
+    try:
+        with Store(state_dir) as s:
+            _coverage_cache[key] = (time.time(), _coverage(s, time.time()))
+    except Exception as e:  # noqa: BLE001 - 数え直せなくても、前の結果を使い続ける
+        log.debug("集まり具合を数え直せませんでした: %s", e)
+    finally:
+        with _coverage_lock:
+            _coverage_running.discard(key)
 
 
 def _coverage(s: Store, now: float) -> dict[str, Any]:
@@ -1155,9 +1182,10 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         visits = _visit_habits(state_dir, rooms, uid)
         overlap = _time_overlap(s, rooms, habits(gifts) or visits, [r["key"] for r in room_list[:OVERLAP_ROOMS]], support)
         recorded = _recorded_types(s, rooms, rec, uid, gifts)
-        involve = _involvement(state_dir, rooms, rec, uid)
+        involve = _involvement(state_dir, s, rooms, rec, uid)
     cov = coverage(state_dir)
     with Store(state_dir) as s:
+        rooms.store = s  # 最初の接続は閉じたので、名前を引く接続を替える (多くのルームに出た人で、閉じた接続を使って止まっていた)
         return {"user_id": uid, "found": True,
                 "coverage": {k: cov[k] for k in ("complete_from", "last_full", "cumulative_from")}, "room_total": len(room_list), "event_total": event_total,
                 "guessed": guessed,
@@ -1171,65 +1199,39 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                 "states": _states(s, rooms, uid)}
 
 
-VISIT_TTL = 600  # 来場の知らせをユーザーごとにまとめたものを使い回す時間 (秒)
-_visit_index: dict[str, tuple[float, dict[int, list[tuple[int, str, int]]]]] = {}
+def _visits_of(state_dir: Path, s: Store, uid: int) -> list[tuple[int, str, int]]:
+    """記録しているルームの、その人の来場の知らせ [(時刻, ルーム, 何回目)] (live_visits を索引で引く。読む前に新しい分だけ足す)。"""
+    from .explore import update_all_live_visits
+
+    update_all_live_visits(state_dir, s)
+    return [(r[0], r[1], r[2]) for r in s.all("SELECT at, room_key, n FROM live_visits WHERE user_id=? ORDER BY at", (int(uid),))]
 
 
-def _visits_by_user(state_dir: Path) -> dict[int, list[tuple[int, str, int]]]:
-    """記録しているルームの来場の知らせ (live_events) を、ユーザーごとに {user_id: [(時刻, ルーム, 何回目), ...]}。"""
-    from . import live_events
-
-    key = str(state_dir)
-    hit = _visit_index.get(key)
-    if hit and time.time() - hit[0] < VISIT_TTL:
-        return hit[1]
-    out: dict[int, list[tuple[int, str, int]]] = defaultdict(list)
-    folder = live_events.event_dir(Path(state_dir))
-    for path in folder.glob("*.jsonl") if folder.is_dir() else []:
-        for e in live_events.load(Path(state_dir), path.stem):
-            if e.get("kind") == "visit" and e.get("user_id") is not None:
-                try:
-                    out[int(e["user_id"])].append((int(e["at"]), path.stem, int(e.get("n") or 0)))
-                except (TypeError, ValueError):
-                    continue
-    _visit_index[key] = (time.time(), out)
-    return out
-
-
-_comment_index: dict[str, tuple[float, dict[str, dict[int, int]]]] = {}
-
-
-def _comments_by_room(state_dir: Path) -> dict[str, dict[int, int]]:
-    """記録しているルームの、人ごとのコメントの数 (配信ごとの by_user を足したもの。2026-10-19 から) {ルーム: {人: 数}}。"""
+def _comments_in(state_dir: Path, keys: set[str]) -> dict[str, dict[int, int]]:
+    """そのルームたちの、人ごとのコメントの数 (配信ごとの by_user を足したもの。2026-10-19 から) {ルーム: {人: 数}}。
+    要るルームのファイルだけ読む。"""
     from . import comment_counts
 
-    key = str(state_dir)
-    hit = _comment_index.get(key)
-    if hit and time.time() - hit[0] < VISIT_TTL:
-        return hit[1]
     out: dict[str, dict[int, int]] = {}
-    folder = comment_counts.count_dir(Path(state_dir))
-    for path in folder.glob("*.json") if folder.is_dir() else []:
+    for key in keys:
         room: dict[int, int] = {}
-        for live in comment_counts.load(Path(state_dir), path.stem):
+        for live in comment_counts.load(Path(state_dir), key):
             for u, n in (live.get("by_user") or {}).items():
                 try:
                     room[int(u)] = room.get(int(u), 0) + int(n)
                 except (TypeError, ValueError):
                     continue
-        if room:
-            out[path.stem] = room
-    _comment_index[key] = (time.time(), out)
+        out[key] = room
     return out
 
 
-def _involvement(state_dir: Path, rooms: "_Rooms", rec: _Recorded, uid: int) -> list[dict[str, Any]]:
-    """関わり方 (gifter_analysis.involvement)。ルームは名前つきにする。"""
+def _involvement(state_dir: Path, s: Store, rooms: "_Rooms", rec: _Recorded, uid: int) -> list[dict[str, Any]]:
+    """関わり方 (gifter_analysis.involvement)。送ったルームと来場したルームで見る。ルームは名前つきにする。"""
     from .gifter_analysis import involvement
 
-    comments = _comments_by_room(state_dir)
-    visits = _visits_by_user(state_dir).get(uid) or []
-    keys = {k for k, v in comments.items() if uid in v} | {k for (u, k) in rec.points if u == uid} | {k for _, k, _ in visits}
+    visits = _visits_of(state_dir, s, uid)
+    keys = {k for (u, k) in rec.points if u == uid} | {k for _, k, _ in visits}
+    comments = _comments_in(state_dir, keys)
     paid: dict[str, dict[int, int]] = {k: {} for k in keys}
     for (u, k), pt in rec.points.items():
         if k in paid:
@@ -1256,7 +1258,7 @@ def _recorded_types(s: Store, rooms: "_Rooms", rec: _Recorded, uid: int, gifts: 
         events[k] = [(r[0], r[1]) for r in s.all("""SELECT e.start, e.end FROM room_events re JOIN events e USING(event_id)
                                                      WHERE re.room_id=? AND e.start IS NOT NULL AND e.end IS NOT NULL""", (rid,))]
         starts[k] = [r[0] for r in s.all("SELECT started_at FROM room_lives WHERE room_id=? ORDER BY started_at", (rid,))]
-    out = recorded_types(uid, gifts, rec.points, rec.free, others, events, starts)
+    out = recorded_types(uid, gifts, rec.points, rec.free, others, events, starts, getattr(rec, "unknown", None))
     for x in out.get("stars", []):
         x["name"] = rooms.label(rooms.id(x["key"]))[1]
     return out
@@ -1264,7 +1266,7 @@ def _recorded_types(s: Store, rooms: "_Rooms", rec: _Recorded, uid: int, gifts: 
 
 def _visit_habits(state_dir: Path, rooms: "_Rooms", uid: int) -> dict[str, Any] | None:
     """来場の時間帯 (記録しているルームの「○○さんが N 度目の訪問」の知らせから)。"""
-    vs = _visits_by_user(state_dir).get(uid) or []
+    vs = _visits_of(state_dir, rooms.store, uid)
     if not vs:
         return None
     hour, weekday = [0] * 24, [0] * 7

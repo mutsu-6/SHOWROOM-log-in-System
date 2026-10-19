@@ -76,7 +76,9 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
         if end <= 0:
             return
         catalog = listing.gift_catalog(state_dir, [room_key])
-        senders: dict[int, list[Any]] = {}  # user_id -> [回数, 最後の時刻, 最後の名前, pt, そのうち無料, 最初の時刻]
+        if not catalog:  # ギフトの一覧がまだ取れていない: 全部 0 pt で足すと戻せないので、次に回す
+            return
+        senders: dict[int, list[Any]] = {}  # user_id -> [回数, 最後の時刻, 最後の名前, pt, そのうち無料, 最初の時刻, 一覧に無いギフトの回数]
         names: dict[tuple[int, str], float] = {}
         for line in chunk[:end].splitlines():
             try:
@@ -86,24 +88,26 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             if not isinstance(g, dict) or g.get("user_id") is None or "at" not in g:
                 continue
             uid, name, at = int(g["user_id"]), g.get("name") or "", float(g["at"])
-            x = senders.setdefault(uid, [0, 0.0, "", 0, 0, at])
+            x = senders.setdefault(uid, [0, 0.0, "", 0, 0, at, 0])
             x[0] += 1
             pt, free = listing._points(catalog, g)
             x[3] += pt
             x[4] += pt if free else 0
             x[5] = min(x[5], at)
+            x[6] += g.get("gift_id") not in catalog
             if at >= x[1]:
                 x[1] = at
                 x[2] = name or x[2]
             if name:
                 names[(uid, name)] = max(at, names.get((uid, name), 0.0))
         with s.tx() as c:
-            c.executemany("""INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points, free_points, first_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            c.executemany("""INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points, free_points, first_at, unknown)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                              ON CONFLICT(room_key, user_id) DO UPDATE SET times=times+excluded.times,
                                name=CASE WHEN excluded.last_at >= last_at AND excluded.name != '' THEN excluded.name ELSE name END,
                                last_at=MAX(last_at, excluded.last_at), points=points+excluded.points,
-                               free_points=free_points+excluded.free_points, first_at=MIN(COALESCE(first_at, excluded.first_at), excluded.first_at)""",
+                               free_points=free_points+excluded.free_points, first_at=MIN(COALESCE(first_at, excluded.first_at), excluded.first_at),
+                               unknown=COALESCE(unknown, 0)+excluded.unknown""",
                           [(room_key, uid, *x) for uid, x in senders.items()])
             c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
                              ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
@@ -111,6 +115,63 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             c.execute("""INSERT INTO gift_sender_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
                       (room_key, pos + end, pos + end, time.time()))
+
+
+_visit_lock = threading.Lock()
+
+
+def update_live_visits(state_dir: Path, s: Store, room_key: str) -> None:
+    """来場の知らせのファイル (live_events/<ルーム>.jsonl) の、前に読んだところから先の visit だけを live_visits に足す。
+    ファイルが前より小さくなっていたら、そのルームの分を最初から作り直す。"""
+    from . import live_events
+
+    path = live_events.event_dir(Path(state_dir)) / f"{room_key}.jsonl"
+    with _visit_lock:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        row = s.one("SELECT pos, size FROM live_visit_pos WHERE room_key=?", (room_key,))
+        pos = row["pos"] if row is not None else 0
+        if row is not None and size < row["size"]:
+            with s.tx() as c:
+                c.execute("DELETE FROM live_visits WHERE room_key=?", (room_key,))
+            pos = 0
+        if size <= pos:
+            return
+        with path.open("rb") as f:
+            f.seek(pos)
+            chunk = f.read(size - pos)
+        end = chunk.rfind(b"\n") + 1
+        if end <= 0:
+            return
+        rows = []
+        for line in chunk[:end].splitlines():
+            if b'"visit"' not in line:  # 来場の知らせだけ (ほかの知らせは読まない)
+                continue
+            try:
+                e = json.loads(line)
+                if e.get("kind") == "visit" and e.get("user_id") is not None:
+                    rows.append((int(e["user_id"]), int(e["at"]), room_key, int(e.get("n") or 0)))
+            except (ValueError, TypeError):
+                continue
+        with s.tx() as c:
+            c.executemany("INSERT OR IGNORE INTO live_visits(user_id, at, room_key, n) VALUES (?, ?, ?, ?)", rows)
+            c.execute("""INSERT INTO live_visit_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
+                         ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
+                      (room_key, pos + end, pos + end, time.time()))
+
+
+def update_all_live_visits(state_dir: Path, s: Store) -> None:
+    """来場の知らせのある全ルームの、新しい分だけを足す (新しい分が無ければ、ファイルの大きさを見るだけ)。"""
+    from . import live_events
+
+    folder = live_events.event_dir(Path(state_dir))
+    for path in folder.glob("*.jsonl") if folder.is_dir() else []:
+        try:
+            update_live_visits(state_dir, s, path.stem)
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def update_all_gift_senders(state_dir: Path, s: Store) -> None:

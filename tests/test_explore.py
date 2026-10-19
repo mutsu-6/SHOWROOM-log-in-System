@@ -1,8 +1,9 @@
+import json
 import time
 
 import pytest
 
-from showroom_keeper import explore
+from showroom_keeper import explore, listing
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -98,7 +99,18 @@ def test_search_finds_former_names_recorded_gifters_and_known_rooms(db):
     # (送り主の表は、収集の合間に、記録のファイルの新しい分だけ足す。検索はファイルを読まない)
     record_gift(db, "rec_room", 1, {"u": 55, "ac": "少額さん", "g": 1, "n": 1, "created_at": NOW})
     with Store(db) as s:
+        # ギフトの一覧がまだ無ければ足さない (0 pt で足すと戻せない)。SHOWROOM には問い合わせない
+        listing.gift_catalog, real = (lambda *a, **k: {}), listing.gift_catalog
+        try:
+            explore.update_gift_senders(db, s, "rec_room")
+        finally:
+            listing.gift_catalog = real
+        assert s.scalar("SELECT COUNT(*) FROM gift_sender_pos") == 0
+    (db / "cache").mkdir(exist_ok=True)
+    (db / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 1, "free": True}}}))
+    with Store(db) as s:
         explore.update_gift_senders(db, s, "rec_room")
+        assert tuple(s.one("SELECT points, free_points, unknown FROM gift_senders WHERE user_id=55")) == (1, 1, 0)
     assert explore.search(db, "少額")["gifters"][0]["times"] == 1
     record_gift(db, "rec_room", 1, {"u": 55, "ac": "少額さん改", "g": 1, "n": 1, "created_at": NOW + 5})
     with Store(db) as s:

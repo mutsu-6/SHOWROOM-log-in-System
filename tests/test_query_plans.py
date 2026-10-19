@@ -26,8 +26,9 @@ BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "ro
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
     ("USING INDEX room_events_pending", "WHERE re.final=0", "取っていない分だけの索引を読む (取り終えた分は読まない)"),
+    ("SCAN gift_senders", "first_at, last_at, name, unknown FROM gift_senders",
+     "ギフターの一覧・分析で、記録したギフトの全員の合計を 1 回読む (サーバーで 8 万行・8MB。前は記録のファイル全部 66MB を読み直していた)"),
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
-    ("SCAN contributions", "MAX(user_id) AS uid FROM contributions", "登録時期の目印。分析のたびに 1 回作って meta に残し、ギフターのページでは使い回す"),
 ]
 
 
@@ -188,4 +189,15 @@ def test_recorded_senders_use_the_index(traced):
                 c.execute("INSERT INTO gift_senders(room_key, user_id, times, last_at, name) VALUES ('k1', 55, 3, 1, '少額さん')")
                 c.execute("INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (55, '少額さん', '少額さん', 1)")
             assert explore._recorded_senders(s, "少額", 55, set(), 20)[0]["times"] == 3
+    check(traced, run)
+
+
+def test_signup_anchor_does_not_read_whole_contributions(traced):
+    def run(d):
+        with Store(d) as s:
+            s.conn.execute("DELETE FROM event_max_user")
+            while s.build_event_max_user(2):
+                pass
+            assert s.scalar("SELECT COUNT(*) FROM event_max_user WHERE uid IS NOT NULL") == 3
+            research._Signup.build(s, research._Recorded(d, s))
     check(traced, run)

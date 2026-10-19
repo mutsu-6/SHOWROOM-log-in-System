@@ -325,6 +325,9 @@ class Sweeper:
                 explore.update_gift_senders(self.state_dir, self.store, key, files)  # 上の検索欄で、記録にしか出ない送り主を探すため
             except Exception as err:  # noqa: BLE001
                 log.debug("%s のギフトの送り主を足せませんでした: %s", key, err)
+        explore.update_all_live_visits(self.state_dir, self.store)  # ギフターのページの来場 (新しい分だけ)
+        if not research._coverage_cache:
+            research.coverage(self.state_dir)  # 集まり具合を先に数えておく (起動し直したあと、最初にページを開いた人を待たせない)
 
     def _aggregate(self) -> None:
         """前に集めた貢献ランキングを、月ごとの集計 (user_month) に少しずつ入れる。
@@ -335,7 +338,8 @@ class Sweeper:
             return
         self.doing = "月ごとの集計"
         months = self.store.build_user_month()
-        self._aggregated = not (self.store.build_room_stats() or months)
+        maxes = self.store.build_event_max_user()  # 登録時期の目印 (イベントごとのいちばん大きいユーザー ID)
+        self._aggregated = not (self.store.build_room_stats() or months or maxes)
 
     def _next_final(self, now: float) -> bool:
         """終わる直前の推移: 終わる FINAL_WINDOW 前から FINAL_EVERY ごと (最後の FINAL_LAST は FINAL_LAST_EVERY ごと、
