@@ -1,8 +1,8 @@
 """記録しているルームのコメントの「数」だけを、配信ごとに残す (コメントとギフトの釣り合いを見るため)。
 
 リアルタイム通信のコメント (t=1) を数え、<state_dir>/comment_counts/<ルーム>.json に配信ごとの
-コメント数・数字だけのコメント (カウント) の数・コメントした人数を書く。
-コメントの本文とユーザー ID はファイルに残さない (人数を数えるための ID は、配信中だけメモリに持つ)。
+コメント数・数字だけのコメント (カウント) の数・コメントした人数と、人ごとのコメントの数 (by_user。2026-10-19 から) を書く。
+コメントの本文はファイルに残さない。人ごとの数は、ギフターの「関わり方」(課金だけ型・声の土台型など) を見るため。
 """
 
 from __future__ import annotations
@@ -83,6 +83,9 @@ class CommentCounter:
             users = self._users.setdefault(key, set())
             if data.get("u") is not None:
                 users.add(data.get("u"))
+                by_user = live.setdefault("by_user", {})
+                uid = str(data.get("u"))
+                by_user[uid] = by_user.get(uid, 0) + 1
             live["users"] = max(live["users"], len(users))
             live["first"] = live["first"] or int(now)
             live["last"] = int(now)

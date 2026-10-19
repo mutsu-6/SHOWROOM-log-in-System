@@ -188,3 +188,36 @@ def test_recorded_types_late_regular_star_and_hype():
     others = {"a": [(t, 2) for t in theirs] + [(at, 1) for at, _, _ in mine]}
     r = ga.recorded_types(1, mine, {(1, "a"): 1250, (2, "a"): 3000}, {}, others, {}, {"a": []})
     assert r["hype"]["type"] is True and r["hype"]["share"] == 1 and r["hype"]["ratio"] > 10
+
+
+def test_comment_counts_keep_per_user_numbers(tmp_path):
+    """コメントの数を、配信ごとに人ごとにも残す (本文は残さない)。"""
+    from showroom_keeper import comment_counts
+
+    c = comment_counts.CommentCounter(tmp_path, clock=lambda: NOW)
+    for u, text in ((1, "こんにちは"), (1, "かわいい"), (2, "10"), (None, "x")):
+        c.feed("room", 5, {"t": 1, "u": u, "cm": text})
+    c.flush("room")
+    live = comment_counts.load(tmp_path, "room")[0]
+    assert live["by_user"] == {"1": 2, "2": 1} and live["comments"] == 4 and live["users"] == 2
+    assert "こんにちは" not in (tmp_path / "comment_counts" / "room.json").read_text(encoding="utf-8")
+
+
+def test_involvement_types():
+    """関わり方: 全部型・課金だけ型・声の土台型・挨拶だけ型。"""
+    people = range(10, 20)
+    comments = {"a": {**{u: 5 for u in people}, 1: 0, 2: 80, 3: 60}}
+    paid = {"a": {**{u: 100 for u in people}, 1: 9000, 3: 8000}}
+    visits = {4: [(int(NOW), "a", 1)]}
+    t = {u: ga.involvement(u, comments, paid, visits.get(u, [])) for u in (1, 2, 3, 4)}
+    assert t[1][0]["type"] == "課金だけ型" and t[2][0]["type"] == "声の土台型" and t[3][0]["type"] == "全部型"
+    assert t[4][0]["type"] == "挨拶だけ型" and t[4][0]["visits"] == 1
+    assert ga.involvement(1, {"b": {1: 3}}, {"b": {1: 10}}, [])[0]["type"] is None  # くらべる人が少ない
+
+
+def test_involvement_includes_free_only_rooms():
+    """無料のギフトだけ送って、話していないルームも出す (くらべる人が多ければ「ふつう」か、話さない型)。"""
+    comments = {"a": {u: 5 for u in range(10, 20)}}
+    paid = {"a": {u: 100 for u in range(10, 20)}}
+    rows = ga.involvement(5, comments, paid, [], {"a"})
+    assert len(rows) == 1 and rows[0]["key"] == "a" and rows[0]["paid"] == 0 and rows[0]["type"] == "ふつう"

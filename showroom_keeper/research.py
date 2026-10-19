@@ -1056,6 +1056,7 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         visits = _visit_habits(state_dir, rooms, uid)
         overlap = _time_overlap(s, rooms, habits(gifts) or visits, [r["key"] for r in room_list[:OVERLAP_ROOMS]], support)
         recorded = _recorded_types(s, rooms, rec, uid, gifts)
+        involve = _involvement(state_dir, rooms, rec, uid)
     cov = coverage(state_dir)
     with Store(state_dir) as s:
         return {"user_id": uid, "found": True,
@@ -1066,7 +1067,7 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
                                                           ORDER BY at DESC LIMIT 20""", (uid,))],
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
-                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "recorded_types": recorded, "timeline": _timeline(s, rooms, gifts, uid),
+                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "recorded_types": recorded, "involvement": involve, "timeline": _timeline(s, rooms, gifts, uid),
                 "visits": visits, "overlap": overlap,
                 "states": _states(s, rooms, uid)}
 
@@ -1093,6 +1094,52 @@ def _visits_by_user(state_dir: Path) -> dict[int, list[tuple[int, str, int]]]:
                 except (TypeError, ValueError):
                     continue
     _visit_index[key] = (time.time(), out)
+    return out
+
+
+_comment_index: dict[str, tuple[float, dict[str, dict[int, int]]]] = {}
+
+
+def _comments_by_room(state_dir: Path) -> dict[str, dict[int, int]]:
+    """記録しているルームの、人ごとのコメントの数 (配信ごとの by_user を足したもの。2026-10-19 から) {ルーム: {人: 数}}。"""
+    from . import comment_counts
+
+    key = str(state_dir)
+    hit = _comment_index.get(key)
+    if hit and time.time() - hit[0] < VISIT_TTL:
+        return hit[1]
+    out: dict[str, dict[int, int]] = {}
+    folder = comment_counts.count_dir(Path(state_dir))
+    for path in folder.glob("*.json") if folder.is_dir() else []:
+        room: dict[int, int] = {}
+        for live in comment_counts.load(Path(state_dir), path.stem):
+            for u, n in (live.get("by_user") or {}).items():
+                try:
+                    room[int(u)] = room.get(int(u), 0) + int(n)
+                except (TypeError, ValueError):
+                    continue
+        if room:
+            out[path.stem] = room
+    _comment_index[key] = (time.time(), out)
+    return out
+
+
+def _involvement(state_dir: Path, rooms: "_Rooms", rec: _Recorded, uid: int) -> list[dict[str, Any]]:
+    """関わり方 (gifter_analysis.involvement)。ルームは名前つきにする。"""
+    from .gifter_analysis import involvement
+
+    comments = _comments_by_room(state_dir)
+    visits = _visits_by_user(state_dir).get(uid) or []
+    keys = {k for k, v in comments.items() if uid in v} | {k for (u, k) in rec.points if u == uid} | {k for _, k, _ in visits}
+    paid: dict[str, dict[int, int]] = {k: {} for k in keys}
+    for (u, k), pt in rec.points.items():
+        if k in paid:
+            p = pt - rec.free.get((u, k), 0)
+            if p > 0:
+                paid[k][u] = p
+    out = involvement(uid, {k: comments.get(k, {}) for k in keys}, paid, visits, keys)
+    for r in out:
+        r["name"] = rooms.label(rooms.id(r["key"]))[1]
     return out
 
 

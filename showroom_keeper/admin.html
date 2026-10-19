@@ -1779,6 +1779,19 @@ function recordedTypes(x) {
   }
   return h;
 }
+// 関わり方 (記録しているルームの、人ごとのコメントの数・有料のギフト・来場から)
+const INVOLVE_NOTE = { "全部型": "コメントも有料のギフトも、そのルームの人の中で上から 4 分の 1", "課金だけ型": "有料のギフトは上から 4 分の 1 なのに、コメントは下から 4 分の 1",
+  "声の土台型": "コメントは上から 4 分の 1 なのに、有料のギフトは下から 4 分の 1", "挨拶だけ型": "初訪問の 1 回だけで、ギフトもほとんど話もしていない", "ふつう": "上のどれにも当たらない" };
+function involvementTable(rows) {
+  return `<h3>関わり方 <small class="muted">記録しているルームの、コメントの数・有料のギフト・来場から</small></h3>` + dataTable("gp-involve", [
+    { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+    { label: "型", value: (r) => r.type || "", html: (r) => r.type ? `<b title="${esc(INVOLVE_NOTE[r.type] || "")}">${esc(r.type)}</b>` : '<span class="uid">くらべる人が少ない</span>' },
+    { label: "コメント", num: true, value: (r) => r.comments, html: (r) => num(r.comments) },
+    { label: "有料のギフト", num: true, value: (r) => r.paid, html: (r) => `${num(r.paid)} pt` },
+    { label: "来場", num: true, value: (r) => r.visits, html: (r) => num(r.visits) },
+  ], rows, { sort: 3, limit: 8, csvName: "ギフター_関わり方",
+    note: "コメントの数は、人ごとに数え始めた 2026-10-19 からの分です (それより前は配信ごとの合計しか残していません)。多い・少ないは、そのルームでコメントした人・有料を送った人 (8 人以上) の中でくらべます。線はどれも仮の値です" });
+}
 const habitCell = (u) => u.habits ? `${esc(u.habits.top_weekday)}曜 ${esc(hourText(u.habits.top_hours))}<div class="uid">1 回 平均 ${num(u.habits.avg_point)} pt ・ ${num(u.habits.times)} 回</div>` : `<span class="uid">記録なし</span>`;
 const roomsCell = (u) => esc(u.top_rooms.map((r) => `${r.name} ${num(r.points)}`).join("、")) + (u.room_count > u.top_rooms.length + (u.support_points ? 1 : 0) ? ` ほか` : "");
 const eventCell = (u) => u.event_count ? `${num(u.event_count)} 件<div class="uid">最高 ${num(u.best_rank)} 位・${num(u.event_points)} pt</div>` : `<span class="uid">-</span>`;
@@ -2179,6 +2192,7 @@ async function showGifter(uid) {
   html += `<div id="r-timeline"></div>`;
   if (d.found && d.states) html += gifterStates(d.states);
   if (d.found && d.recorded_types) html += recordedTypes(d.recorded_types);
+  if (d.found && d.involvement && d.involvement.length) html += involvementTable(d.involvement);
   if (d.found && d.visits) {
     const v = d.visits, mx = Math.max(1, ...v.hour);
     html += `<h3>来場の時間帯 <small class="muted">記録しているルームの「○○さんが N 度目の訪問」の知らせから</small></h3><div class="tiles">

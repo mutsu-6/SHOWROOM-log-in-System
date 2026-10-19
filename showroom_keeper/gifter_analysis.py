@@ -535,3 +535,50 @@ def recorded_types(uid: int, gifts: list[tuple[float, int, str]], points: dict[t
                    "ratio": (obs / exp_) if exp_ else None,
                    "type": None if n < HYPE_MIN or not exp_ else (obs / exp_) >= HYPE_RATIO}
     return out
+
+
+# ------------------------------------------------------------------ 関わり方 (docs/ギフターの分類.md の軸 6)
+# 記録しているルームの、人ごとのコメントの数 (2026-10-19 から数えている) と、記録した有料のギフトと、来場から。線はどれも仮の値
+INVOLVE_HIGH = 0.75  # そのルームの人の中で、上から 4 分の 1 (この分位点以上) を「多い」
+INVOLVE_LOW = 0.25  # 下から 4 分の 1 (この分位点以下・0 を含む) を「少ない」
+INVOLVE_MIN = 8  # そのルームでくらべる人がこれより少なければ決めない
+INVOLVE_ROOMS = 8  # 関わり方を出すルームの数
+
+
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    xs = sorted(values)
+    return xs[min(len(xs) - 1, max(0, int(round(q * (len(xs) - 1)))))]
+
+
+def involvement(uid: int, comments: dict[str, dict[int, int]], paid: dict[str, dict[int, int]],
+                visits: list[tuple[int, str, int]], rooms: set[str] | None = None) -> list[dict[str, Any]]:
+    """ルームごとの関わり方: 全部型・課金だけ型・声の土台型・挨拶だけ型・ふつう。
+
+    - comments: ルームごとの {人: コメントの数}。paid: ルームごとの {人: 記録した有料のポイント}。visits: その人の (時刻, ルーム, 何回目)
+    - 多い・少ないは、そのルームでコメントした人・有料を送った人を合わせた中での分位点でくらべる
+    """
+    keys = {k for k, v in comments.items() if uid in v} | {k for k, v in paid.items() if uid in v} | {k for _, k, _ in visits}
+    keys |= rooms or set()  # 無料のギフトだけ送ったルームも
+    out = []
+    for key in keys:
+        people = set(comments.get(key, {})) | set(paid.get(key, {}))
+        c = comments.get(key, {}).get(uid, 0)
+        p = paid.get(key, {}).get(uid, 0)
+        vs = [n for _, k, n in visits if k == key]
+        row = {"key": key, "comments": c, "paid": p, "visits": len(vs), "people": len(people), "type": None}
+        if len(people) >= INVOLVE_MIN:
+            cs = [comments.get(key, {}).get(u, 0) for u in people]
+            ps = [paid.get(key, {}).get(u, 0) for u in people]
+            c_hi, c_lo = _quantile(cs, INVOLVE_HIGH), _quantile(cs, INVOLVE_LOW)
+            p_hi, p_lo = _quantile(ps, INVOLVE_HIGH), _quantile(ps, INVOLVE_LOW)
+            many_c, few_c = c > 0 and c >= c_hi, c <= c_lo
+            many_p, few_p = p > 0 and p >= p_hi, p <= p_lo
+            row["type"] = ("全部型" if many_c and many_p else "課金だけ型" if many_p and few_c else
+                           "声の土台型" if many_c and few_p else "ふつう")
+        if not p and c <= 1 and vs and all(n == 1 for n in vs) and len(vs) == 1:
+            row["type"] = "挨拶だけ型"  # 初訪問の 1 回だけで、ギフトもほぼ話しもしていない
+        out.append(row)
+    out.sort(key=lambda r: -(r["paid"] + r["comments"]))
+    return out[:INVOLVE_ROOMS]

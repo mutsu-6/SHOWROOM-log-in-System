@@ -183,7 +183,7 @@ def test_comment_counter(tmp_path):
     assert "こんにちは" not in raw and "わこつ" not in raw  # 本文は残さない
     (live,) = comment_counts.load(tmp_path, "aaa")
     assert (live["comments"], live["numeric"], live["users"], live["partial"]) == (4, 2, 2, False)
-    assert "user" not in raw.replace('"users"', "")  # ユーザー ID は残さない
+    assert sum(live["by_user"].values()) == 4  # 人ごとの数は残す (2026-10-19 から。関わり方のため)。本文は残さない
     c.start("aaa", 9)  # つなぎ直した (途中が切れていた)
     c.flush("aaa")
     assert comment_counts.load(tmp_path, "aaa")[0]["partial"] is True
