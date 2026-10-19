@@ -1414,7 +1414,7 @@ function renderListenerCharts(d, sel = "#l-charts", period = null) {
   const roomColor = (k) => k === "_other" ? OTHER_COLOR : ROOM_COLORS[c.rooms.indexOf(k)] || OTHER_COLOR;
   const byRoom = listenerChart.daily === "rooms";
   const dailyBars = c.daily.map((x) => {
-    const wd = (new Date(`${x.day}T00:00:00+09:00`).getUTCDay() + 6) % 7;
+    const wd = (new Date(`${x.day}T00:00:00Z`).getUTCDay() + 6) % 7;  // 日付だけで曜日を出す (日本時間の 0 時は、世界時では前の日)
     const rooms = [...c.rooms, "_other"].filter((k) => x.rooms[k]).map((k) => `\n${k === "_other" ? "その他" : nameOf(k)}: ${num(x.rooms[k])} pt`).join("");
     return {
       label: x.day.slice(5).replace("-", "/"), shade: wd >= 5,
@@ -2744,8 +2744,8 @@ function followerGroups(days, unit) {
   const key = (d) => {
     if (unit === "month") return d.slice(0, 7);
     if (unit === "week") {  // 月曜はじまりの週
-      const t = new Date(`${d}T00:00:00+09:00`), w = (t.getUTCDay() + 6) % 7;
-      return new Date(t.getTime() - w * 86400000 + 9 * 3600000).toISOString().slice(0, 10);
+      const t = new Date(`${d}T00:00:00Z`), w = (t.getUTCDay() + 6) % 7;  // 日付だけでくらべる (日本時間の 0 時だと、世界時の曜日が前の日になる)
+      return new Date(t.getTime() - w * 86400000).toISOString().slice(0, 10);
     }
     return d;
   };
