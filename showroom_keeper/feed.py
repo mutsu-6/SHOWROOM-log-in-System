@@ -4,9 +4,8 @@
 出すもの (新しい順):
 - big_gift: 記録しているルームの大きなギフト (1 回に min_point pt 以上。同じ人・同じルームの 10 分以内の続きは 1 つにまとめる)
 - watch_gift / watch_visit: 気になるギフターが、記録しているルームでギフトを送った・来場した
-- live_start / live_end: 視聴するルーム・応援ルームの配信が始まった・終わった
-- event_rank / event_ending / event_end: 応援ルームの、イベントの順位が変わった・終わりが近い・終わった
-- showroom_notice: SHOWROOM のお知らせ
+- event_daily: 調べるルームが出ているイベントの、毎日 24:00 (日本時間) の上位 3 ルーム (イベントごとに 1 日 1 件)
+配信の始まり・終わりと SHOWROOM のお知らせ、順位が変わるたびの知らせは、利用者が要らないとしたので出さない (2026-10-20)。
 すぐ直す必要のあること (ログイン切れ・ディスクなど) は、管理画面が /api/overview の alerts から足す (ここでは作らない)。
 """
 
@@ -14,6 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,20 +23,21 @@ FEED_TTL = 60  # 作った一覧を使い回す秒数 (画面は 1 分ごとに�
 MAX_HOURS = 7 * 24  # さかのぼれる時間の上限
 DEFAULT_MIN_POINT = 10_000  # 大きなギフトの、1 回のポイントの基準 (画面で変えられる)
 BURST_GAP = 600  # 同じ人・同じルームの大きなギフトを 1 つにまとめる間 (秒)
-LIVE_GONE = 900  # 最後に配信中と見えてからこれだけたったら、終わったとみる (配信中の一覧は 5 分ごと)
-ENDING_SOON = 86400  # イベントの終わりがこれより近くなったら知らせる
-MAX_ITEMS = {"big_gift": 200, "watch_gift": 100, "watch_visit": 100, "live": 100, "event": 100, "showroom_notice": 30}
+SNAP_NEAR = 90 * 60  # 24:00 の報告に使う推移の、24:00 からのずれの上限 (推移は 1 時間ごと)
+DAILY_TOP = 3  # 24:00 の報告に出すルームの数
+MAX_ITEMS = {"big_gift": 200, "watch_gift": 100, "watch_visit": 100, "event": 100}
+JST = timezone(timedelta(hours=9))
 
 _cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _lock = threading.Lock()
 
 
-def build(state_dir: Path, support: list[str], watch_rooms: list[str], hours: float = 24,
-          min_point: int = DEFAULT_MIN_POINT, now: float | None = None, use_cache: bool = True) -> dict[str, Any]:
-    """お知らせの一覧 {items: [...], since, now, min_point}。items は新しい順。"""
+def build(state_dir: Path, support: list[str], hours: float = 24, min_point: int = DEFAULT_MIN_POINT,
+          now: float | None = None, use_cache: bool = True) -> dict[str, Any]:
+    """お知らせの一覧 {items: [...], since, now, min_point}。items は新しい順。support はイベントを見るルーム。"""
     hours = max(1.0, min(float(hours), MAX_HOURS))
     min_point = max(1, int(min_point))
-    key = (str(state_dir), tuple(support), tuple(watch_rooms), hours, min_point)
+    key = (str(state_dir), tuple(support), hours, min_point)
     with _lock:  # 同時に開いても、数えるのは 1 回だけ
         hit = _cache.get(key)
         if use_cache and now is None and hit and time.time() - hit[0] < FEED_TTL:
@@ -47,8 +48,7 @@ def build(state_dir: Path, support: list[str], watch_rooms: list[str], hours: fl
             _catch_up(state_dir, s)
             rooms = _Rooms(s, state_dir)
             items = (_big_gifts(state_dir, s, rooms, since, min_point) + _watched(state_dir, s, rooms, since)
-                     + _lives(s, rooms, dict.fromkeys([*watch_rooms, *support]), since, now)
-                     + _events(s, rooms, support, since, now) + _notices(s, since))
+                     + _events(s, rooms, support, since, now))
         items.sort(key=lambda x: x["at"], reverse=True)
         out = {"items": items, "since": since, "now": now, "hours": hours, "min_point": min_point}
         _cache[key] = (time.time(), out)
@@ -172,53 +172,61 @@ def _watched(state_dir: Path, s: Store, rooms: _Rooms, since: float) -> list[dic
     return out
 
 
-def _lives(s: Store, rooms: _Rooms, keys: dict[str, None], since: float, now: float) -> list[dict[str, Any]]:
-    """視聴するルーム・応援ルームの配信の始まりと終わり (配信中のルームの一覧から 5 分ごとに残した room_lives)。"""
-    out: list[dict[str, Any]] = []
-    for key in keys:
-        rid = rooms.id(key)
-        if rid is None:
-            continue
-        base = {"room_key": key, "room_name": rooms.name(key)}
-        for r in s.all("""SELECT started_at, last_seen, view_max, followers_start, followers_end FROM room_lives
-                          WHERE room_id=? AND (started_at>=? OR last_seen>=?) ORDER BY started_at""", (rid, int(since), since)):
-            if r["started_at"] >= since:
-                out.append({"kind": "live_start", "level": "normal", "at": float(r["started_at"]), **base})
-            if r["last_seen"] and now - r["last_seen"] > LIVE_GONE and r["last_seen"] >= since:
-                gained = (r["followers_end"] - r["followers_start"]) if r["followers_end"] is not None and r["followers_start"] is not None else None
-                out.append({"kind": "live_end", "level": "normal", "at": float(r["last_seen"]), **base,
-                            "minutes": round((r["last_seen"] - r["started_at"]) / 60), "view_max": r["view_max"], "followers": gained})
-    return sorted(out, key=lambda x: x["at"], reverse=True)[:MAX_ITEMS["live"]]
+def _midnights(since: float, now: float) -> list[float]:
+    """since から now までの、日本時間の 24:00 (次の日の 0:00) の時刻。"""
+    day = datetime.fromtimestamp(since, JST).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    out = []
+    while day.timestamp() <= now:
+        out.append(day.timestamp())
+        day += timedelta(days=1)
+    return out
+
+
+def _snapshot_at(s: Store, event_id: int, at: float) -> float | None:
+    """24:00 にいちばん近い推移の時刻 (前後 SNAP_NEAR 以内。索引 (event_id, at) で前と後の 1 つずつを読む)。"""
+    near = [r[0] for r in (s.one("SELECT MAX(at) FROM event_progress WHERE event_id=? AND at<=? AND at>?", (event_id, at, at - SNAP_NEAR)),
+                           s.one("SELECT MIN(at) FROM event_progress WHERE event_id=? AND at>? AND at<?", (event_id, at, at + SNAP_NEAR)))
+            if r and r[0] is not None]
+    return min(near, key=lambda x: abs(x - at)) if near else None
 
 
 def _events(s: Store, rooms: _Rooms, support: list[str], since: float, now: float) -> list[dict[str, Any]]:
-    """応援ルームの、開催中・終わったばかりのイベント: 順位が変わった (1 時間ごとの推移から)・終わりが近い・終わった。"""
-    out: list[dict[str, Any]] = []
+    """調べるルームが出ているイベントの、毎日 24:00 の上位 3 ルーム (1 時間ごとの推移から。イベントごとに 1 日 1 件)。"""
+    mine: dict[int, str] = {}
     for key in dict.fromkeys(support):
         rid = rooms.id(key)
-        if rid is None:
-            continue
-        base = {"room_key": key, "room_name": rooms.name(key)}
-        for e in s.all("""SELECT re.event_id, re.point, re.rank, e.name, e.end FROM room_events re JOIN events e USING(event_id)
+        if rid is not None:
+            mine[rid] = key
+    events: dict[int, Any] = {}
+    joined: dict[int, list[int]] = {}  # イベント → 出ている調べるルーム
+    for rid in mine:
+        for e in s.all("""SELECT e.event_id, e.name, e.start, e.end FROM room_events re JOIN events e USING(event_id)
                           WHERE re.room_id=? AND e.end>=?""", (rid, since)):
-            ev = {**base, "event_id": e["event_id"], "event_name": e["name"] or f"イベント {e['event_id']}", "end": e["end"]}
-            prev = None
-            for p in s.all("SELECT at, rank, point FROM event_progress WHERE event_id=? AND room_id=? AND at>=? ORDER BY at",
-                           (e["event_id"], rid, since - 2 * 3600)):
-                if prev is not None and p["rank"] and prev["rank"] and p["rank"] != prev["rank"] and p["at"] >= since:
-                    out.append({"kind": "event_rank", "level": "high" if p["rank"] < prev["rank"] and p["rank"] <= 3 else "normal",
-                                "at": p["at"], **ev, "before": prev["rank"], "after": p["rank"], "point": p["point"]})
-                prev = p
-            if e["end"] <= now:
-                out.append({"kind": "event_end", "level": "high", "at": e["end"], **ev, "rank": e["rank"], "point": e["point"]})
-            elif e["end"] - now <= ENDING_SOON and e["end"] - ENDING_SOON >= since:
-                out.append({"kind": "event_ending", "level": "normal", "at": e["end"] - ENDING_SOON, **ev,
-                            "rank": prev["rank"] if prev else e["rank"], "point": prev["point"] if prev else e["point"]})
+            events[e["event_id"]] = e
+            joined.setdefault(e["event_id"], []).append(rid)
+    out: list[dict[str, Any]] = []
+    for eid, e in events.items():
+        for midnight in _midnights(since, now):
+            if (e["start"] and midnight < e["start"]) or (e["end"] and midnight > e["end"]):
+                continue
+            at = _snapshot_at(s, eid, midnight)
+            if at is None:
+                continue
+            top = s.all("SELECT room_id, point, rank FROM event_progress WHERE event_id=? AND at=? ORDER BY point DESC LIMIT ?",
+                        (eid, at, DAILY_TOP))
+            ours = []
+            for rid in joined.get(eid, []):
+                r = s.one("SELECT point, rank FROM event_progress WHERE event_id=? AND room_id=? AND at=?", (eid, rid, at))
+                if r:
+                    ours.append({"room_key": mine[rid], "room_name": rooms.name(mine[rid]), "point": r["point"], "rank": r["rank"]})
+            out.append({"kind": "event_daily", "level": "normal", "at": midnight, "snapshot_at": at, "event_id": eid,
+                        "event_name": e["name"] or f"イベント {eid}", "end": e["end"],
+                        "top": [{**_room_of(s, rooms, r["room_id"]), "point": r["point"], "rank": r["rank"] or i + 1}
+                                for i, r in enumerate(top)], "mine": ours})
     return sorted(out, key=lambda x: x["at"], reverse=True)[:MAX_ITEMS["event"]]
 
 
-def _notices(s: Store, since: float) -> list[dict[str, Any]]:
-    return [{"kind": "showroom_notice", "level": "normal", "at": r["created_at"], "notice_id": r["notice_id"],
-             "title": r["title"] or "", "label": r["label"] or ""}
-            for r in s.all("SELECT notice_id, label, title, created_at FROM notices WHERE created_at>=? ORDER BY created_at DESC LIMIT ?",
-                           (since, MAX_ITEMS["showroom_notice"]))]
+def _room_of(s: Store, rooms: _Rooms, rid: int) -> dict[str, Any]:
+    row = s.one("SELECT key, name FROM rooms WHERE room_id=?", (rid,))
+    key = (row["key"] if row else None) or ""
+    return {"room_key": key, "room_name": (row["name"] if row else None) or (rooms.name(key) if key else f"ルーム {rid}")}
