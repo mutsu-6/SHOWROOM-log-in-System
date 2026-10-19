@@ -484,31 +484,86 @@ def room_score(slot: dict[str, Any]) -> int:
 
 
 class _Recorded:
-    """記録したギフト (state/gifts の JSONL) をギフターごとにまとめたもの。"""
+    """記録したギフトを、ギフターごとにまとめたもの。
 
-    def __init__(self, state_dir: Path):
-        from .listing import _points, _records, gift_catalog
+    全員の合計 (人 × ルームの pt・そのうち無料・最初の時刻・最後の名前) は送り主の表 (gift_senders。収集の合間に 10 分ごとに
+    ファイルの新しい分だけ足し、読む前にもそのあとの新しい分だけ足す) から読む。1 人のギフト 1 件ずつ (gifts) は、その人が送ったルームのファイルだけを読む。
+    前は、ページを開くたびにファイル全部を読み直していた (789 ルーム・66MB で 40 秒・メモリ 420MB。2026-10-19)。
+    user を渡すと、その人と、その人が送ったルームの人の分だけを読む (ギフターのページ)。
+    """
 
-        records = _records(state_dir, None, None)
-        catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in records)))
-        self.gifts: dict[int, list[tuple[float, int, str]]] = defaultdict(list)
+    def __init__(self, state_dir: Path, store: Store | None = None, user: int | None = None):
+        self.state_dir = Path(state_dir)
         self.points: dict[tuple[int, str], int] = defaultdict(int)
-        self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.free: dict[tuple[int, str], int] = defaultdict(int)  # そのうち無料のギフトのポイント
+        self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.names: dict[int, str] = {}
-        for key, g in records:
-            uid = g.get("user_id")
-            if uid is None:
-                continue
-            uid = int(uid)
-            pt, free = _points(catalog, g)
-            if g.get("name"):
-                self.names[uid] = g["name"]  # 後の記録の名前で上書きする
-            self.points[(uid, key)] += pt
-            if free:
-                self.free[(uid, key)] += pt
-            self.by_user[uid][key] += pt
-            self.gifts[uid].append((g["at"], pt, key))
+        self.first_at: dict[int, float] = {}
+        from .explore import update_all_gift_senders
+
+        s = store if store is not None else Store(state_dir)
+        try:
+            update_all_gift_senders(state_dir, s)  # 前に足したあとの新しい分だけ (ふだんは 10 分ごとに収集の合間に足してある)
+            if user is None:
+                rows = s.all("SELECT room_key, user_id, points, free_points, first_at, last_at, name FROM gift_senders")
+            else:
+                keys = [r[0] for r in s.all("SELECT room_key FROM gift_senders WHERE user_id=?", (int(user),))]
+                rows = [r for k in keys for r in s.all("""SELECT room_key, user_id, points, free_points, first_at, last_at, name
+                                                          FROM gift_senders WHERE room_key=?""", (k,))]
+        finally:
+            if store is None:
+                s.close()
+        last: dict[int, float] = {}
+        for r in rows:
+            uid, key = int(r["user_id"]), r["room_key"]
+            self.points[(uid, key)] += r["points"] or 0
+            self.free[(uid, key)] += r["free_points"] or 0
+            self.by_user[uid][key] += r["points"] or 0
+            if r["first_at"] is not None and r["first_at"] < self.first_at.get(uid, float("inf")):
+                self.first_at[uid] = r["first_at"]
+            if r["name"] and (r["last_at"] or 0) >= last.get(uid, -1):
+                self.names[uid], last[uid] = r["name"], r["last_at"] or 0
+        self.gifts = _RecordedGifts(self)
+
+
+class _RecordedGifts:
+    """1 人のギフト 1 件ずつ [(時刻, pt, ルーム)] を、その人が送ったルームのファイルだけから読む (dict の get のように使う)。"""
+
+    def __init__(self, rec: _Recorded):
+        self.rec = rec
+        self._files: dict[str, list[dict[str, Any]]] = {}
+        self._catalog: dict[int, dict[str, Any]] | None = None
+        self._done: dict[int, list[tuple[float, int, str]]] = {}
+
+    def _room(self, key: str) -> list[dict[str, Any]]:
+        from .listing import _load_file, _record_files
+
+        if key not in self._files:
+            path = _record_files(self.rec.state_dir).get(key)
+            self._files[key] = _load_file(path) if path is not None else []
+        return self._files[key]
+
+    def _points(self, g: dict[str, Any]) -> int:
+        from .listing import _points, gift_catalog
+
+        if self._catalog is None:
+            self._catalog = gift_catalog(self.rec.state_dir, sorted({k for _, k in self.rec.points}))
+        return _points(self._catalog, g)[0]
+
+    def get(self, uid: int, default: Any = None) -> list[tuple[float, int, str]]:
+        uid = int(uid)
+        if uid not in self._done:
+            out = []
+            for key in self.rec.by_user.get(uid, {}):
+                for g in self._room(key):
+                    if g.get("user_id") is not None and int(g["user_id"]) == uid:
+                        out.append((g["at"], self._points(g), key))
+            self._done[uid] = sorted(out)
+        return self._done[uid]
+
+    def room(self, key: str) -> list[tuple[float, int]]:
+        """そのルームの、記録した全員のギフト [(時刻, 人)]。"""
+        return [(g["at"], int(g["user_id"])) for g in self._room(key) if g.get("user_id") is not None]
 
 
 class _Rooms:
@@ -574,7 +629,7 @@ class _Signup:
     def build(cls, s: Store, rec: _Recorded) -> _Signup:
         seen = [(r[0], r[1]) for r in s.all("""SELECT e.end, m.uid FROM (SELECT event_id, MAX(user_id) AS uid FROM contributions
                                                WHERE guessed IS NULL GROUP BY event_id) m JOIN events e USING(event_id) WHERE e.end IS NOT NULL""")]
-        seen += [(min(g[0] for g in gifts), uid) for uid, gifts in rec.gifts.items() if gifts]
+        seen += [(at, uid) for uid, at in rec.first_at.items()]
         steps, top = [], 0
         for at, uid in sorted(seen):
             if uid > top:
@@ -1031,8 +1086,8 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
         uid = int(str(user_id).strip())
     except (TypeError, ValueError):
         raise ValueError("ユーザー ID は数字で指定してください") from None
-    rec = _Recorded(state_dir)
     with Store(state_dir) as s:
+        rec = _Recorded(state_dir, s, user=uid)  # この人と、この人が送ったルームの人の分だけ
         rooms = _Rooms(s, state_dir)
         slots = _slots(s, rooms, rec, [uid]).get(uid, {})
         events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end,
@@ -1150,11 +1205,7 @@ def _recorded_types(s: Store, rooms: "_Rooms", rec: _Recorded, uid: int, gifts: 
     if not gifts:
         return None
     keys = {k for _, _, k in gifts}
-    others: dict[str, list[tuple[float, int]]] = {k: [] for k in keys}
-    for u, gs in rec.gifts.items():
-        for at, _, k in gs:
-            if k in others:
-                others[k].append((at, u))
+    others = {k: rec.gifts.room(k) for k in keys}
     events, starts = {}, {}
     for k in keys:
         rid = rooms.id(k)
@@ -1254,7 +1305,7 @@ def watch_list(state_dir: Path, support: list[str]) -> list[dict[str, Any]]:
         rows = [dict(r) for r in s.watch_rows()]
         if not rows:
             return []
-        rec = _Recorded(state_dir)
+        rec = _Recorded(state_dir, s)
         rooms = _Rooms(s, state_dir)
         uids = [r["user_id"] for r in rows]
         slots = _slots(s, rooms, rec, uids)

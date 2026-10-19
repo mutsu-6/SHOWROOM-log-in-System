@@ -121,8 +121,10 @@ CREATE TABLE IF NOT EXISTS room_gift_day_users (room_key TEXT, day TEXT, user_id
 CREATE TABLE IF NOT EXISTS room_gift_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
 -- 記録したギフトの送り主 (ルームごと)。上の検索欄で、ランキングに出ない少額の人も探すため。
 -- 記録のファイルの新しい分だけを、収集の合間に足す (explore.update_gift_senders。ファイル全部を読み直さない)
+-- points・free_points (そのうち無料) は、足した時のギフトの一覧で数える。ギフターのページ・一覧・分析は、全員の合計をここから読む
 CREATE TABLE IF NOT EXISTS gift_senders (
-    room_key TEXT, user_id INTEGER, times INTEGER, last_at REAL, name TEXT, PRIMARY KEY (room_key, user_id)) WITHOUT ROWID;
+    room_key TEXT, user_id INTEGER, times INTEGER, last_at REAL, name TEXT, points INTEGER DEFAULT 0, free_points INTEGER DEFAULT 0,
+    first_at REAL, PRIMARY KEY (room_key, user_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS gift_senders_user ON gift_senders(user_id);
 -- 送り主が使っていた名前と、そろえた形 (explore._fold。探す時にくらべる)
 CREATE TABLE IF NOT EXISTS gift_sender_names (
@@ -224,13 +226,19 @@ class Store:
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
                                    ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"), ("room_lives", "genre TEXT"),
                                    ("user_rooms", "room_key TEXT"), ("event_series", "parents TEXT"),
-                                   ("event_series", "route TEXT"), ("event_series", "brand TEXT")):
+                                   ("event_series", "route TEXT"), ("event_series", "brand TEXT"),
+                                   ("gift_senders", "points INTEGER DEFAULT 0"), ("gift_senders", "free_points INTEGER DEFAULT 0"),
+                                   ("gift_senders", "first_at REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                         if (table, col.split()[0]) == ("room_events", "c_p100"):
                             # 100 位のポイントを、前に集めた分からも作り直す (build_room_stats が少しずつ)
                             self.conn.execute("DELETE FROM meta WHERE k='room_stats_upto'")
+                        if (table, col.split()[0]) == ("gift_senders", "points"):
+                            # ポイントの列が無かった表: 記録のファイルの最初から足し直す
+                            self.conn.execute("DELETE FROM gift_senders")
+                            self.conn.execute("DELETE FROM gift_sender_pos")
                         if (table, col.split()[0]) == ("event_series", "route"):
                             self.conn.execute("DELETE FROM event_series WHERE how='auto'")  # 木の形でまとめ直す
                 # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る

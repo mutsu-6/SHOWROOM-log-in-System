@@ -75,7 +75,8 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
         if end <= 0:
             return
-        senders: dict[int, list[Any]] = {}  # user_id -> [回数, 最後の時刻, 最後の名前]
+        catalog = listing.gift_catalog(state_dir, [room_key])
+        senders: dict[int, list[Any]] = {}  # user_id -> [回数, 最後の時刻, 最後の名前, pt, そのうち無料, 最初の時刻]
         names: dict[tuple[int, str], float] = {}
         for line in chunk[:end].splitlines():
             try:
@@ -85,25 +86,43 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             if not isinstance(g, dict) or g.get("user_id") is None or "at" not in g:
                 continue
             uid, name, at = int(g["user_id"]), g.get("name") or "", float(g["at"])
-            x = senders.setdefault(uid, [0, 0.0, ""])
+            x = senders.setdefault(uid, [0, 0.0, "", 0, 0, at])
             x[0] += 1
+            pt, free = listing._points(catalog, g)
+            x[3] += pt
+            x[4] += pt if free else 0
+            x[5] = min(x[5], at)
             if at >= x[1]:
                 x[1] = at
                 x[2] = name or x[2]
             if name:
                 names[(uid, name)] = max(at, names.get((uid, name), 0.0))
         with s.tx() as c:
-            c.executemany("""INSERT INTO gift_senders(room_key, user_id, times, last_at, name) VALUES (?, ?, ?, ?, ?)
+            c.executemany("""INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points, free_points, first_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                              ON CONFLICT(room_key, user_id) DO UPDATE SET times=times+excluded.times,
                                name=CASE WHEN excluded.last_at >= last_at AND excluded.name != '' THEN excluded.name ELSE name END,
-                               last_at=MAX(last_at, excluded.last_at)""",
-                          [(room_key, uid, x[0], x[1], x[2]) for uid, x in senders.items()])
+                               last_at=MAX(last_at, excluded.last_at), points=points+excluded.points,
+                               free_points=free_points+excluded.free_points, first_at=MIN(COALESCE(first_at, excluded.first_at), excluded.first_at)""",
+                          [(room_key, uid, *x) for uid, x in senders.items()])
             c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
                              ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
                           [(uid, name, _fold(name), at) for (uid, name), at in names.items()])
             c.execute("""INSERT INTO gift_sender_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
                       (room_key, pos + end, pos + end, time.time()))
+
+
+def update_all_gift_senders(state_dir: Path, s: Store) -> None:
+    """記録している全ルームの、新しい分だけを送り主の表に足す (新しい分が無ければ、ファイルの大きさを見るだけ)。"""
+    from . import listing
+
+    files = listing._record_files(state_dir)
+    for key in files:
+        try:
+            update_gift_senders(state_dir, s, key, files)
+        except Exception:  # noqa: BLE001 - 1 つのルームの失敗で、ほかを止めない
+            continue
 
 
 def _recorded_senders(s: Store, folded: str, num: int | None, skip: set[int], limit: int) -> list[dict[str, Any]]:
