@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from . import onlives, research, room_analysis, series
+from . import heat, onlives, research, room_analysis, series
 from .recorder import next_page_number
 from .status import JST
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
@@ -41,7 +41,7 @@ LIVE_EVERY = 300  # 配信中のルームを見る間隔 (秒)
 EVENTS_EVERY = 6 * 3600  # イベントの一覧を見る間隔 (秒)
 EVENT_PAGES = 30  # イベントの一覧 (1 ページ 30 件) を状態ごとに読むページ数の上限
 EVENT_ROOM_PAGES = 100  # 1 つのイベントの参加ルーム (1 ページ 30 件) を読むページ数の上限
-EVENT_ROOMS_EVERY = 86400  # 開催中・開催予定のイベントの参加ルームを読み直す間隔 (秒)
+EVENT_ROOMS_EVERY = 12 * 3600  # 開催中・開催予定のイベントの参加ルームを読み直す間隔 (秒。利用者の指示で 2026-10-21 に 24 時間から縮めた)
 ROOM_EVERY = 7 * 86400  # 最近配信したルームの累計ランキングなどを取り直す間隔 (秒)
 ACTIVE_DAYS = 30  # この日数のうちに配信したルームを、取り直しの対象にする
 SCAN_MARGIN = 20000  # ルーム番号の順番の調べを、見つかっている最大の番号からこれだけ過ぎたら終える
@@ -202,6 +202,8 @@ class Sweeper:
         if now - (st.meta("series_at") or 0) >= SERIES_EVERY:  # 大会のまとまり (SHOWROOM には問い合わせない)
             if not series.step(st, now):
                 st.set_meta("series_at", now)  # 調べ終わったら、しばらく見ない
+        if heat.step(st, now):  # ルームのヒートマップの 12 時間の区切り (SHOWROOM には問い合わせない)
+            self.doing = "ヒートマップの区切り"
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
@@ -304,17 +306,20 @@ class Sweeper:
     def _next_event_rooms(self, now: float) -> bool:
         """一覧で見つけたイベントの参加ルームを、まだ読んでいない (または読み直す時期の) ものから 1 つ読む。
 
-        開催中・開催予定のイベントは EVENT_ROOMS_EVERY ごとに、終わったイベントは終わったあと 1 回読み直す
-        (ルームのポイントと順位が決まるので)。最近終わったイベントは、正式な結果が出たあと (次の日の正午すぎ) にもう 1 回読む
+        開催中・開催予定のイベントは EVENT_ROOMS_EVERY ごとに、終わったイベントは終わって FINAL_AFTER たったらすぐ 1 回読み直す
+        (ルームのポイントと順位が決まるので。前は最後に読んでから EVENT_ROOMS_EVERY 待っていて、結果が最大 1 日遅れた)。
+        最近終わったイベントは、正式な結果が出たあと (次の日の正午すぎ) にもう 1 回読む
         (不正なポイントが引かれて、ポイント・順位が変わることがあるため。終わった直後の値は event_final に残っている)。
         """
         confirmed = research.CONFIRMED_SQL.replace("e.end", "end")
         e = self.store.one(
             f"""SELECT * FROM events WHERE (retry_at IS NULL OR retry_at < ?)
-                 AND (rooms_at IS NULL OR (rooms_at < COALESCE(end, 0) + 3600 AND rooms_at < ?)
+                 AND (rooms_at IS NULL
+                      OR (end <= ? AND rooms_at < end + {FINAL_AFTER})
+                      OR (end > ? AND rooms_at < ?)
                       OR (end > ? AND rooms_at < {confirmed} AND {confirmed} < ?))
                ORDER BY rooms_at IS NOT NULL, COALESCE(end, 0) DESC LIMIT 1""",
-            (now, now - EVENT_ROOMS_EVERY, now - CONFIRM_DAYS * 86400, now))
+            (now, now - FINAL_AFTER, now, now - EVENT_ROOMS_EVERY, now - CONFIRM_DAYS * 86400, now))
         if e is None:
             return False
         self.doing = f"イベントの参加ルーム ({e['name'] or e['event_id']})"

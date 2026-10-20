@@ -175,6 +175,16 @@ tr.selected td { background: var(--info-soft); }
 .charts.one { grid-template-columns: minmax(0, 1fr); }
 .chart-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 10px; min-width: 0; background: var(--panel); }
 .chart-card.wide { grid-column: 1 / -1; }
+/* ヒートマップ (株のヒートマップのように、四角の大きさと色で見る) */
+.hm { position: relative; width: 100%; border-radius: 8px; overflow: hidden; background: var(--panel2); }
+.hm-group { position: absolute; box-sizing: border-box; border: 1px solid var(--bg); }
+.hm-label { position: absolute; left: 4px; right: 4px; top: 1px; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hm-cell { position: absolute; box-sizing: border-box; border: 1px solid rgba(0, 0, 0, .25); color: #fff; overflow: hidden; font-size: 11px;
+  line-height: 1.25; padding: 2px 3px; cursor: pointer; text-shadow: 0 1px 1px rgba(0, 0, 0, .45); }
+.hm-cell b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.hm-cell:hover { outline: 2px solid #fff; z-index: 2; }
+.hm-legend { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.hm-legend i { display: inline-block; width: 26px; height: 10px; }
 .chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .chart-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .chart-summary { margin: 4px 0 12px; }
@@ -457,7 +467,7 @@ td a.name-link, td a { word-break: break-word; }
   <section data-page="notices">
     <div class="page-head">
       <div class="grow"><h2>お知らせ</h2>
-        <p class="sub" style="margin:0">大きなギフト・気になるギフターの動き・毎日 24:00 の注目度が上位のイベント (その日に送られたポイントの多い順) の上位 3 ルームなど、最近の出来事です。1 分ごとに新しくなり、大事なもの (赤い線) は画面の下にも出します。</p></div>
+        <p class="sub" style="margin:0">大きなギフト・気になるギフターの動き・12 時間ごと (毎日 3:00 と 15:00) の注目度が上位のイベント (その 12 時間に送られたポイントの多い順) の上位 3 ルームなど、最近の出来事です。1 分ごとに新しくなり、大事なもの (赤い線) は画面の下にも出します。</p></div>
       <div class="row">
         <select id="f-hours" aria-label="期間"><option value="24">直近 24 時間</option><option value="72">直近 3 日</option><option value="168">直近 7 日</option></select>
         <label class="row" style="gap:6px;color:var(--muted)">大きなギフト
@@ -499,6 +509,7 @@ td a.name-link, td a { word-break: break-word; }
       <a href="#gifters/trend" data-sub="trend">離れつつある・伸びている</a>
       <a href="#gifters/watch" data-sub="watch">気になる</a>
       <a href="#gifters/power" data-sub="power">戦力ランキング</a>
+      <a href="#gifters/heat" data-sub="heat">ヒートマップ</a>
     </nav>
     <div class="hint" id="r-analyzed" style="margin:-6px 0 10px"></div>
     <div id="gf-body"></div>
@@ -514,6 +525,7 @@ td a.name-link, td a { word-break: break-word; }
     <nav class="subnav" id="rm-tabs">
       <a href="#rooms" data-sub="list">ギフターの分かったルーム</a>
       <a href="#rooms/profile" data-sub="profile">タイプ・勢い・戦術</a>
+      <a href="#rooms/heat" data-sub="heat">ヒートマップ</a>
     </nav>
     <div id="rm-body"></div>
   </section>
@@ -2317,16 +2329,17 @@ async function loadRecorded(days) {
   return (recorded[days] = { at: Date.now(), rows: r.listeners, catalog: r.catalog });
 }
 async function showGifters(sub) {
-  sub = ["list", "trend", "watch", "power"].includes(sub) ? sub : "list";
+  sub = ["list", "trend", "watch", "power", "heat"].includes(sub) ? sub : "list";
   setSub("#gf-tabs", sub);
   const box = $("#gf-body");
   if (sub === "power") { showPowerRanking(box); return; }
+  if (sub === "heat") { showHeat("gifters", box); return; }
   if (!research.data) box.innerHTML = loadingHtml("集計しています (全ルーム分だと、初めは数十秒かかることがあります)…");
   let d, rec = null;
   try {
     [d, rec] = await Promise.all([research.data || loadAnalysis(), loadRecorded(research.recDays).catch(() => null)]);
   } catch (e) { box.innerHTML = errorHtml(e); return; }
-  if (page.name !== "gifters") return;
+  if (page.name !== "gifters" || page.arg === "heat" || page.arg === "power") return;
   if (noResearch(d) && !(rec && rec.rows.length)) { box.innerHTML = NO_RESEARCH; return; }
   const w = research.watch || [];
   $("#gf-tabs [data-sub=watch]").innerHTML = `気になる${w.length ? `<span class="n">${num(w.length)}</span>` : ""}`;
@@ -2596,14 +2609,15 @@ $("#gp").addEventListener("click", async (ev) => {
 
 /* ------------------------------------------------------------ ルーム (一覧) */
 async function showRooms(sub) {
-  sub = sub === "profile" ? "profile" : "list";
+  sub = ["profile", "heat"].includes(sub) ? sub : "list";
   setSub("#rm-tabs", sub);
   if (sub === "profile") return showRoomProfiles();
+  if (sub === "heat") return showHeat("rooms", $("#rm-body"));
   const box = $("#rm-body");
   if (!research.data) box.innerHTML = loadingHtml("集計しています…");
   let d;
   try { d = research.data || await loadAnalysis(); } catch (e) { box.innerHTML = errorHtml(e); return; }
-  if (page.name !== "rooms" || page.arg === "profile") return;
+  if (page.name !== "rooms" || page.arg === "profile" || page.arg === "heat") return;
   if (noResearch(d)) { box.innerHTML = NO_RESEARCH; return; }
   const pct = (x) => `${(x * 100).toFixed(1)}%`;
   let html = `<div class="summary">${stat(num(d.room_count), "ギフターの分かったルーム")}${stat(num(d.gifter_count), "分かったギフター (人)")}</div>${SCOPE_NOTE}`;
@@ -2632,6 +2646,107 @@ async function showRooms(sub) {
     ], d.similar, { sort: 1, csvName: "重なるルーム", empty: "まだありません" });
   }
   box.innerHTML = html;
+}
+
+/* ------------------------------------------------------------ ヒートマップ (ルーム・ギフター) */
+// 四角の大きさ = 今の期間のポイント (落ちた人・ルームは前の期間の値)、色 = 前の期間からの増え減り。箱 = ルームのタイプ / 最推しのルーム
+const heatState = { rooms: { span: "12h", compare: "week", slot: "" }, gifters: { month: "" } };
+const HEAT_NEW = "#2f6fd6";
+function heatColor(c) {
+  if (c == null) return HEAT_NEW;  // 前の期間が 0 (新しく)
+  const t = Math.min(1, Math.sqrt(Math.min(Math.abs(c), 1)));
+  const mix = (a, b) => Math.round(a + (b - a) * t);
+  const [r, g, b] = c >= 0 ? [mix(107, 22), mix(114, 150), mix(128, 60)] : [mix(107, 210), mix(114, 38), mix(128, 38)];
+  return `rgb(${r},${g},${b})`;
+}
+const heatChange = (c) => c == null ? "新しく" : `${c > 0 ? "+" : ""}${Math.round(c * 100)}%`;
+function heatWorst(row, side) {
+  const s = row.reduce((a, r) => a + r.a, 0), mx = Math.max(...row.map((r) => r.a)), mn = Math.min(...row.map((r) => r.a));
+  return Math.max((side * side * mx) / (s * s), (s * s) / (side * side * mn));
+}
+// 並べ方は squarified treemap (細長い四角を減らす)。items は大きい順
+function squarify(items, x, y, w, h) {
+  const out = [], total = items.reduce((a, b) => a + b.size, 0);
+  if (!total || w <= 0 || h <= 0) return out;
+  let rest = items.filter((it) => it.size > 0).map((it) => ({ it, a: (it.size * w * h) / total }));
+  while (rest.length) {
+    const side = Math.min(w, h), row = [rest[0]];
+    let best = heatWorst(row, side);
+    for (let i = 1; i < rest.length; i++) {
+      const next = heatWorst([...row, rest[i]], side);
+      if (next > best) break;
+      row.push(rest[i]); best = next;
+    }
+    rest = rest.slice(row.length);
+    const sum = row.reduce((a, r) => a + r.a, 0);
+    if (w >= h) {
+      const cw = sum / h; let cy = y;
+      row.forEach((r) => { const rh = r.a / cw; out.push({ it: r.it, x, y: cy, w: cw, h: rh }); cy += rh; });
+      x += cw; w -= cw;
+    } else {
+      const rh = sum / w; let cx = x;
+      row.forEach((r) => { const rw = r.a / rh; out.push({ it: r.it, x: cx, y, w: rw, h: rh }); cx += rw; });
+      y += rh; h -= rh;
+    }
+  }
+  return out;
+}
+function heatmapHtml(groups, width, height, cell) {
+  const px = (v) => `${Math.max(0, v).toFixed(1)}px`;
+  let html = "";
+  for (const g of squarify(groups, 0, 0, width, height)) {
+    const head = g.h > 34 && g.w > 40 ? 15 : 0;
+    html += `<div class="hm-group" style="left:${px(g.x)};top:${px(g.y)};width:${px(g.w)};height:${px(g.h)}" title="${esc(`${g.it.name}: ${num(g.it.now)} pt (前 ${num(g.it.before)} pt)`)}">`
+      + (head ? `<div class="hm-label">${esc(g.it.name)} <span class="muted">${heatChange(g.it.before ? (g.it.now - g.it.before) / g.it.before : null)}</span></div>` : "");
+    for (const c of squarify(g.it.items, 1, head + 1, g.w - 2, g.h - head - 2)) {
+      const x = c.it, big = c.w > 46 && c.h > 26;
+      html += `<div class="hm-cell" ${cell.go(x) ? `data-go="${esc(cell.go(x))}"` : ""} style="left:${px(c.x)};top:${px(c.y)};width:${px(c.w)};height:${px(c.h)};background:${heatColor(x.change)}"
+        title="${esc(`${cell.name(x)}\n今 ${num(x.now)} pt ・ 前 ${num(x.before)} pt ・ ${heatChange(x.change)}${cell.extra ? cell.extra(x) : ""}`)}">${big ? `<b>${esc(cell.name(x))}</b>${heatChange(x.change)}` : ""}</div>`;
+    }
+    html += "</div>";
+  }
+  return html;
+}
+const heatLegend = () => `<div class="hm-legend">減った ${[-1, -0.5, -0.2, -0.05].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")}
+  <i style="background:${heatColor(0)}"></i> ${[0.05, 0.2, 0.5, 1].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")} 増えた
+  <span style="margin-left:10px"><i style="background:${HEAT_NEW}"></i> 新しく (前の期間は 0)</span></div>`;
+const slotText = (sec) => new Date(sec * 1000).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+async function showHeat(kind, box) {
+  const st = heatState[kind];
+  box.innerHTML = loadingHtml();
+  let d;
+  try {
+    d = await api(kind === "rooms"
+      ? `/api/heat?kind=rooms&span=${st.span}&compare=${st.compare}&slot=${encodeURIComponent(st.slot)}`
+      : `/api/heat?kind=gifters&month=${encodeURIComponent(st.month)}`);
+  } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.arg !== "heat" || page.name !== kind) return;
+  const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? "selected" : ""}>${esc(l)}</option>`;
+  let head, cell, note;
+  if (kind === "rooms") {
+    if (d.slot == null) { box.innerHTML = `<div class="empty">まだ作っていません。全ルームの収集が動いていると、12 時間の区切り (毎日 3:00 と 15:00) が終わって 2 時間ほどで作ります (SHOWROOM には問い合わせません)。</div>`; return; }
+    head = `<label>期間 <select data-heat="span">${opt("12h", "12 時間", d.span)}${opt("week", "1 週間 (14 区切り)", d.span)}</select></label>
+      ${d.span === "12h" ? `<label>くらべる <select data-heat="compare">${opt("week", "先週の同じ区切り", d.compare)}${opt("prev", "すぐ前の 12 時間", d.compare)}</select></label>` : ""}
+      <label>${d.span === "week" ? "最後の区切り" : "区切り"} <select data-heat="slot">${d.slots.map((x) => opt(x.slot, `${slotText(x.start)}〜`, d.slot)).join("")}</select></label>`;
+    note = `${slotText(d.from)} 〜 ${slotText(d.to)} にイベントで増えたポイント (くらべる期間: ${slotText(d.base_from)} 〜 ${slotText(d.base_to)})。
+      区切りは月曜 3:00 から 12 時間ごと (毎日 3:00 と 15:00)。1 時間ごとに残している開催中のイベントのポイントの推移の差で、同時に出ているイベントは足しています。箱はルームのタイプ。今と前の期間の上位 ${num(300)} ルームずつを出します`;
+    cell = { name: (x) => x.name, go: (x) => x.key ? `#room/${encodeURIComponent(x.key)}` : "" };
+  } else {
+    if (!d.month) { box.innerHTML = `<div class="empty">月ごとの集計がまだありません。</div>`; return; }
+    head = `<label>月 <select data-heat="month">${d.months.map((m) => opt(m, m, d.month)).join("")}</select></label>`;
+    note = `${esc(d.month)} にイベントの貢献ランキングで分かったポイント (イベントが終わった月で数える) を、${esc(d.prev)} とくらべています。
+      箱はギフターの最推しのルーム (いちばん多く送っているルーム)。今の月と前の月の上位 ${num(300)} 人ずつを出します (送らなくなった人は前の月の大きさで赤く出ます)${d.partial ? "。この月はまだ途中です" : ""}`;
+    cell = { name: (x) => x.name || `ID ${x.user_id}`, go: (x) => `#gifter/${encodeURIComponent(x.user_id)}`, extra: (x) => x.state ? `\n状態: ${x.state}` : "" };
+  }
+  const width = Math.max(320, box.clientWidth || 900), height = width < 640 ? 520 : Math.round(Math.min(720, width * 0.56));
+  box.innerHTML = `<div class="row" style="margin-bottom:8px;gap:12px;flex-wrap:wrap">${head}${heatLegend()}</div>
+    <div class="hint" style="margin-top:0">${note}</div>
+    ${d.groups.length ? `<div class="hm" style="height:${height}px">${heatmapHtml(d.groups, width, height, cell)}</div>` : `<div class="empty">この期間のポイントはありません</div>`}`;
+  box.querySelectorAll("select[data-heat]").forEach((el) => el.addEventListener("change", () => {
+    st[el.dataset.heat] = el.value;
+    if (el.dataset.heat === "span") st.slot = "";
+    showHeat(kind, box);
+  }));
 }
 
 /* ------------------------------------------------------------ ルームのタイプ・勢い・戦術 */
@@ -3775,11 +3890,11 @@ function feedItem(x) {
     case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b>`,
       `${num(x.times)} 回 ・ うち有料 ${num(x.paid_points)} pt${x.times > 1 ? ` ・ ${tm(x.first_at)} から` : ""}`, memo];
     case "watch_visit": return [`<span class="tag warn">気になる</span> ${g} が ${room} に来場`, `${x.n === 1 ? "初めての訪問" : `${num(x.n)} 回目の訪問`}`, memo];
-    case "event_daily": return [`<span class="tag">注目度 ${num(x.place)} 位</span> ${ev} の ${tm(x.at - 1, true).slice(0, 5)} 24:00 時点の上位 3 ルーム`,
-      `この日に送られたポイント <b>${num(x.score)} pt</b> (${num(x.rooms)} ルーム)`
-      + `<ol class="top3">${x.top.map((r) => `<li><b>${num(r.rank)} 位</b> ${roomLink(r.room_key, r.room_name)} <span class="uid">${num(r.point)} pt ・ この日 +${num(r.gain)}</span></li>`).join("")}</ol>`
+    case "event_daily": return [`<span class="tag">注目度 ${num(x.place)} 位</span> ${ev} の ${x.ended ? `終わった時点 (${tm(x.end, true).slice(0, 11)})` : `${tm(x.at, true).slice(0, 11)} 時点`}の上位 3 ルーム`,
+      `${tm(x.at - 43200, true).slice(0, 11)} からの 12 時間に送られたポイント <b>${num(x.score)} pt</b> (${num(x.rooms)} ルーム)`
+      + `<ol class="top3">${x.top.map((r) => `<li><b>${num(r.rank)} 位</b> ${roomLink(r.room_key, r.room_name)} <span class="uid">${num(r.point)} pt ・ 12 時間で +${num(r.gain)}</span></li>`).join("")}</ol>`
       + (x.mine.length ? `調べるルーム: ${x.mine.map((r) => `${roomLink(r.room_key, r.room_name)} ${rankText(r.rank)}・${num(r.point)} pt`).join("、")}` : "")
-      + `${Math.abs(x.snapshot_at - x.at) >= 300 ? ` <span class="uid">(${tm(x.snapshot_at).slice(0, 5)} の値)</span>` : ""}${x.end ? ` <span class="uid">・ 終わり ${tm(x.end, true).slice(0, 11)}</span>` : ""}`];
+      + `${!x.ended && Math.abs(x.snapshot_at - x.at) >= 300 ? ` <span class="uid">(${tm(x.snapshot_at).slice(0, 5)} の値)</span>` : ""}${x.end && !x.ended ? ` <span class="uid">・ 終わり ${tm(x.end, true).slice(0, 11)}</span>` : ""}`];
     default: return [esc(x.kind), ""];
   }
 }
@@ -3840,7 +3955,7 @@ function renderNotices() {
   const items = kinds ? d.items.filter((x) => kinds.includes(x.kind)) : d.items;
   const EMPTY = { gift: `記録しているルームで、1 回 ${num(d.min_point)} pt 以上のギフトはありませんでした。上の「大きなギフト」で基準を下げられます。`,
     watch: "気になるギフターの、記録しているルームでのギフト・来場はありませんでした。ギフターのページの「☆ 気になる」で印を付けた人が出ます。",
-    event: "24:00 の注目度が上位のイベントはまだありません。開催中のイベントの 1 時間ごとの推移から、毎日 24:00 にその日に送られたポイントの多いイベントを 5 件出します。" };
+    event: "注目度が上位のイベントはまだありません。開催中のイベントの 1 時間ごとの推移から、12 時間ごと (毎日 3:00 と 15:00) に、その 12 時間に送られたポイントの多いイベントを 5 件出します (その間に始まったイベントは 0 から、終わったイベントは終わった時点の値で数えます)。" };
   $("#f-body").innerHTML = items.length ? feedList(items, { base: feed.mark }) : `<div class="empty">${EMPTY[feed.filter] || `直近 ${d.hours} 時間の出来事はありませんでした。`}</div>`;
 }
 async function showNotices() {

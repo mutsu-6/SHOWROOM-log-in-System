@@ -194,6 +194,10 @@ CREATE TABLE IF NOT EXISTS room_profile (
 -- src は作った時の、ルームのイベントの貢献ランキングがいちばん後に入った時刻 (変わったら作り直す)。opened は管理画面で開いた時刻
 CREATE TABLE IF NOT EXISTS room_parts (
     room_id INTEGER PRIMARY KEY, version INTEGER, at REAL, src REAL, opened REAL, rounds TEXT, overlap TEXT, rooms TEXT);
+-- ルームのヒートマップ: 毎日 3:00 / 15:00 (日本時間) で区切った 12 時間 (slot は heat.slot_of の番号) に、イベントで増えたポイント。
+-- events はその区切りに数えたイベントの数。heat.py が区切りの終わったあと 1 回だけ作る
+CREATE TABLE IF NOT EXISTS room_point_12h (
+    slot INTEGER, room_id INTEGER, point INTEGER, events INTEGER, PRIMARY KEY (slot, room_id)) WITHOUT ROWID;
 -- イベントの最終の順位のうち、上の方 (上から GifterStatus の ROUND_RANKS 位か、特典の順位の 1 つ下まで) と、隣の順位との差・
 -- 勝負になった回か (特典の境目で、差がポイントの 1 割以内か、大会の 2 段階目より後)・目標 (特典の順位) に届いたか。
 -- ギフターのステータス (gifter_status.py) が、終わったイベントを 1 回ずつ作る。event_rounds_done は作り終えたイベント

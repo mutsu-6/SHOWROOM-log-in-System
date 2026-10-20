@@ -4,8 +4,10 @@
 出すもの (新しい順):
 - big_gift: 記録しているルームの大きなギフト (1 回に min_point pt 以上。同じ人・同じルームの 10 分以内の続きは 1 つにまとめる)
 - watch_gift / watch_visit: 気になるギフターが、記録しているルームでギフトを送った・来場した
-- event_daily: 毎日 24:00 (日本時間) に、注目度 (その日にイベント全体へ送られたポイント) が上位 5 件のイベントと、それぞれの上位 3 ルーム。
-  調べるルームが出ていれば、その順位も添える
+- event_daily: 12 時間ごと (毎日 3:00 と 15:00、日本時間。ヒートマップと同じ区切り) に、注目度 (その 12 時間にイベント全体へ
+  送られたポイント) が上位 5 件のイベントと、それぞれの上位 3 ルーム。調べるルームが出ていれば、その順位も添える。
+  イベントの始まり・終わりはイベントの詳細 (started_at / ended_at) の時刻で、12 時間の中で始まったイベントは 0 から、
+  終わったイベントは終わった時の値で数える (2026-10-21 に利用者の指示で 24 時間ごとから変えた。種類の名前は前のまま)
 配信の始まり・終わりと SHOWROOM のお知らせ、順位が変わるたびの知らせは、利用者が要らないとしたので出さない (2026-10-20)。
 すぐ直す必要のあること (ログイン切れ・ディスクなど) は、管理画面が /api/overview の alerts から足す (ここでは作らない)。
 """
@@ -14,20 +16,21 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from . import heat
 from .research_store import Store
 
 FEED_TTL = 60  # 作った一覧を使い回す秒数 (画面は 1 分ごとに読み直す。何人もが開いても数え直さない)
 MAX_HOURS = 7 * 24  # さかのぼれる時間の上限
 DEFAULT_MIN_POINT = 10_000  # 大きなギフトの、1 回のポイントの基準 (画面で変えられる)
 BURST_GAP = 600  # 同じ人・同じルームの大きなギフトを 1 つにまとめる間 (秒)
-SNAP_NEAR = 90 * 60  # 24:00 の報告に使う推移の、24:00 からのずれの上限 (推移は 1 時間ごと)
-DAILY_TOP = 3  # 24:00 の報告に出すルームの数
-DAILY_EVENTS = 5  # 24:00 の報告に出す、注目度が上位のイベントの数 (1 日あたり)
-DAY_RETRY = 600  # 24:00 の値がそろうまで (24:00 から SNAP_NEAR のあいだ)、その日の注目度を数え直す間 (秒)
+SNAP_NEAR = 90 * 60  # 区切りの報告に使う推移の、区切りの時刻からのずれの上限 (推移は 1 時間ごと)
+DAILY_TOP = 3  # 区切りの報告に出すルームの数
+DAILY_EVENTS = 5  # 区切りの報告に出す、注目度が上位のイベントの数 (12 時間あたり)
+DAY_RETRY = 600  # 区切りの値がそろうまで (区切りから SNAP_NEAR のあいだ)、その 12 時間の注目度を数え直す間 (秒)
 MAX_ITEMS = {"big_gift": 200, "watch_gift": 100, "watch_visit": 100, "event": 100}
 JST = timezone(timedelta(hours=9))
 
@@ -173,18 +176,13 @@ def _watched(state_dir: Path, s: Store, rooms: _Rooms, since: float) -> list[dic
     return out
 
 
-def _midnights(since: float, now: float) -> list[float]:
-    """since から now までの、日本時間の 24:00 (次の日の 0:00) の時刻。"""
-    day = datetime.fromtimestamp(since, JST).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    out = []
-    while day.timestamp() <= now:
-        out.append(day.timestamp())
-        day += timedelta(days=1)
-    return out
+def _boundaries(since: float, now: float) -> list[float]:
+    """since より後、now までの区切りの時刻 (毎日 3:00 と 15:00、日本時間)。"""
+    return [heat.slot_start(i) for i in range(heat.slot_of(since) + 1, heat.slot_of(now) + 1)]
 
 
 def _snapshot_at(s: Store, event_id: int, at: float) -> float | None:
-    """24:00 にいちばん近い推移の時刻 (前後 SNAP_NEAR 以内。索引 (event_id, at) で前と後の 1 つずつを読む)。"""
+    """区切りの時刻にいちばん近い推移の時刻 (前後 SNAP_NEAR 以内。索引 (event_id, at) で前と後の 1 つずつを読む)。"""
     near = [r[0] for r in (s.one("SELECT MAX(at) FROM event_progress WHERE event_id=? AND at<=? AND at>?", (event_id, at, at - SNAP_NEAR)),
                            s.one("SELECT MIN(at) FROM event_progress WHERE event_id=? AND at>? AND at<?", (event_id, at, at + SNAP_NEAR)))
             if r and r[0] is not None]
@@ -193,49 +191,52 @@ def _snapshot_at(s: Store, event_id: int, at: float) -> float | None:
 
 def _events(s: Store, state_dir: Path, rooms: _Rooms, support: list[str], since: float, now: float,
             use_cache: bool = True) -> list[dict[str, Any]]:
-    """毎日 24:00 の、注目度 (その日にイベント全体へ送られたポイント) が上位のイベントと、それぞれの上位 3 ルーム。"""
+    """12 時間ごと (3:00 / 15:00) の、注目度 (その 12 時間にイベント全体へ送られたポイント) が上位のイベントと、それぞれの上位 3 ルーム。"""
     mine: dict[int, str] = {}
     for key in dict.fromkeys(support):
         rid = rooms.id(key)
         if rid is not None:
             mine[rid] = key
     out: list[dict[str, Any]] = []
-    for midnight in _midnights(since, now):
-        for i, x in enumerate(_day_top(s, state_dir, midnight, now, use_cache)):
+    for boundary in _boundaries(since, now):
+        for i, x in enumerate(_day_top(s, state_dir, boundary, now, use_cache)):
             ours = []
             for rid, key in mine.items():
                 r = s.one("SELECT point, rank FROM event_progress WHERE event_id=? AND room_id=? AND at=?", (x["event_id"], rid, x["snapshot_at"]))
                 if r:
                     ours.append({"room_key": key, "room_name": rooms.name(key), "point": r["point"], "rank": r["rank"]})
-            out.append({"kind": "event_daily", "level": "normal", "at": midnight, **x, "place": i + 1,
+            out.append({"kind": "event_daily", "level": "normal", "at": boundary, **x, "place": i + 1,
                         "top": [{**_room_of(s, rooms, r["room_id"]), **{k: r[k] for k in ("point", "rank", "gain")}} for r in x["top"]],
                         "mine": ours})
     return sorted(out, key=lambda x: (-x["at"], x["place"]))[:MAX_ITEMS["event"]]
 
 
-def _day_top(s: Store, state_dir: Path, midnight: float, now: float, use_cache: bool = True) -> list[dict[str, Any]]:
-    """その日 (midnight の前の 24 時間) の注目度が上位 DAILY_EVENTS 件のイベント。
+def _day_top(s: Store, state_dir: Path, boundary: float, now: float, use_cache: bool = True) -> list[dict[str, Any]]:
+    """boundary の前の 12 時間の注目度が上位 DAILY_EVENTS 件のイベント。
 
-    1 時間ごとの推移 (event_progress) の、24:00 と前の日の 24:00 の値の差を、参加ルームについて足す (新しく集めない)。
-    開催中のイベントを全部数えるので、日ごとに覚えておく (24:00 の値がそろったあとは数え直さない)。
+    1 時間ごとの推移 (event_progress) の、区切りと前の区切りの値の差を、参加ルームについて足す (新しく集めない)。
+    12 時間の中で終わったイベントは、終わった時刻 (イベントの詳細の ended_at。終わった時の値が推移に入る) までを数える。
+    開催中のイベントを全部数えるので、区切りごとに覚えておく (区切りの値がそろったあとは数え直さない)。
     """
-    key = (str(state_dir), midnight)
+    key = (str(state_dir), boundary)
     hit = _days.get(key)
     if use_cache and hit and (hit[1] or time.time() - hit[0] < DAY_RETRY):
         return hit[2]
-    prev = midnight - 86400
+    prev = boundary - heat.SLOT
     scored = []
-    for e in s.all("SELECT event_id, name, start, end FROM events WHERE end>=? AND (start IS NULL OR start<=?)", (midnight, midnight)):
+    for e in s.all("SELECT event_id, name, start, end FROM events WHERE end>? AND (start IS NULL OR start<=?)", (prev, boundary)):
         eid = e["event_id"]
-        at = _snapshot_at(s, eid, midnight)
+        ended = e["end"] is not None and e["end"] < boundary
+        at = (s.scalar("SELECT MAX(at) FROM event_progress WHERE event_id=? AND at<=? AND at>?", (eid, e["end"], e["end"] - SNAP_NEAR), None)
+              if ended else _snapshot_at(s, eid, boundary))
         if at is None:
             continue
         base_at = _snapshot_at(s, eid, prev)
         if base_at is None and not (e["start"] and e["start"] >= prev - SNAP_NEAR):
-            # 前の日の 24:00 の値が無い (集め始める前など): その日のいちばん早い値から数える
+            # 前の区切りの値が無い (集め始める前など): その 12 時間のいちばん早い値から数える
             base_at = s.scalar("SELECT MIN(at) FROM event_progress WHERE event_id=? AND at>? AND at<?", (eid, prev, at), None)
             if base_at is None:
-                continue  # その日の値が 24:00 の 1 つだけ: 増えた分が分からない
+                continue  # その 12 時間の値が区切りの 1 つだけ: 増えた分が分からない
         rows = s.all("SELECT room_id, point, rank FROM event_progress WHERE event_id=? AND at=?", (eid, at))
         base = {r["room_id"]: r["point"] or 0 for r in s.all("SELECT room_id, point FROM event_progress WHERE event_id=? AND at=?",
                                                              (eid, base_at))} if base_at else {}
@@ -245,13 +246,13 @@ def _day_top(s: Store, state_dir: Path, midnight: float, now: float, use_cache: 
             continue
         top = sorted(rows, key=lambda r: -(r["point"] or 0))[:DAILY_TOP]
         scored.append({"snapshot_at": at, "base_at": base_at, "event_id": eid, "event_name": e["name"] or f"イベント {eid}",
-                       "end": e["end"], "score": score, "rooms": len(rows),
+                       "end": e["end"], "ended": ended, "score": score, "rooms": len(rows),
                        "top": [{"room_id": r["room_id"], "point": r["point"], "rank": r["rank"] or i + 1, "gain": gains[r["room_id"]]}
                                for i, r in enumerate(top)]})
     best = sorted(scored, key=lambda x: -x["score"])[:DAILY_EVENTS]
     for k in [k for k in _days if k[1] < now - MAX_HOURS * 3600 - 86400]:
         del _days[k]
-    _days[key] = (time.time(), now > midnight + SNAP_NEAR, best)
+    _days[key] = (time.time(), now > boundary + SNAP_NEAR, best)
     return best
 
 
