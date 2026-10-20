@@ -445,16 +445,33 @@ def regulars(s: Store, room_id: int) -> dict[str, Any] | None:
             "silent_top_level": silent[0]["level"] if silent else None, "top_level": fans[0]["level"] if fans else None}
 
 
+OSHI_TTL = 3600  # 人ごとの最推しのルームを使い回す秒数 (ルームのページを開くたびに、貢献者 500 人分を読み直さない)
+OSHI_KEEP = 20000  # 覚えておく人数の上限 (超えたら忘れて読み直す)
+_oshi_cache: dict[tuple[str, int], tuple[float, Any, int]] = {}
+
+
 def _oshi(s: Store, uid: int, room_id: int, amount: int, cache: dict[int, tuple[Any, int]]) -> tuple[str, Any]:
     """その人にとって、このルームへの送り方が「推し」「掛け持ち」「付き合い投げ」のどれか。
 
     最推しのルーム = 貢献ランキングでいちばん多く送ったルーム。そのルームの 1 イベントで送った最大の量 (ガチイベの量) とくらべて、
     TSUKIAI より少なければ付き合い投げ (付き合いの古さは問わない)。
+    最推しのルームは user_room (人 × ルームに 1 行。events は貢献ランキングのポイントの合計) から、最大の量は人の索引を多い順に読んで
+    最初に当たった行から出す。前は 1 人の貢献ランキングを全部読んでいて、ルームのページ 1 回で貢献者 500 人分を読み、
+    ディスクの取り合いで遅くなっていた (2026-10-20 に Cursor が py-spy で見た)。
     """
     if uid not in cache:
-        main = s.one("""SELECT room_id, SUM(point) AS total, MAX(point) AS best FROM contributions WHERE user_id=?
-                        GROUP BY room_id ORDER BY total DESC LIMIT 1""", (uid,))
-        cache[uid] = (main["room_id"], main["best"] or 0) if main is not None else (None, 0)
+        key = (str(s.state_dir), int(uid))
+        hit = _oshi_cache.get(key)
+        if hit is not None and time.time() - hit[0] < OSHI_TTL:
+            cache[uid] = hit[1:]
+        else:
+            main = s.one("SELECT room_id FROM user_room WHERE user_id=? AND events > 0 ORDER BY events DESC LIMIT 1", (uid,))
+            best = s.scalar("SELECT point FROM contributions WHERE user_id=? AND room_id=? ORDER BY point DESC LIMIT 1",
+                            (uid, main[0])) if main is not None else 0
+            cache[uid] = (main[0], best or 0) if main is not None else (None, 0)
+            if len(_oshi_cache) >= OSHI_KEEP:
+                _oshi_cache.clear()
+            _oshi_cache[key] = (time.time(), *cache[uid])
     main, best = cache[uid]
     if main == room_id:
         return "推し", main
@@ -475,6 +492,18 @@ def listener_rounds(s: Store, room_id: int) -> dict[str, Any]:
                       WHERE re.room_id=? AND re.final=1 AND e.start IS NOT NULL AND e.end IS NOT NULL AND e.rooms_at >= e.end
                       ORDER BY e.end DESC LIMIT ?""", (rid, ROUND_EVENTS))
     cache: dict[int, tuple[Any, int]] = {}
+    # 人ごとの、見るイベントの期間に重なるイベントへの貢献 (1 人 1 回だけ読み、イベントごとに Python で分ける。
+    # 前はイベントごとに読み直していて、コアな人 15 人 × 5 イベントで 75 回読んでいた)
+    since = min((ev["start"] for ev in events), default=0)
+    until = max((ev["end"] for ev in events), default=0)
+    given: dict[Any, list[Any]] = {}
+
+    def gifts_of(uid: int) -> list[Any]:
+        if uid not in given:
+            given[uid] = s.all("""SELECT c.event_id, c.room_id, c.point, e.start, e.end FROM contributions c JOIN events e USING(event_id)
+                                  WHERE c.user_id=? AND e.end > ? AND e.start < ?""", (uid, since, until))
+        return given[uid]
+
     out = []
     for ev in events:
         eid = ev["event_id"]
@@ -486,10 +515,11 @@ def listener_rounds(s: Store, room_id: int) -> dict[str, Any]:
         rivals = {r[0] for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (eid,))}
 
         def rounds(uid: int) -> list[Any]:
-            rows = s.all("""SELECT c.room_id, SUM(c.point) AS points FROM contributions c JOIN events e USING(event_id)
-                            WHERE c.user_id=? AND c.event_id != ? AND e.end > ? AND e.start < ? GROUP BY c.room_id""",
-                         (uid, eid, ev["start"], ev["end"]))
-            return [r for r in rows if r["room_id"] not in rivals and r["room_id"] != rid]
+            points: dict[int, int] = {}
+            for r in gifts_of(uid):
+                if r["event_id"] != eid and r["end"] > ev["start"] and r["start"] < ev["end"]:
+                    points[r["room_id"]] = points.get(r["room_id"], 0) + (r["point"] or 0)
+            return [{"room_id": k, "points": v} for k, v in points.items() if k not in rivals and k != rid]
 
         visited: dict[int, int] = {}
         visitors = 0

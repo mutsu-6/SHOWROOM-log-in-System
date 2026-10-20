@@ -546,7 +546,8 @@ class _Recorded:
     user を渡すと、その人と、その人が送ったルームの人の分だけを読む (ギフターのページ)。
     """
 
-    def __init__(self, state_dir: Path, store: Store | None = None, user: int | None = None):
+    def __init__(self, state_dir: Path, store: Store | None = None, user: int | None = None, users: list[int] | None = None,
+                 catch_up: bool = True):
         self.state_dir = Path(state_dir)
         self.by_user: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.points = _PairPoints(self.by_user)  # (人, ルーム) → pt (by_user と同じものを、別の形で見る。メモリを 2 重に使わない)
@@ -558,8 +559,18 @@ class _Recorded:
 
         s = store if store is not None else Store(state_dir)
         try:
-            update_all_gift_senders(state_dir, s)  # 前に足したあとの新しい分だけ (ふだんは 10 分ごとに収集の合間に足してある)
-            if user is None:
+            if catch_up:
+                update_all_gift_senders(state_dir, s)  # 前に足したあとの新しい分だけ (ふだんは 10 分ごとに収集の合間に足してある)
+            else:
+                from . import catchup
+
+                catchup.soon(state_dir)  # ページを開く時: 書き込みの順番を待たず、前に足した分で数える (新しい分は裏で足す)
+            if users is not None:
+                # 決まった人たちの分だけ (気になるギフターの一覧。前は全員の分を読んでいた。1 回 平均 28 秒・1 時間に 12 回)
+                rows = [r for part in _chunks(list(users)) for r in s.all(
+                    f"""SELECT room_key, user_id, points, free_points, first_at, last_at, name, unknown FROM gift_senders
+                        WHERE user_id IN ({','.join('?' * len(part))})""", part)]
+            elif user is None:
                 rows = s.all("SELECT room_key, user_id, points, free_points, first_at, last_at, name, unknown FROM gift_senders")
             else:
                 keys = [r[0] for r in s.all("SELECT room_key FROM gift_senders WHERE user_id=?", (int(user),))]
@@ -1661,13 +1672,19 @@ DETAIL_ROWS = 300  # 1 人の詳しい表示で返すルーム・イベントの
 
 
 def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
-    """1 人のギフターの詳しい情報 (ルームごとの内訳・イベントの実績・行動のくせ)。"""
+    """1 人のギフターの詳しい情報 (ルームごとの内訳・イベントの実績・行動のくせ)。同じページを同時に開いた時は、1 回だけ数える (once)。"""
+    from . import once
+
+    return once.shared(("gifter", str(state_dir), str(user_id), tuple(support)), lambda: _gifter_detail(state_dir, user_id, support))
+
+
+def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
     try:
         uid = int(str(user_id).strip())
     except (TypeError, ValueError):
         raise ValueError("ユーザー ID は数字で指定してください") from None
     with Store(state_dir) as s:
-        rec = _Recorded(state_dir, s, user=uid)  # この人と、この人が送ったルームの人の分だけ
+        rec = _Recorded(state_dir, s, user=uid, catch_up=False)  # この人と、この人が送ったルームの人の分だけ
         rooms = _Rooms(s, state_dir)
         slots = _slots(s, rooms, rec, [uid]).get(uid, {})
         events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end,
@@ -1709,10 +1726,10 @@ def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str
 
 
 def _visits_of(state_dir: Path, s: Store, uid: int) -> list[tuple[int, str, int]]:
-    """記録しているルームの、その人の来場の知らせ [(時刻, ルーム, 何回目)] (live_visits を索引で引く。読む前に新しい分だけ足す)。"""
-    from .explore import update_all_live_visits
+    """記録しているルームの、その人の来場の知らせ [(時刻, ルーム, 何回目)] (live_visits を索引で引く。新しい分は裏で足す)。"""
+    from . import catchup
 
-    update_all_live_visits(state_dir, s)
+    catchup.soon(state_dir)  # 新しい分は裏で足す (書き込みの順番を待たない。前はここで待っていた。2026-10-20 に Cursor が見た)
     return [(r[0], r[1], r[2]) for r in s.all("SELECT at, room_key, n FROM live_visits WHERE user_id=? ORDER BY at", (int(uid),))]
 
 
@@ -1862,15 +1879,28 @@ def set_watch(state_dir: Path, user_id: Any, watched: bool, memo: Any = None) ->
             raise ValueError(f"メモは {MEMO_MAX} 文字までです")
     with Store(state_dir) as s:
         s.set_watch(uid, bool(watched), memo, time.time())
+    from . import once
+
+    once.forget(lambda k: k[0] == "watch")  # 一覧を使い回さず、次に開いた時に作り直す
+
+
+WATCH_TTL = 60  # 気になるギフターの一覧を使い回す秒数 (入れる・外すと作り直す)
 
 
 def watch_list(state_dir: Path, support: list[str]) -> list[dict[str, Any]]:
-    """気になるギフターの一覧 (メモと、分析と同じ要約つき)。新しく入れた順。"""
+    """気になるギフターの一覧 (メモと、分析と同じ要約つき)。新しく入れた順。
+    同時に開いた時は 1 回だけ数え、WATCH_TTL 秒は使い回す (前は 2 本ずつ同時に動き、1 回 平均 28 秒・1 時間に 12 回。2026-10-20)。"""
+    from . import once
+
+    return once.shared(("watch", str(state_dir), tuple(support)), lambda: _watch_list(state_dir, support), ttl=WATCH_TTL)
+
+
+def _watch_list(state_dir: Path, support: list[str]) -> list[dict[str, Any]]:
     with Store(state_dir) as s:
         rows = [dict(r) for r in s.watch_rows()]
         if not rows:
             return []
-        rec = _Recorded(state_dir, s)
+        rec = _Recorded(state_dir, s, users=[r["user_id"] for r in rows], catch_up=False)  # 気になる人の分だけ
         rooms = _Rooms(s, state_dir)
         uids = [r["user_id"] for r in rows]
         slots = _slots(s, rooms, rec, uids)

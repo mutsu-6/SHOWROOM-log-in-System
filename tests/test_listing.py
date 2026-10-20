@@ -85,7 +85,7 @@ def test_listener_pages_read_only_the_needed_files(tmp_path, monkeypatch):
     every = {u["user_id"]: u for u in listing.list_listeners(tmp_path)["listeners"]}
     assert read == [] and every[8]["points"] == 110 and every[8]["room_count"] == 2
     # 新しく増えたルーム (まだ表に足していない) は、ファイルを読んで出す
-    monkeypatch.setattr("showroom_keeper.explore.update_all_gift_senders", lambda *a, **k: None)
+    monkeypatch.setattr("showroom_keeper.catchup.soon", lambda *a, **k: False)
     record_gift(tmp_path, "room_d", 4, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now - 10})
     assert listing.listener_detail(tmp_path, "7")["total"]["points"] == 305
     assert {u["user_id"]: u for u in listing.list_listeners(tmp_path)["listeners"]}[7]["points"] == 305
@@ -109,7 +109,7 @@ def test_listeners_in_a_period_come_from_the_gift_events_table(tmp_path, monkeyp
     assert (hana["points"], hana["count"], hana["name"]) == (10, 10, "はなこ")
     assert taro["first_at"] == pytest.approx(now - 3600) and taro["last_at"] == pytest.approx(now - 30)
     # まだ表に足していないルームは、ファイルを読んで足す
-    monkeypatch.setattr("showroom_keeper.explore.update_all_gift_senders", lambda *a, **k: None)
+    monkeypatch.setattr("showroom_keeper.catchup.soon", lambda *a, **k: False)
     record_gift(tmp_path, "room_d", 4, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now - 10})
     assert {u["user_id"]: u for u in listing.list_listeners(tmp_path, days=7)["listeners"]}[7]["points"] == 303
     assert read == ["room_d"]

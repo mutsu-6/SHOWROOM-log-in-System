@@ -60,14 +60,11 @@ def build(state_dir: Path, support: list[str], hours: float = 24, min_point: int
 
 
 def _catch_up(state_dir: Path, s: Store) -> None:
-    """記録のファイルの新しい分だけを、ギフト 1 件ずつの表と来場の表に足す (ふだんは 10 分ごとに収集の合間に足してある)。"""
-    from .explore import update_all_gift_senders, update_all_live_visits
+    """記録のファイルの新しい分を、ギフト 1 件ずつの表と来場の表に足すよう、裏の仕事に頼む (待たずに、前に足した分で作る)。
+    前はここで書き足していて、書き込みの順番を収集のうしろで待っていた (1 回最大 164 秒。2026-10-20 に Cursor が見た)。"""
+    from . import catchup
 
-    for fn in (update_all_gift_senders, update_all_live_visits):
-        try:
-            fn(state_dir, s)
-        except Exception:  # noqa: BLE001 - 足せなくても、前に足した分で作る
-            pass
+    catchup.soon(state_dir)
 
 
 class _Rooms:

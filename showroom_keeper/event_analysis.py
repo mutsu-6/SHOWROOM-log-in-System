@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 import unicodedata
 from statistics import median
@@ -35,11 +36,40 @@ def series_key(name: str | None) -> str | None:
     return s if len(s) >= 4 else None
 
 
+_series_lock = threading.Lock()
+_series_running: set[str] = set()
+
+
 def _name_series(s: Store) -> tuple[dict[str, list[int]], dict[int, str]]:
+    """名前からまとめた続きもの ({まとめ: [イベント番号]}, {イベント番号: まとめ})。イベントの名前を全部読むので SERIES_TTL 使い回し、
+    古くなったら前の分をすぐ返して裏で作り直す (前は古くなったあとに開いたイベントのページが、全部読み終わるまで待っていた。
+    ディスクの取り合いで遅かった。2026-10-20 に Cursor が py-spy で見た)。"""
     key = str(s.state_dir)
     hit = _series.get(key)
     if hit and time.time() - hit[0] < SERIES_TTL:
         return hit[1], hit[2]
+    if hit:
+        with _series_lock:
+            if key not in _series_running:
+                _series_running.add(key)
+                threading.Thread(target=_refresh_series, args=(s.state_dir,), name="series-names", daemon=True).start()
+        return hit[1], hit[2]
+    return _build_series(s)
+
+
+def _refresh_series(state_dir: Any) -> None:
+    try:
+        with Store(state_dir) as s:
+            _build_series(s)
+    except Exception:  # noqa: BLE001 - 作り直せなくても、前の分を使い続ける (次に開いた時にまた試す)
+        pass
+    finally:
+        with _series_lock:
+            _series_running.discard(str(state_dir))
+
+
+def _build_series(s: Store) -> tuple[dict[str, list[int]], dict[int, str]]:
+    key = str(s.state_dir)
     groups: dict[str, list[int]] = {}
     keys: dict[int, str] = {}
     for r in s.all("SELECT event_id, name FROM events WHERE name IS NOT NULL"):
