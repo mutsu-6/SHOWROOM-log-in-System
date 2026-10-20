@@ -9,7 +9,8 @@ H = 3600
 
 
 def midnight():
-    return feed._midnights(NOW - 24 * H, NOW)[0]
+    """直近 12 時間のうちの区切り (3:00 か 15:00、日本時間)。"""
+    return feed._boundaries(NOW - 12 * H, NOW)[0]
 
 
 def setup(tmp_path):
@@ -33,12 +34,12 @@ def setup(tmp_path):
         s.add_progress(50, [{"room_id": 2, "point": 100, "rank": 4}], NOW - 4 * H)
         s.add_progress(50, [{"room_id": 2, "point": 300, "rank": 2}], NOW - 3 * H)
         s.upsert_rooms([{"room_id": 3, "key": "k3", "name": "ルーム3"}, {"room_id": 4, "key": "k4", "name": "ルーム4"}], "archive", NOW)
-        # 直近 24 時間のうちの 24:00 (日本時間) の 10 分前の推移: 4 ルームのうち上位 3 つを報告する
+        # 直近 12 時間のうちの区切り (3:00 か 15:00) の 10 分前の推移: 4 ルームのうち上位 3 つを報告する
         s.upsert_events([{"event_id": 51, "name": "冬のイベント", "start": NOW - 5 * 86400, "end": NOW + 10 * H}])
         s.set_event_rooms(51, [{"room_id": r, "point": 1, "rank": r} for r in (1, 2, 3, 4)], NOW)
         s.add_progress(51, [{"room_id": r, "point": p, "rank": i + 1}
                             for i, (r, p) in enumerate([(3, 900), (1, 800), (4, 700), (2, 600)])], midnight() - 600)
-        s.add_progress(51, [{"room_id": r, "point": p} for r, p in [(3, 400), (1, 800), (4, 100)]], midnight() - 86400 + 300)  # 前の日の 24:00
+        s.add_progress(51, [{"room_id": r, "point": p} for r, p in [(3, 400), (1, 800), (4, 100)]], midnight() - 12 * H + 300)  # 前の区切り
         s.conn.execute("INSERT INTO notices(notice_id, label, title, created_at) VALUES (1, 'お知らせ', '新しいギフト', ?)", (NOW - H,))
         s.conn.execute("INSERT INTO live_visits(user_id, at, room_key, n) VALUES (8, ?, 'k1', 3)", (int(NOW - H),))
 
@@ -69,30 +70,47 @@ def test_feed_daily_report_needs_a_snapshot_near_midnight(tmp_path):
         s.upsert_rooms([{"room_id": 1, "key": "k1", "name": "ルーム1"}], "archive", NOW)
         s.upsert_events([{"event_id": 50, "name": "秋", "start": NOW - 5 * 86400, "end": NOW + 10 * H}])
         s.set_event_rooms(50, [{"room_id": 1, "point": 300, "rank": 1}], NOW)
-        s.add_progress(50, [{"room_id": 1, "point": 100, "rank": 1}], midnight() - 3 * H)  # 24:00 から遠い推移しか無い
+        s.add_progress(50, [{"room_id": 1, "point": 100, "rank": 1}], midnight() - 3 * H)  # 区切りから遠い推移しか無い
     assert feed.build(tmp_path, ["k1"], now=NOW)["items"] == []
 
 
 def test_feed_daily_report_ranks_events_by_points_sent_that_day(tmp_path):
-    """注目度 (その日に送られたポイント) の多い順に、1 日 DAILY_EVENTS 件。ポイントの合計が多くても、その日に増えていなければ出さない。"""
+    """注目度 (その 12 時間に送られたポイント) の多い順に、区切りごとに DAILY_EVENTS 件。ポイントの合計が多くても、その間に増えていなければ出さない。"""
     m = midnight()
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": 1, "key": "k1", "name": "ルーム1"}], "archive", NOW)
         for eid in range(1, 9):
             s.upsert_events([{"event_id": eid, "name": f"イベント{eid}", "start": NOW - 5 * 86400, "end": NOW + 10 * H}])
-            s.add_progress(eid, [{"room_id": 1, "point": 10**6}, {"room_id": 2, "point": 10}], m - 86400)
+            s.add_progress(eid, [{"room_id": 1, "point": 10**6}, {"room_id": 2, "point": 10}], m - 12 * H)
             s.add_progress(eid, [{"room_id": 1, "point": 10**6 + eid * 100}, {"room_id": 2, "point": 10 + eid}], m)
-        s.add_progress(8, [{"room_id": 1, "point": 10**6}, {"room_id": 2, "point": 10}], m)  # 合計は多いが、その日は増えていない
-        # その日に始まったイベント: 前の日の値が無くても、0 から数える
+        s.add_progress(8, [{"room_id": 1, "point": 10**6}, {"room_id": 2, "point": 10}], m)  # 合計は多いが、その 12 時間は増えていない
+        # その 12 時間に始まったイベント: 前の区切りの値が無くても、0 から数える
         s.upsert_events([{"event_id": 20, "name": "新しいイベント", "start": m - 10 * H, "end": NOW + 10 * H}])
         s.add_progress(20, [{"room_id": 3, "point": 5000}], m)
-        # 前の日の 24:00 の値が無く、前から開いているイベント: その日のいちばん早い値から数える
+        # 前の区切りの値が無く、前から開いているイベント: その 12 時間のいちばん早い値から数える
         s.upsert_events([{"event_id": 21, "name": "途中から", "start": NOW - 5 * 86400, "end": NOW + 10 * H}])
         s.add_progress(21, [{"room_id": 3, "point": 10**7}], m - 5 * H)
         s.add_progress(21, [{"room_id": 3, "point": 10**7 + 650}], m)
     items = [x for x in feed.build(tmp_path, ["k1"], now=NOW)["items"] if x["kind"] == "event_daily"]
     assert [(x["event_id"], x["place"], x["score"]) for x in items] == [(20, 1, 5000), (7, 2, 707), (21, 3, 650), (6, 4, 606), (5, 5, 505)]
     assert items[1]["mine"] == [{"room_key": "k1", "room_name": "ルーム1", "point": 10**6 + 700, "rank": None}]
+
+
+def test_feed_report_counts_events_that_ended_in_the_12_hours(tmp_path):
+    """12 時間の中で終わったイベントは、終わった時刻 (イベントの詳細の終わり) の値まで数える。始まる前のイベントは数えない。"""
+    m = midnight()
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "k1", "name": "ルーム1"}], "archive", NOW)
+        s.upsert_events([{"event_id": 30, "name": "終わった", "start": m - 3 * 86400, "end": m - 4 * H}])
+        s.add_progress(30, [{"room_id": 1, "point": 100}], m - 12 * H)
+        s.add_progress(30, [{"room_id": 1, "point": 400, "rank": 1}], m - 4 * H)  # 終わった時の値
+        s.upsert_events([{"event_id": 31, "name": "これから", "start": m + H, "end": m + 86400}])
+        s.add_progress(31, [{"room_id": 1, "point": 5}], m)
+    items = [x for x in feed.build(tmp_path, [], hours=12, now=NOW)["items"] if x["kind"] == "event_daily"]
+    assert [(x["event_id"], x["score"], x["ended"], x["snapshot_at"]) for x in items] == [(30, 300, True, m - 4 * H)]
+    assert (m - feed._boundaries(m - 13 * H, m)[0]) == 12 * H  # 区切りは 12 時間ごと
+    hours = {time.strftime("%H", time.gmtime(b + 9 * H)) for b in feed._boundaries(NOW - 86400 * 7, NOW)}
+    assert hours == {"03", "15"}
 
 
 def test_feed_threshold_and_period(tmp_path):

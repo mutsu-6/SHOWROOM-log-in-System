@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from showroom_keeper import explore, live_contrib, research, research_store, room_analysis as ra, series, sweep
+from showroom_keeper import explore, heat, live_contrib, research, research_store, room_analysis as ra, series, sweep
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -21,7 +21,7 @@ DAY = 86400
 # ルームの一覧で絞り込み・並べ替えのために全部読むので入れない
 BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "room_events", "user_month", "cumulative",
        "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives",
-       "gift_senders", "gift_events", "event_rounds", "gifter_status"}
+       "gift_senders", "gift_events", "event_rounds", "gifter_status", "room_point_12h"}
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
@@ -311,18 +311,46 @@ def test_feed_does_not_read_whole_tables(traced):
         s.conn.executemany("INSERT INTO gift_event_pos(room_key, pos, size, at) VALUES (?, 0, 0, ?)", [(f"k{r}", NOW) for r in range(1, 6)])
         s.set_watch(101, True, "", NOW)
         s.add_progress(1, [{"room_id": 2, "point": 5}], NOW)
-        # 開催中のイベント (24:00 の上位 3 ルームの報告を作る)
+        # 開催中のイベント (12 時間ごとの上位 3 ルームの報告を作る)
         s.upsert_events([{"event_id": 9, "name": "開催中", "start": NOW - 5 * DAY, "end": NOW + DAY}])
         s.set_event_rooms(9, [{"room_id": r, "point": r, "rank": 6 - r} for r in range(1, 6)], NOW)
-        m = feed._midnights(NOW - DAY, NOW)[0]
+        m = feed._boundaries(NOW - DAY, NOW)[0]
         s.add_progress(9, [{"room_id": r, "point": r} for r in range(1, 6)], m - 60)
-        s.add_progress(9, [{"room_id": r, "point": 0} for r in range(1, 6)], m - DAY)  # 前の日の 24:00
-        # 前の日の 24:00 の値が無いイベント (その日のいちばん早い値から数える)
+        s.add_progress(9, [{"room_id": r, "point": 0} for r in range(1, 6)], m - heat.SLOT)  # 前の区切り
+        # 前の区切りの値が無いイベント (その 12 時間のいちばん早い値から数える)
         s.upsert_events([{"event_id": 10, "name": "途中から", "start": NOW - 5 * DAY, "end": NOW + DAY}])
         s.add_progress(10, [{"room_id": 2, "point": 1}], m - 5 * 3600)
         s.add_progress(10, [{"room_id": 2, "point": 3}], m)
+        # 12 時間の中で終わったイベント (終わった時の値で数える)
+        s.upsert_events([{"event_id": 11, "name": "終わった", "start": NOW - 5 * DAY, "end": m - 3600}])
+        s.add_progress(11, [{"room_id": 3, "point": 9}], m - 3600)
     check(traced, lambda d: feed.build(d, ["k2"], now=NOW))
     assert any(x["kind"] == "event_daily" for x in feed.build(d, ["k2"], now=NOW, use_cache=False)["items"])
+
+
+def test_heatmaps_do_not_read_whole_tables(traced):
+    """ヒートマップ: 12 時間の区切りを作る時は、その区切りに開いていたイベントの推移を索引で読み、画面は作った表と月の上位を読む。"""
+    d = traced[0]
+    i = heat.slot_of(NOW) - 2
+    t0 = heat.slot_start(i)
+    month = time.strftime("%Y-%m", time.gmtime(NOW + 9 * 3600 - 40 * DAY))
+    with Store(d) as s:
+        s.upsert_events([{"event_id": 9, "name": "開催中", "start": t0 - DAY, "end": NOW + DAY}])
+        s.conn.execute("UPDATE events SET progress_at=? WHERE event_id=9", (NOW,))
+        s.add_progress(9, [{"room_id": r, "point": r} for r in range(1, 6)], t0 - 600)
+        s.add_progress(9, [{"room_id": r, "point": r * 10} for r in range(1, 6)], t0 + 6 * 3600)
+        s.conn.execute("INSERT INTO user_month(user_id, month, points) VALUES (101, ?, 5)", (month,))
+        s.conn.execute("INSERT INTO gifter_status(user_id, top_room) VALUES (101, 1)")
+
+    def run(d):
+        with Store(d) as s:
+            assert heat.build_slot(s, i) == 5
+            s.set_meta("heat_next", i + 1)
+            heat.step(s, NOW)
+        assert heat.rooms(d)["groups"]
+        heat.rooms(d, span="week")
+        assert heat.gifters(d, month)["groups"]
+    check(traced, run)
 
 
 def test_news_does_not_read_whole_tables(traced):
