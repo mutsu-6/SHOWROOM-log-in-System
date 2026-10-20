@@ -2182,7 +2182,7 @@ function renderHealth(h) {
   const errs = (h.errors || []).map((e) => `<tr><td>${e.level === "error" ? "エラー" : "注意"}</td><td class="num">${num(e.day)}${e.more ? "+" : ""}</td>
     <td><code>${esc(e.where)}</code></td><td>${esc(e.sample)}</td></tr>`).join("");
   const ld = h.load || {}, pct = (v) => v == null ? "—" : `${Math.round(v * 100)}%`;
-  const kinds = { page: "管理画面", sql: "SQL の読み込み", heavy: "重い集計", loop: "視聴の処理の待ち" };
+  const kinds = { page: "管理画面", sql: "SQL の読み込み", heavy: "重い集計", loop: "視聴の処理の待ち", gc: "Python の片付け (GC)" };
   const slow = (h.slow || []).map((e) => `<tr><td>${esc(kinds[e.kind] || e.kind)}</td><td class="num">${num(e.count)}</td>
     <td class="num">${num(e.max)} 秒</td><td class="num">${num(e.avg)} 秒</td><td><code>${esc(e.name)}</code></td></tr>`).join("");
   box.innerHTML = `<div class="hint">最後の点検: ${tm(h.at, true).slice(0, 11)}

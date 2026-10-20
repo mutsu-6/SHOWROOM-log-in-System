@@ -64,8 +64,12 @@ SLOW_PAGE = 5.0  # 管理画面の要求がこれより長くかかったら知�
 SLOW_HEAVY = 600  # 重い集計 1 回がこれより長くかかったら知らせる (秒。analyze はサーバーで 2 分ほど)
 SLOW_SQL_WARN = 5.0  # 読み込みの SQL 1 回がこれより長くかかったら知らせる (秒。2 秒から記録する)
 SLOW_STEP = 900  # 全ルームの収集の 1 つの仕事がこれより長く続いたら知らせる (秒)
-LOOP_LAG_WARN = 2.0  # 視聴の処理 (asyncio) がこれより長く待たされたら知らせる (秒)
+LOOP_LAG_NOTE = 1.0  # 視聴の処理 (asyncio) がこれより長く待たされたら、表に残す (秒)
+LOOP_LAG_WARN = 5.0  # これより長く待たされたら知らせる (秒。2026-10-20 に 2 秒から上げた。サーバーでは何もしていない時も
+#  1 時間に 9 回 2〜4.5 秒待たされていて、いつも出たままになっていた。視聴の動画はブラウザが流すので、数秒の待ちでは途切れない)
 LOOP_LAG_HOLD = 5.0  # これより長く待たされたら、裏の数え直しを後回しにする (秒)
+STALL_SAMPLE = 1.5  # 視聴の処理がこれより長く止まっていたら、その時どこで止まっているかを見る (秒)
+GC_NOTE = 0.5  # Python の片付け (GC。いちばん古い世代) がこれより長くかかったら、表に残す (秒)
 IOWAIT_WARN = 0.3  # 点検の間のディスク待ちの割合がこれより多ければ知らせる
 IOWAIT_HOLD = 0.5  # これより多ければ、裏の数え直しを後回しにする
 CPU_WARN = 0.9  # Python が点検の間に使った CPU (1 つ分を 1) がこれより多ければ知らせる
@@ -170,7 +174,8 @@ class SlowLog:
 
 
 SLOW = SlowLog()
-SLOW_LABELS = {"page": "管理画面", "sql": "SQL の読み込み", "heavy": "重い集計", "loop": "視聴の処理の待ち"}
+SLOW_LABELS = {"page": "管理画面", "sql": "SQL の読み込み", "heavy": "重い集計", "loop": "視聴の処理の待ち",
+               "gc": "Python の片付け (GC)"}
 
 
 def note_page(path: str, seconds: float) -> None:
@@ -183,17 +188,95 @@ def _note_sql(sql: str, seconds: float) -> None:
     SLOW.note("sql", sql, seconds)
 
 
-async def watch_loop(every: float = 1.0) -> None:
-    """視聴の処理 (asyncio) が、ほかの重い処理に待たされていないかを測る (1 秒ごとに起きて、遅れた分を数える)。
-    keeper が別の仕事として動かす。"""
+_beat = {"at": 0.0, "thread": None, "blame": None}  # 視聴の処理が最後に動いた時刻・そのスレッド・止まっていた時に見た場所
+
+
+def _frame_place(frame: Any) -> str | None:
+    """このプログラムの中で、いちばん奥の行 (止まっている所に近い所)。"""
+    while frame is not None:
+        if "showroom_keeper" in frame.f_code.co_filename and not frame.f_code.co_filename.endswith("selfcheck.py"):
+            return f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno} ({frame.f_code.co_name})"
+        frame = frame.f_back
+    return None
+
+
+_WAITING = ("select", "poll", "epoll", "sleep", "wait", "acquire", "recv", "accept", "_worker", "readinto", "get")
+
+
+def blame_stall() -> str:
+    """視聴の処理が止まっている時に、どこで止まっているかを言葉にする。
+    - 視聴の処理そのものが、このプログラムのどこかで止まっている → その行
+    - 視聴の処理は待っているだけ (select) → ほかのスレッドの計算に Python を取られている (GIL)。その時に動いていたスレッドの行
+    - Python の片付け (GC) の最中 → GC"""
+    if _gc["started"] is not None:
+        return "Python の片付け (GC) の最中"
+    frames = sys._current_frames()
+    loop = frames.get(_beat["thread"]) if _beat["thread"] is not None else None
+    if loop is not None and loop.f_code.co_name not in ("select", "poll", "_run_once"):
+        place = _frame_place(loop)
+        if place:
+            return f"視聴の処理の中: {place}"
+    busy = []
+    me = threading.get_ident()
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for ident, frame in frames.items():
+        if ident in (me, _beat["thread"]) or frame.f_code.co_name in _WAITING:
+            continue
+        place = _frame_place(frame)
+        if place:
+            busy.append(f"{names.get(ident, '?')} {place}")
+    return "ほかの処理に待たされた: " + (" / ".join(busy[:2]) if busy else "どこかは分かりません")
+
+
+def _stall_watch(stop: threading.Event) -> None:
+    """視聴の処理が STALL_SAMPLE 秒より長く動いていなければ、その時どこで止まっているかを 1 回だけ見ておく
+    (止まっている最中に見ないと、あとからは分からないため)。"""
+    seen = None
+    while not stop.wait(0.25):
+        beat = _beat["at"]
+        if beat and beat != seen and time.monotonic() - beat > STALL_SAMPLE:
+            seen = beat
+            try:
+                _beat["blame"] = blame_stall()
+            except Exception:  # noqa: BLE001 - 見られなくても、待ちの長さは数える
+                _beat["blame"] = None
+
+
+async def watch_loop(every: float = 0.5) -> None:
+    """視聴の処理 (asyncio) が、ほかの重い処理に待たされていないかを測る (every 秒ごとに起きて、遅れた分を数える)。
+    長く止まっていた時は、どこで止まっていたか (_stall_watch が見た場所) ごとに数える。keeper が別の仕事として動かす。"""
     import asyncio
 
-    while True:
-        started = time.monotonic()
-        await asyncio.sleep(every)
-        lag = time.monotonic() - started - every
-        if lag >= LOOP_LAG_WARN / 2:
-            SLOW.note("loop", "視聴の処理", lag)
+    stop = threading.Event()
+    _beat.update(at=time.monotonic(), thread=threading.get_ident(), blame=None)
+    threading.Thread(target=_stall_watch, args=(stop,), daemon=True, name="selfcheck-stall").start()
+    try:
+        while True:
+            started = time.monotonic()
+            _beat["at"] = started
+            await asyncio.sleep(every)
+            lag = time.monotonic() - started - every
+            blame, _beat["blame"] = _beat["blame"], None
+            if lag >= LOOP_LAG_NOTE:
+                SLOW.note("loop", blame or "視聴の処理", lag)
+    finally:
+        stop.set()
+        _beat["at"] = 0.0
+
+
+_gc: dict[str, Any] = {"started": None}
+
+
+def _gc_timer(phase: str, info: dict[str, Any]) -> None:
+    """Python の片付け (GC) のうち、いちばん古い世代 (時間がかかる) の長さを測る。片付けの間は、すべてのスレッドが止まる。"""
+    if info.get("generation") != 2:
+        return
+    if phase == "start":
+        _gc["started"] = time.monotonic()
+    elif _gc["started"] is not None:
+        took, _gc["started"] = time.monotonic() - _gc["started"], None
+        if took >= GC_NOTE:
+            SLOW.note("gc", "いちばん古い世代の片付け", took)
 
 
 def _thread_died(args: Any) -> None:
@@ -531,14 +614,21 @@ class Checker:
                 SLOW.note("heavy", r["name"] or "?", r["seconds"], r["at"])
         if memory.runs:
             self._runs_seen = max(r["at"] for r in list(memory.runs))
-        lag_max = 0.0
-        for e in SLOW.summary(now, SLOW_WINDOW, limit=ERROR_KINDS):
+        slow = SLOW.summary(now, SLOW_WINDOW, limit=ERROR_KINDS)
+        loops = [e for e in slow if e["kind"] == "loop"]
+        lag_max = max((e["max"] for e in loops), default=0.0)
+        if lag_max >= LOOP_LAG_WARN:
+            worst = max(loops, key=lambda e: e["max"])
+            found.append({"level": "warn", "title": f"視聴の処理が最大 {lag_max:.0f} 秒待たされました",
+                          "detail": f"1 時間に {sum(e['count'] for e in loops)} 回 ({LOOP_LAG_NOTE:.0f} 秒より長いもの)。"
+                                    f"いちばん長かった時: {worst['name']}"})
+        for e in slow:
             label = SLOW_LABELS.get(e["kind"], e["kind"])
             if e["kind"] == "loop":
-                lag_max = e["max"]
-                if e["max"] >= LOOP_LAG_WARN:
-                    found.append({"level": "warn", "title": f"視聴の処理が最大 {e['max']:.0f} 秒待たされました",
-                                  "detail": f"1 時間に {e['count']} 回。ほかの重い処理が、視聴と同じ所で動いています"})
+                continue
+            if e["kind"] == "gc" and e["max"] >= LOOP_LAG_WARN / 2:
+                found.append({"level": "warn", "title": f"Python の片付け (GC) で、全部が最大 {e['max']:.0f} 秒止まりました",
+                              "detail": f"1 時間に {e['count']} 回。覚えているものが多いか、メモリがディスクに追い出されています"})
             elif (e["kind"] == "page" and e["max"] >= SLOW_PAGE) or (e["kind"] == "sql" and e["max"] >= SLOW_SQL_WARN) \
                     or (e["kind"] == "heavy" and e["max"] >= SLOW_HEAVY):
                 found.append({"level": "warn", "title": f"{label}が遅くなっています: {e['name'][:60]}",
@@ -625,6 +715,9 @@ def install() -> None:
     from . import research_store
 
     research_store.slow_hooks.append(_note_sql)
+    import gc
+
+    gc.callbacks.append(_gc_timer)
     logging.getLogger().addHandler(ERRORS)
     threading.excepthook = _thread_died
 
