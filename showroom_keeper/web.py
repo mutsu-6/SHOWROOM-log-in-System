@@ -462,7 +462,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 else:
                     slot = q.get("slot")
                     self._json(heat.rooms(self._state_dir(), int(slot) if slot and slot.lstrip("-").isdigit() else None,
-                                          q.get("span", "12h"), q.get("compare", "week")))
+                                          q.get("span", "12h"), q.get("compare", "week"), q.get("group", "genre")))
             elif url.path == "/api/news":
                 from . import news
 

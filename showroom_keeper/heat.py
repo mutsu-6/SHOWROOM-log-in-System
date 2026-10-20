@@ -4,7 +4,7 @@ SHOWROOM には問い合わせない (集めた情報を読むだけ)。
 - ルーム: 毎日 3:00 / 15:00 (日本時間) で区切った 12 時間 (月曜 3:00 を週の始まりにする) ごとに、イベントで増えたポイント。
   イベントの終わりの日でまとめると動きが少ないので、1 時間ごとの推移 (event_progress) の差から、区切りが終わったあと
   1 回だけ数えて room_point_12h に残す (全ルームの収集の小さな仕事として、1 回に 1 区切りずつ)。
-  四角の大きさはその期間のポイント、色は前の期間 (既定は先週の同じ区切り) からの増え減り。タイプ (room_profile.type) ごとにまとめる。
+  四角の大きさはその期間のポイント、色は前の期間 (既定は先週の同じ区切り) からの増え減り。配信ジャンル (アイドル・モデル・芸人など。room_lives.genre) ごとにまとめる (タイプにも切り替えられる)。
 - ギフター: 月ごとのイベントのポイント (user_month) を、最推しのルーム (gifter_status.top_room) ごとにまとめる。色は前の月からの増え減り。
 """
 
@@ -113,10 +113,12 @@ def _item(now_pt: int, before_pt: int) -> dict[str, Any]:
             "change": (now_pt - before_pt) / before_pt if before_pt else None}
 
 
-def rooms(state_dir: Path, slot: int | None = None, span: str = "12h", compare: str = "week") -> dict[str, Any]:
+def rooms(state_dir: Path, slot: int | None = None, span: str = "12h", compare: str = "week", group: str = "genre") -> dict[str, Any]:
     """ルームのヒートマップ。slot は見る区切り (期間の最後の区切り。既定は作り終えた最新)、span は 12h か week、
-    compare は week (先週の同じ期間と比べる) か prev (すぐ前の期間と比べる。week の時は同じ)。"""
+    compare は week (先週の同じ期間と比べる) か prev (すぐ前の期間と比べる。week の時は同じ)、
+    group は箱の分け方: genre (配信ジャンル。株のヒートマップの業種のように) か type (ルームのタイプ)。"""
     span = "week" if span == "week" else "12h"
+    group = "type" if group == "type" else "genre"
     with Store(state_dir) as s:
         latest = s.scalar("SELECT MAX(slot) FROM room_point_12h", (), None)
         if latest is None:
@@ -147,12 +149,17 @@ def rooms(state_dir: Path, slot: int | None = None, span: str = "12h", compare: 
         for rid in ids:
             r = s.one("""SELECT r.key, r.name, p.type FROM rooms r LEFT JOIN room_profile p USING(room_id)
                          WHERE r.room_id=?""", (rid,))
+            if group == "type":
+                name = (r["type"] if r else None) or "タイプ未判定"
+            else:  # 最後の配信のジャンル (配信中のルームの一覧で、配信ごとに残している)
+                name = s.scalar("""SELECT genre FROM room_lives WHERE room_id=? AND genre IS NOT NULL
+                                   ORDER BY started_at DESC LIMIT 1""", (rid,), None) or "ジャンル未判定"
             items.append({"room_id": rid, "key": r["key"] if r else None, "name": (r["name"] if r else None) or str(rid),
-                          "group": (r["type"] if r else None) or "タイプ未判定", **_item(now_pt[rid], before_pt[rid])})
+                          "group": name, **_item(now_pt[rid], before_pt[rid])})
         items = [x for x in items if x["size"] > 0]
         slots = [r[0] for r in s.all("SELECT DISTINCT slot FROM room_point_12h WHERE slot > ? ORDER BY slot DESC",
                                      (latest - 4 * WEEK_SLOTS,))]
-        return {"slot": slot, "span": span, "compare": "week" if back == WEEK_SLOTS else "prev",
+        return {"slot": slot, "span": span, "compare": "week" if back == WEEK_SLOTS else "prev", "group": group,
                 "from": slot_start(cur[0]), "to": slot_start(cur[1] + 1),
                 "base_from": slot_start(base[0]), "base_to": slot_start(base[1] + 1),
                 "groups": _grouped(items, "group"),

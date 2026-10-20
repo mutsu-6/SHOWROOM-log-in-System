@@ -58,14 +58,19 @@ def test_room_heatmap_compares_with_the_same_slot_last_week(tmp_path):
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2, 3)], "archive", NOW)
         s.conn.execute("INSERT INTO room_profile(room_id, type) VALUES (1, 'バランス型'), (2, 'バランス型')")
+        s.add_room_lives([{"room_id": 1, "started_at": int(NOW - 9 * H), "genre": "モデル"},
+                          {"room_id": 1, "started_at": int(NOW - 3 * H), "genre": "アイドル"},  # 最後の配信のジャンル
+                          {"room_id": 2, "started_at": int(NOW - 5 * H), "genre": "芸人"}], NOW)
         s.conn.executemany("INSERT INTO room_point_12h(slot, room_id, point, events) VALUES (?, ?, ?, 1)", [
             (i, 1, 200), (i - heat.WEEK_SLOTS, 1, 100),  # 先週の同じ区切りの 2 倍
             (i - heat.WEEK_SLOTS, 2, 50),  # 今は 0 (落ちた。大きさは前の値)
             (i, 3, 10), (i - 1, 3, 5)])  # 先週は無い (新しく)
     out = heat.rooms(tmp_path)
-    assert out["slot"] == i and out["compare"] == "week"
+    assert out["slot"] == i and out["compare"] == "week" and out["group"] == "genre"
     groups = {g["name"]: {x["room_id"]: (x["size"], x["change"]) for x in g["items"]} for g in out["groups"]}
-    assert groups == {"バランス型": {1: (200, 1.0), 2: (50, -1.0)}, "タイプ未判定": {3: (10, None)}}
+    assert groups == {"アイドル": {1: (200, 1.0)}, "芸人": {2: (50, -1.0)}, "ジャンル未判定": {3: (10, None)}}
+    by_type = {g["name"]: sorted(x["room_id"] for x in g["items"]) for g in heat.rooms(tmp_path, group="type")["groups"]}
+    assert by_type == {"バランス型": [1, 2], "タイプ未判定": [3]}
     prev = heat.rooms(tmp_path, compare="prev")
     assert {x["room_id"]: x["change"] for g in prev["groups"] for x in g["items"]}[3] == 1.0  # すぐ前の 12 時間と比べる
     week = heat.rooms(tmp_path, span="week")
