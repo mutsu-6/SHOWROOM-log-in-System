@@ -622,16 +622,22 @@ def _sender_rooms(state_dir: Path, user: int | None = None, since: float | None 
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS sender_done (room_key TEXT PRIMARY KEY)")
             cur.execute("DELETE FROM sender_done")
             cur.executemany("INSERT INTO sender_done VALUES (?)", [(k,) for k in done])
-            # name は、last_at が一番新しい行のもの (SQLite は MAX() と一緒に選んだ列を、その行から返す)
-            totals = cur.execute("""SELECT user_id, SUM(times), SUM(points), SUM(free_points), MIN(COALESCE(first_at, last_at)),
-                                           MAX(last_at), name, COUNT(*) FROM gift_senders
-                                    WHERE room_key IN (SELECT room_key FROM sender_done) GROUP BY user_id""").fetchall()
-            top = cur.execute(f"""SELECT user_id, room_key, points FROM (
-                                     SELECT user_id, room_key, points, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY points DESC) AS n
-                                     FROM gift_senders WHERE room_key IN (SELECT room_key FROM sender_done)) WHERE n <= {TOP_ROOMS}
-                                  ORDER BY user_id, n""").fetchall()
-            rows = [totals, top]
-            names = cur.execute("SELECT user_id, name, at FROM gift_sender_names ORDER BY user_id, at DESC").fetchall()
+            # 合計・多いルーム・名前は、1 つの読み込みのトランザクションで読む (同じ時点の表を読む)。分けて読むと、その間に裏の
+            # catch-up が新しい送り主を足し、多いルームにだけいる人が出て、裏のスレッド「listeners」が止まった (2026-10-20 10:11 UTC)
+            cur.execute("BEGIN")
+            try:
+                # name は、last_at が一番新しい行のもの (SQLite は MAX() と一緒に選んだ列を、その行から返す)
+                totals = cur.execute("""SELECT user_id, SUM(times), SUM(points), SUM(free_points), MIN(COALESCE(first_at, last_at)),
+                                               MAX(last_at), name, COUNT(*) FROM gift_senders
+                                        WHERE room_key IN (SELECT room_key FROM sender_done) GROUP BY user_id""").fetchall()
+                top = cur.execute(f"""SELECT user_id, room_key, points FROM (
+                                         SELECT user_id, room_key, points, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY points DESC) AS n
+                                         FROM gift_senders WHERE room_key IN (SELECT room_key FROM sender_done)) WHERE n <= {TOP_ROOMS}
+                                      ORDER BY user_id, n""").fetchall()
+                rows = [totals, top]
+                names = cur.execute("SELECT user_id, name, at FROM gift_sender_names ORDER BY user_id, at DESC").fetchall()
+            finally:
+                cur.execute("COMMIT")
             picked = set()
     return sorted((picked & set(files)) | (set(files) - done)), rows, names
 
@@ -755,6 +761,8 @@ def _from_table(rows: list[Any], sender_names: list[Any], names: dict[str, Any],
         out[uid] = {"user_id": uid, "name": name, "points": pt, "paid_points": pt - free, "free_points": free, "count": None,
                     "times": times or 0, "first_at": first, "last_at": last, "names": [], "room_count": n, "rooms": []}
     for uid, key, pt in top:  # ポイントの多い順
+        if uid not in out:
+            continue  # 合計を読んだあとに足された人 (同じ時点で読んでいるので、ふつうは無い)
         out[uid]["rooms"].append({"key": key, "name": (names.get(key) or {}).get("name") or key, "points": pt or 0})
     for uid, name, _ in sender_names:  # 新しい順
         u = out.get(uid)
@@ -798,7 +806,8 @@ def _list_listeners(state_dir: Path, days: float | None = None, room: str | None
         users[uid] = {"user_id": uid, "name": name, "names": {}, "points": pt, "paid_points": pt - free, "free_points": free,
                       "count": None, "times": times or 0, "rooms": defaultdict(int), "room_count": n, "first_at": first, "last_at": last}
     for uid, key, pt in top:
-        users[uid]["rooms"][key] = pt or 0
+        if uid in users:  # 合計を読んだあとに足された人は飛ばす (_from_table と同じ)
+            users[uid]["rooms"][key] = pt or 0
     for uid, key, pt, free, count, times, first, last in period:  # ギフト 1 件ずつの表から (人 × ルームの合計)
         pt, free = pt or 0, free or 0
         u = users.setdefault(uid, {"user_id": uid, "name": None, "names": {}, "points": 0, "paid_points": 0, "free_points": 0,
