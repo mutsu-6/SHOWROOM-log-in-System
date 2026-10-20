@@ -1248,3 +1248,51 @@ def test_store_limits_wal_size(tmp_path):
     for _ in range(2):  # 1 本目 (表を作る接続) も、2 本目からの接続も
         with Store(tmp_path) as s:
             assert s.scalar("PRAGMA journal_size_limit") == JOURNAL_SIZE_LIMIT
+
+
+def test_throttle_max_wait_gives_up_instead_of_sleeping_through_a_pause():
+    th, t = throttle()
+    th.paused_until = t.now + research.PAUSE
+    with pytest.raises(research.Busy):
+        th.call(lambda p: pytest.fail("休んでいる時は問い合わせない"), "/x", max_wait=20)
+    assert t.waits == [] and th.requests == 0  # 休みが終わるまで眠らない
+    th.paused_until = 0
+    assert th.call(lambda p: {"ok": 1}, "/x", max_wait=20) == {"ok": 1}  # 間隔だけなら待って問い合わせる
+
+
+def test_throttle_max_wait_gives_up_while_another_request_holds_the_turn():
+    import threading
+
+    th, _ = throttle()
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(path):  # 休みが始まって眠っている収集の問い合わせの代わり
+        entered.set()
+        release.wait(5)
+        return {}
+
+    other = threading.Thread(target=th.call, args=(slow, "/sweep"))
+    other.start()
+    entered.wait(5)
+    try:
+        with pytest.raises(research.Busy):
+            th.call(lambda p: pytest.fail("順番が来ないうちは問い合わせない"), "/x", max_wait=0.05)
+    finally:
+        release.set()
+        other.join(5)
+
+
+def test_throttle_soft_requests_do_not_count_network_errors():
+    th, _ = throttle()
+
+    def timeout(path):
+        raise TimeoutError("timed out")
+
+    for _ in range(research.PAUSE_AFTER + 2):
+        with pytest.raises(TimeoutError):
+            th.call(timeout, "/x", soft=True)
+    assert th.errors == 0 and th.state()["paused"] == 0  # ギフトの記録のタイムアウトでは、収集を止めない
+    for _ in range(research.PAUSE_AFTER):
+        with pytest.raises(urllib.error.HTTPError):
+            th.call(lambda p: (_ for _ in ()).throw(http_error(429)), "/x", soft=True)
+    assert th.state()["paused"] > 0  # SHOWROOM が断った (429 など) ものは数える

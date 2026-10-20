@@ -294,3 +294,48 @@ async def test_watched_rooms_get_stage_ranks(monkeypatch, tmp_path):
     await r._watched_stage(1200)
     assert calls == ["/api/live/stage_user_list?room_id=5"] * 2  # 配信中に 1 回・終わりに 1 回
     assert stage_ranks.last_per_live(tmp_path, "mine")[70]["ranks"] == [[1, 9]]
+
+
+async def test_aget_goes_through_the_collection_throttle(monkeypatch):
+    from showroom_keeper import research
+
+    t = {"now": 0.0, "waits": []}
+
+    def sleep(s):
+        t["waits"].append(s)
+        t["now"] += s
+
+    th = research.Throttle(0.5, sleep=sleep, clock=lambda: t["now"])
+    monkeypatch.setattr(research, "THROTTLE", th)
+    got = []
+    monkeypatch.setattr(rec, "get_json", lambda path, cookie=None: got.append((path, cookie)) or {"ok": path})
+    assert await rec.aget("/api/live/live_info?room_id=1", "c") == {"ok": "/api/live/live_info?room_id=1"}
+    assert await rec.aget("/api/room/status?room_url_key=a") == {"ok": "/api/room/status?room_url_key=a"}
+    assert got == [("/api/live/live_info?room_id=1", "c"), ("/api/room/status?room_url_key=a", None)]
+    assert th.requests == 2 and t["waits"] == [0.5]  # 収集と同じ間隔を空けて、順に問い合わせる
+
+
+async def test_aget_gives_up_while_showroom_requests_are_paused(monkeypatch):
+    import pytest
+    from showroom_keeper import research
+
+    th = research.Throttle(0.5)
+    th.paused_until = th._clock() + 3600
+    monkeypatch.setattr(research, "THROTTLE", th)
+    monkeypatch.setattr(rec, "get_json", lambda path, cookie=None: pytest.fail("休んでいる時は問い合わせない"))
+    with pytest.raises(research.Busy):
+        await rec.aget("/api/live/onlives")
+    assert th.requests == 0
+
+
+async def test_recorder_counts_its_requests(monkeypatch, tmp_path, caplog):
+    async def fake_aget(path, cookie=None):
+        return {"is_live": False}
+
+    monkeypatch.setattr(rec, "aget", fake_aget)
+    r = rec.GiftRecorder(Config(record_rooms=["a", "b"], record_glitter=False, state_file=tmp_path / "s.json"))
+    await r._targets()
+    assert r._requests == 2
+    caplog.set_level("INFO", logger="recorder")
+    r._log_count(r._count_from + rec.COUNT_LOG_EVERY)
+    assert "この 1 時間に SHOWROOM へ 2 回" in caplog.text and r._requests == 0
