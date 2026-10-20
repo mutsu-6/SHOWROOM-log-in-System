@@ -3725,7 +3725,7 @@ const NEWS = {
       `${eventLink(x.event_id, x.event_name)} ・ ルームの ${pct(x.share)} を 1 人で${x.rank ? ` ・ ルームは ${num(x.rank)} 位` : ""}`]],
   big_rooms: ["🏆", "終わったイベントで、ルームが集めたポイント",
     (x) => [roomLink(x.room_key, x.room_name), `${num(x.point)} pt`, `${eventLink(x.event_id, x.event_name)}${x.rank ? ` ・ ${num(x.rank)} 位` : ""}`]],
-  close_races: ["⚔️", "1 位が 10 万 pt 以上のイベントで、1 位と 2 位の差が小さい順",
+  close_races: ["⚔️", "1 位が 10 万 pt 以上のイベントで、1 位と 2 位の差の割合 (差 ÷ 1 位のポイント) が小さい順",
     (x) => [eventLink(x.event_id, x.event_name), `差 ${num(x.gap)} pt`,
       `1 位 ${roomLink(x.first.room_key, x.first.room_name)} ${num(x.first.point)} pt ・ 2 位 ${roomLink(x.second.room_key, x.second.room_name)} ${num(x.second.point)} pt (差は ${(x.gap_share * 100).toFixed(2)}%)`]],
   comebacks: ["🔥", "終わる 24 時間前に 3 位より下だったのに、1 位で終えたルーム (1 時間ごとの推移を残したイベント)",
