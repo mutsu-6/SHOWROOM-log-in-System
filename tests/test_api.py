@@ -108,3 +108,28 @@ async def test_public_lookups_skip_the_browser_and_share_the_live_list(monkeypat
     onlives.remember(onlives.fresh(), now=0)  # 1 分より古くなれば取り直す
     await a.onlives()
     assert calls == [onlives.PATH, onlives.PATH]
+
+
+def test_live_list_does_not_wait_long_behind_a_resting_sweep(monkeypatch):
+    """収集が順番待ちの中で休んでいても、入室・視聴は長く待たずに自分で取る。"""
+    import threading
+
+    from showroom_keeper import onlives
+
+    monkeypatch.setattr(onlives, "WAIT", 0.05)
+    resting, done = threading.Event(), threading.Event()
+
+    def sweep_fetch():
+        resting.set()
+        done.wait(5)
+        return {"onlives": []}
+
+    t = threading.Thread(target=onlives.get, args=(sweep_fetch,))
+    t.start()
+    resting.wait(5)
+    try:
+        assert onlives.get(lambda: {"onlives": [{"lives": []}]}) == {"onlives": [{"lives": []}]}
+    finally:
+        done.set()
+        t.join(5)
+    assert not onlives._fetching.locked()
