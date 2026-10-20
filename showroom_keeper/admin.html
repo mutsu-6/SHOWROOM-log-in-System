@@ -2649,8 +2649,8 @@ async function showRooms(sub) {
 }
 
 /* ------------------------------------------------------------ ヒートマップ (ルーム・ギフター) */
-// 四角の大きさ = 今の期間のポイント (落ちた人・ルームは前の期間の値)、色 = 前の期間からの増え減り。箱 = ルームのタイプ / 最推しのルーム
-const heatState = { rooms: { span: "12h", compare: "week", slot: "" }, gifters: { month: "" } };
+// 四角の大きさ = 今の期間のポイント (落ちた人・ルームは前の期間の値)、色 = 前の期間からの増え減り。箱 = 配信ジャンル (かタイプ) / 最推しのルーム
+const heatState = { rooms: { span: "12h", compare: "week", slot: "", group: "genre" }, gifters: { month: "" } };
 const HEAT_NEW = "#2f6fd6";
 function heatColor(c) {
   if (c == null) return HEAT_NEW;  // 前の期間が 0 (新しく)
@@ -2717,7 +2717,7 @@ async function showHeat(kind, box) {
   let d;
   try {
     d = await api(kind === "rooms"
-      ? `/api/heat?kind=rooms&span=${st.span}&compare=${st.compare}&slot=${encodeURIComponent(st.slot)}`
+      ? `/api/heat?kind=rooms&span=${st.span}&compare=${st.compare}&group=${st.group}&slot=${encodeURIComponent(st.slot)}`
       : `/api/heat?kind=gifters&month=${encodeURIComponent(st.month)}`);
   } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.arg !== "heat" || page.name !== kind) return;
@@ -2727,9 +2727,10 @@ async function showHeat(kind, box) {
     if (d.slot == null) { box.innerHTML = `<div class="empty">まだ作っていません。全ルームの収集が動いていると、12 時間の区切り (毎日 3:00 と 15:00) が終わって 2 時間ほどで作ります (SHOWROOM には問い合わせません)。</div>`; return; }
     head = `<label>期間 <select data-heat="span">${opt("12h", "12 時間", d.span)}${opt("week", "1 週間 (14 区切り)", d.span)}</select></label>
       ${d.span === "12h" ? `<label>くらべる <select data-heat="compare">${opt("week", "先週の同じ区切り", d.compare)}${opt("prev", "すぐ前の 12 時間", d.compare)}</select></label>` : ""}
+      <label>箱 <select data-heat="group">${opt("genre", "配信ジャンル", d.group)}${opt("type", "ルームのタイプ", d.group)}</select></label>
       <label>${d.span === "week" ? "最後の区切り" : "区切り"} <select data-heat="slot">${d.slots.map((x) => opt(x.slot, `${slotText(x.start)}〜`, d.slot)).join("")}</select></label>`;
     note = `${slotText(d.from)} 〜 ${slotText(d.to)} にイベントで増えたポイント (くらべる期間: ${slotText(d.base_from)} 〜 ${slotText(d.base_to)})。
-      区切りは月曜 3:00 から 12 時間ごと (毎日 3:00 と 15:00)。1 時間ごとに残している開催中のイベントのポイントの推移の差で、同時に出ているイベントは足しています。箱はルームのタイプ。今と前の期間の上位 ${num(300)} ルームずつを出します`;
+      区切りは月曜 3:00 から 12 時間ごと (毎日 3:00 と 15:00)。1 時間ごとに残している開催中のイベントのポイントの推移の差で、同時に出ているイベントは足しています。箱は${d.group === "type" ? "ルームのタイプ" : "配信ジャンル (最後の配信のジャンル)"}。今と前の期間の上位 ${num(300)} ルームずつを出します`;
     cell = { name: (x) => x.name, go: (x) => x.key ? `#room/${encodeURIComponent(x.key)}` : "" };
   } else {
     if (!d.month) { box.innerHTML = `<div class="empty">月ごとの集計がまだありません。</div>`; return; }
