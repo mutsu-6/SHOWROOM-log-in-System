@@ -58,6 +58,10 @@ ANALYSIS_TTL = 3600  # (2026-10-19 に 10 分から延ばした。全ルーム�
 
 
 # ------------------------------------------------------------------ 問い合わせの間隔
+class Busy(RuntimeError):
+    """待てる時間のうちに問い合わせの順番が来ない (休んでいる時など)。問い合わせはしていない。"""
+
+
 class Throttle:
     """SHOWROOM への問い合わせを 1 本ずつ、間隔を空けて流す (スレッドをまたいで共有する)。
 
@@ -96,10 +100,18 @@ class Throttle:
     def _pause_length(n: int) -> float:
         return min(MAX_PAUSE, PAUSE * 2 ** max(n - 1, 0))
 
-    def call(self, get: Callable[[str], Any], path: str) -> Any:
-        with self._lock:
+    def call(self, get: Callable[[str], Any], path: str, max_wait: float | None = None, soft: bool = False) -> Any:
+        """max_wait: 順番待ちと休みを合わせて、この秒数より長く待つなら問い合わせずに Busy を出す (None は休みが終わるまで待つ)。
+        soft: タイムアウトなどの通信の失敗を、止めるまでの失敗に数えない (ギフトの記録など、収集でない問い合わせ。
+        SHOWROOM が断った 403 / 429 / 5xx は数える)。"""
+        if not self._lock.acquire(timeout=-1 if max_wait is None else max_wait):
+            raise Busy(f"{self.name} への問い合わせの順番が {max_wait:g} 秒たっても来ません")
+        try:
             now = self._clock()
             wait = max(self._next, self.paused_until) - now
+            if max_wait is not None and wait > max_wait:
+                raise Busy(f"{self.name} への問い合わせを休んでいます" if self.paused_until > now else
+                           f"{self.name} への問い合わせの間隔が {wait:.0f} 秒に広がっています")
             if wait > 0:
                 self._sleep(wait)
             self.requests += 1
@@ -112,13 +124,16 @@ class Throttle:
                     self._ok()
                 raise
             except Exception as e:  # noqa: BLE001 - 通信の失敗 (タイムアウトなど)
-                self._failed(str(e).splitlines()[0] if str(e) else type(e).__name__)
+                if not soft:
+                    self._failed(str(e).splitlines()[0] if str(e) else type(e).__name__)
                 raise
             else:
                 self._ok()
                 return data
             finally:
                 self._next = self._clock() + self.gap
+        finally:
+            self._lock.release()
 
     def _ok(self) -> None:
         self.errors = 0

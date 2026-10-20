@@ -323,7 +323,7 @@ async def test_aget_gives_up_while_showroom_requests_are_paused(monkeypatch):
     th.paused_until = th._clock() + 3600
     monkeypatch.setattr(research, "THROTTLE", th)
     monkeypatch.setattr(rec, "get_json", lambda path, cookie=None: pytest.fail("休んでいる時は問い合わせない"))
-    with pytest.raises(rec.Paused):
+    with pytest.raises(research.Busy):
         await rec.aget("/api/live/onlives")
     assert th.requests == 0
 

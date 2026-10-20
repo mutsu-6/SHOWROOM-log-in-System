@@ -7,7 +7,8 @@
 - イベントは終了日時を過ぎると自動で対象外になる。
 - 視聴中 (rooms) のルームはブラウザ側で記録しているため対象外にする (二重記録防止)。
 - SHOWROOM への問い合わせ (配信状況・live_info・観客席の一覧など) は、収集と同じ research.THROTTLE を通す
-  (research_gap 秒に 1 回まで)。止められて休んでいる時は、待たずにあきらめる (リアルタイム通信の受信は続ける)。
+  (research_gap 秒に 1 回まで)。順番が 20 秒のうちに来ない時 (止められて休んでいる時など) は、待たずにあきらめる
+  (リアルタイム通信の受信は続ける)。タイムアウトなどの通信の失敗は、収集を止めるまでの失敗に数えない。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+import functools
 import json
 import logging
 import time
@@ -43,6 +45,7 @@ STAGE_EVERY = 900  # 配信の順位 (ステージの上位 100 人。ポイン�
 LAG_EVERY = 600  # イベントの API の遅れを測る間隔 (1 ルームにつき。秒)
 GLITTER_KEEP = 7 * 86400  # グリッターを取ったルームを、この秒数のあいだ配信のたびに記録する
 GLITTER_FILE = "glitter_rooms.json"  # {room_url_key: 最後にグリッターのバッジを見た時刻} (起動し直しても続けるため)
+MAX_WAIT = 20  # 問い合わせの順番を待つ上限 (秒)。休んでいる時に何時間も待たないように
 COUNT_LOG_EVERY = 3600  # SHOWROOM への問い合わせの回数をログに書く間隔 (秒)
 # 問い合わせは THROTTLE の順番を待つので、ほかの処理の共有のスレッドをふさがないように専用のスレッドで待つ
 _pool = ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY, thread_name_prefix="recorder")
@@ -110,17 +113,14 @@ def get_json(path: str, cookie: str | None = None) -> Any:
         return json.load(resp)
 
 
-class Paused(RuntimeError):
-    """SHOWROOM に止められて、収集の問い合わせを休んでいる。"""
-
-
 async def aget(path: str, cookie: str | None = None) -> Any:
-    """収集と同じ決まり (research.THROTTLE) を通して SHOWROOM に問い合わせる。休んでいる時は待たずにあきらめる。"""
+    """収集と同じ決まり (research.THROTTLE) を通して SHOWROOM に問い合わせる。
+    順番が MAX_WAIT 秒のうちに来ない時 (休んでいる時など) は、待たずに research.Busy であきらめる。
+    タイムアウトなどの通信の失敗は、収集を止めるまでの失敗に数えない (ギフトの記録だけで全ルームの収集を休ませないように)。"""
     from .research import THROTTLE
 
-    if THROTTLE.state()["paused"] > 0:
-        raise Paused("SHOWROOM への問い合わせを休んでいます")
-    return await asyncio.get_running_loop().run_in_executor(_pool, THROTTLE.call, lambda p: get_json(p, cookie), path)
+    call = functools.partial(THROTTLE.call, lambda p: get_json(p, cookie), path, max_wait=MAX_WAIT, soft=True)
+    return await asyncio.get_running_loop().run_in_executor(_pool, call)
 
 
 def ws_header_param(connect: Any) -> str:
