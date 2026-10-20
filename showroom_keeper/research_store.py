@@ -11,6 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -241,6 +242,17 @@ PROGRESS_THIN_GAP = 6 * 3600  # 終わったイベントの推移は、最後の
 PROGRESS_THIN_AFTER = 7 * 86400  # 終わってこれだけたち、走り方を作り終えたイベントの推移を間引く (秒)
 
 
+SLOW_SQL = 2.0  # これより長くかかった読み込みを、自己点検に知らせる (秒)
+slow_hooks: list[Any] = []  # 遅い読み込みを受け取る関数 (sql, 秒)。自己点検が登録する
+
+
+def _timed(sql: str, started: float) -> None:
+    took = time.monotonic() - started
+    if took >= SLOW_SQL:
+        for hook in slow_hooks:
+            hook(sql, took)
+
+
 class Store:
     """research.db への接続 1 本。スレッドごとに作って使う (with 文で閉じる)。"""
 
@@ -330,10 +342,16 @@ class Store:
         self.conn.execute("COMMIT")
 
     def one(self, sql: str, args: Iterable[Any] = ()) -> sqlite3.Row | None:
-        return self.conn.execute(sql, tuple(args)).fetchone()
+        started = time.monotonic()
+        row = self.conn.execute(sql, tuple(args)).fetchone()
+        _timed(sql, started)
+        return row
 
     def all(self, sql: str, args: Iterable[Any] = ()) -> list[sqlite3.Row]:
-        return self.conn.execute(sql, tuple(args)).fetchall()
+        started = time.monotonic()
+        rows = self.conn.execute(sql, tuple(args)).fetchall()
+        _timed(sql, started)
+        return rows
 
     def scalar(self, sql: str, args: Iterable[Any] = (), default: Any = 0) -> Any:
         row = self.one(sql, args)

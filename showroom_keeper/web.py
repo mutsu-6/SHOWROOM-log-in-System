@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from . import selfcheck
 from .config import SETTINGS_KEYS, fold_support, normalize_room_key, save_settings
 from .status import LOGIN_KEY, fetch, read_live_stats
 
@@ -143,6 +144,7 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
         "research_pause": _pause_view(),
         "version": _version(),
         "alerts": build_alerts(state_dir, stats.get(LOGIN_KEY) or {}, time.time()),
+        "health": selfcheck.summary(),
     }
 
 
@@ -336,6 +338,13 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ GET
     def do_GET(self) -> None:  # noqa: N802 - 標準の名前
+        started = time.monotonic()
+        try:
+            self._get()
+        finally:
+            selfcheck.note_page(urlparse(self.path).path, time.monotonic() - started)  # 開くのが遅い画面を、自己点検で見つける
+
+    def _get(self) -> None:
         if not self._allowed():
             return
         url = urlparse(self.path)
@@ -347,6 +356,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                             "script-src 'self' 'unsafe-inline'; img-src 'self' data: https://static.showroom-live.com; connect-src 'self'"})
             elif url.path == "/api/overview":
                 self._json(build_overview(self.keeper, self.cache))
+            elif url.path == "/api/health":
+                self._json(selfcheck.view() or {"at": None})
             elif url.path == "/api/logs":
                 self._json({"logs": self.logs.since(int(q.get("after") or 0))})
             elif url.path == "/api/gifts/room":
@@ -466,7 +477,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         out = {"job": research.JOB.state(), "status": research.status(self._state_dir(), research.research_keys(cfg)),
                "throttle": research.THROTTLE.state(), "sweep": sweep.state(), "backup": backup.last_backup(self._state_dir()),
                "upload": backup.last_upload(self._state_dir()),
-               "archive": archive.state()}
+               "archive": archive.state(), "health": selfcheck.view()}
         if cfg.research_all:
             now = time.time()
             if now - _store_status["at"] > STORE_STATUS_TTL:  # 全体の件数は数えるのに時間がかかるので使い回す

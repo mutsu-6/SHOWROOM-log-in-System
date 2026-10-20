@@ -11,9 +11,11 @@ import ctypes
 import ctypes.util
 import logging
 import threading
+import time
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 log = logging.getLogger(__name__)
 
@@ -31,13 +33,34 @@ def free_mb() -> float | None:
     return None
 
 
+_hold_until = 0.0  # この時刻までは、サーバーが重いので、裏の数え直しを後回しにする (自己点検が決める)
+
+
+def hold_off(seconds: float) -> None:
+    """サーバーが重い間 (視聴の処理が待たされた・ディスク待ちが多い)、前の結果がある数え直しを後回しにする。"""
+    global _hold_until
+    _hold_until = max(_hold_until, time.time() + seconds)
+
+
+def holding() -> float:
+    """後回しにしている残りの秒数 (していなければ 0)。"""
+    return max(0.0, _hold_until - time.time())
+
+
 def tight(need_mb: float = HEAVY_MIN_FREE_MB) -> bool:
-    """メモリの空きが need_mb より少ないか (分からなければ False = 気にせず数える)。"""
+    """メモリの空きが need_mb より少ないか (分からなければ False = 気にせず数える)。
+    サーバーが重くて後回しにしている間も True (前の結果がある数え直しを、空くまで待つ)。
+    ただし、すでに始まった分析の数え直しの続き (いちばん後に開いた見るルームの集計を先に作る所。スレッド「analysis」) は
+    後回しにしない (止めると、次にそのページを開いた人が、その集計を待つことになるため)。"""
+    if time.time() < _hold_until and threading.current_thread().name != "analysis":
+        return True
     free = free_mb()
     return free is not None and free < need_mb
 
 
 _heavy = threading.RLock()
+_holder: dict[str, Any] = {}  # 今、重い集計をしているスレッド (自己点検が、長く続いていないかを見る)
+runs: deque[dict[str, Any]] = deque(maxlen=50)  # 終わった重い集計 {name, at, seconds} (自己点検が、かかった時間を見る)
 
 
 @contextmanager
@@ -45,11 +68,22 @@ def heavy(wait: bool = True) -> Iterator[bool]:
     """重い集計を 1 つずつ行う (同時に読むと、ディスクの読み出しを取り合って、どれも何倍も遅くなる。2026-10-19 にサーバーで
     analyze と集まり具合の数え直しが重なっていた)。wait=False なら、ほかが数えている時は待たずに False を返す (裏の数え直しは次の機会に)。"""
     got = _heavy.acquire(blocking=wait)
+    outer = got and not _holder  # 同じスレッドの中で重ねて使った時は、いちばん外側の始まりを覚える
+    if outer:
+        _holder.update(ident=threading.get_ident(), name=threading.current_thread().name, since=time.time())
     try:
         yield got
     finally:
         if got:
+            if outer:
+                runs.append({"name": _holder.get("name"), "at": time.time(), "seconds": time.time() - _holder.get("since", time.time())})
+                _holder.clear()
             _heavy.release()
+
+
+def heavy_holder() -> dict[str, Any]:
+    """重い集計をしているスレッド {ident, name, since} (していなければ空)。"""
+    return dict(_holder)
 
 
 _libc = None
