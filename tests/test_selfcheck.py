@@ -2,6 +2,7 @@ import logging
 import os
 import sqlite3
 import threading
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,7 +302,7 @@ def test_watch_loop_notes_lag(slow):
     async def run():
         task = asyncio.ensure_future(selfcheck.watch_loop(every=0.01))
         await asyncio.sleep(0.02)
-        time.sleep(selfcheck.LOOP_LAG_WARN / 2 + 0.05)  # 視聴の処理を止めてしまう重い処理
+        time.sleep(selfcheck.LOOP_LAG_NOTE + 0.05)  # 視聴の処理を止めてしまう重い処理
         await asyncio.sleep(0.05)
         task.cancel()
 
@@ -311,6 +312,77 @@ def test_watch_loop_notes_lag(slow):
     finally:
         loop.close()
     assert slow.summary(time.time())[0]["kind"] == "loop"
+
+
+def test_stall_is_blamed_on_the_busy_thread(slow, monkeypatch):
+    """視聴の処理が待っているだけの時は、その時に計算していたほかのスレッドのせいにする。"""
+    import asyncio
+
+    monkeypatch.setattr(selfcheck, "STALL_SAMPLE", 0.3)
+    monkeypatch.setattr(selfcheck, "LOOP_LAG_NOTE", 0.3)
+
+    def busy():  # 視聴の処理の中で止まる重い処理 (このテストは showroom_keeper の外なので、場所は分からない)
+        time.sleep(0.8)
+
+    async def run():
+        task = asyncio.ensure_future(selfcheck.watch_loop(every=0.05))
+        await asyncio.sleep(0.1)
+        busy()
+        await asyncio.sleep(0.1)
+        task.cancel()
+        await asyncio.sleep(0)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(run())
+    finally:
+        loop.close()
+    rows = slow.summary(time.time())
+    assert rows and rows[0]["kind"] == "loop"
+    assert rows[0]["name"].startswith("ほかの処理に待たされた")  # 止まっている最中に見て、原因を付けた
+    assert selfcheck._beat["at"] == 0.0  # 終わったら見張りも止まる
+
+
+def test_blame_names_gc_and_loop_code(monkeypatch):
+    monkeypatch.setitem(selfcheck._gc, "started", time.monotonic())
+    assert "GC" in selfcheck.blame_stall()
+    monkeypatch.setitem(selfcheck._gc, "started", None)
+    from showroom_keeper import memory as m
+
+    frame = sys._getframe()
+    place = selfcheck._frame_place(frame)
+    assert place is None  # テストの中はこのプログラムの外
+    code = compile("import sys\nf = sys._getframe()", m.__file__, "exec")  # showroom_keeper の中の行として見る
+    ns = {}
+    exec(code, ns)
+    assert selfcheck._frame_place(ns["f"]).startswith("memory.py:2")
+
+
+def test_gc_timer_notes_long_full_collections(slow, monkeypatch):
+    selfcheck._gc_timer("start", {"generation": 1})
+    assert selfcheck._gc["started"] is None  # 若い世代は測らない
+    selfcheck._gc_timer("start", {"generation": 2})
+    selfcheck._gc["started"] -= 3  # 3 秒かかったことにする
+    selfcheck._gc_timer("stop", {"generation": 2})
+    assert selfcheck._gc["started"] is None
+    rows = slow.summary(time.time())
+    assert rows[0]["kind"] == "gc" and rows[0]["max"] >= 3
+
+
+def test_short_idle_lags_are_kept_but_not_warned(checker, slow, monkeypatch):
+    """何もしていない時の 2〜4.5 秒の待ちは、表には残すが知らせない (2026-10-20)。"""
+    monkeypatch.setattr(checker, "_cpu_share", lambda now: (None, None))
+    for lag in (2.1, 3.0, 4.5):
+        slow.note("loop", "ほかの処理に待たされた: sweep x.py:1 (f)", lag)
+    found = []
+    checker._heavy_work(time.time(), found)
+    assert not any("視聴の処理" in f["title"] for f in found)
+    assert memory.holding() == 0
+    slow.note("loop", "視聴の処理の中: web.py:9 (g)", 6.0)
+    found = []
+    checker._heavy_work(time.time(), found)
+    hit = [f for f in found if "視聴の処理" in f["title"]]
+    assert hit and "web.py:9" in hit[0]["detail"] and "4 回" in hit[0]["detail"]
 
 
 def test_heavy_runs_are_kept(monkeypatch):
