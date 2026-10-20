@@ -95,3 +95,16 @@ def test_built_only_when_the_server_is_idle(monkeypatch):
         assert not room_parts.idle(time.time() + room_parts.IDLE_ADMIN + 1)  # 自己点検が後回しにしている
     finally:
         monkeypatch.setattr(memory, "_hold_until", 0.0)
+
+
+def test_waits_out_short_disk_wait_spikes(monkeypatch):
+    """自己点検の 5 分の平均では暇でも、作る直前のディスク待ちが多ければ作らない。"""
+    import threading
+
+    samples = iter([(1000.0, 100.0), (1100.0, 130.0), (2000.0, 200.0), (2100.0, 205.0)])
+    monkeypatch.setattr(room_parts, "_cpu", lambda: next(samples))
+    stop = threading.Event()
+    assert not room_parts.quiet_now(stop, 0)  # 30%
+    assert room_parts.quiet_now(stop, 0)  # 5%
+    monkeypatch.setattr(room_parts, "_cpu", lambda: None)
+    assert room_parts.quiet_now(stop, 0)  # 測れない所では、ほかの条件で決める

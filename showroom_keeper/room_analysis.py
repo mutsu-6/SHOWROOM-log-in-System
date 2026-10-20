@@ -15,6 +15,7 @@ research.db を読んで作るだけで、SHOWROOM には問い合わせない�
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import json
 from datetime import datetime, timedelta
 import math
@@ -820,9 +821,26 @@ def lure_throws(state_dir: Any, room_key: str, now: float | None = None, days: i
     minutes: dict[Any, dict[int, int]] = {x.get("live_id"): {int(k): v for k, v in (x.get("minutes") or {}).items()}
                                           for x in comment_counts.load(state_dir, room_key)}
 
+    # 配信ごとに時刻の順に分けておき、前後 3 分を二分探索で探す (前は誘い投げ 1 回ごとに、ほかの人のギフトを全部くらべ直していて、
+    # 記録の多いルームで 20〜30 秒かかり、その間は視聴の処理も待たされていた。2026-10-20 に Cursor が測った)
+    by_live: dict[Any, list[tuple[Any, ...]]] = {}
+    for g in others:  # gifts が時刻の順なので、配信ごとの並びも時刻の順
+        by_live.setdefault(g[4], []).append(g)
+    live_times = {k: [g[0] for g in v] for k, v in by_live.items()}
+    by_minute: dict[Any, tuple[list[int], list[int]]] = {}  # 配信ごとの (コメントの時刻の順, それまでの合計)
+    for live, m in minutes.items():
+        keys = sorted(m)
+        acc, run = [0], 0
+        for k in keys:
+            run += m[k]
+            acc.append(run)
+        by_minute[live] = (keys, acc)
+
     def window(live: Any, a: float, b: float) -> tuple[int, int, int]:
-        got = [g for g in others if g[4] == live and a <= g[0] < b]
-        cm = sum(v for m, v in minutes.get(live, {}).items() if a <= m < b)
+        rows, times = by_live.get(live, []), live_times.get(live, [])
+        got = rows[bisect_left(times, a):bisect_left(times, b)]
+        keys, acc = by_minute.get(live, ([], [0]))
+        cm = acc[bisect_left(keys, b)] - acc[bisect_left(keys, a)]
         return len({g[1] for g in got}), sum(g[2] for g in got if not g[3]), cm
 
     before = [0, 0, 0]
@@ -857,11 +875,16 @@ def _visits(state_dir: Any, room_key: str, since: float, lures: list[tuple[Any, 
     visits = [e for e in evs if e["kind"] == "visit"]
     levels = [e for e in evs if e["kind"] == "fan_level"]
     first = sum(1 for e in visits if e.get("n") == 1)
+    at: dict[Any, list[float]] = {}  # 配信ごとの来場の時刻 (時刻の順。前後を二分探索で数える)
+    for e in visits:
+        at.setdefault(e.get("live_id"), []).append(e["at"])
+    for v in at.values():
+        v.sort()
     before = after = 0
     for t, *_rest in lures:
-        live = _rest[3]
-        before += sum(1 for e in visits if e.get("live_id") == live and t - LURE_WINDOW <= e["at"] < t)
-        after += sum(1 for e in visits if e.get("live_id") == live and t < e["at"] <= t + LURE_WINDOW)
+        v = at.get(_rest[3], [])
+        before += bisect_left(v, t) - bisect_left(v, t - LURE_WINDOW)
+        after += bisect_right(v, t + LURE_WINDOW) - bisect_right(v, t)
     n = len(lives)
     return {"lives": n, "visits": len(visits) / n, "first": first / n, "levels": len(levels) / n,
             "regular": sum(1 for e in visits if (e.get("n") or 0) >= 10) / n,  # 10 回目より多く来ている人
@@ -913,7 +936,13 @@ def relay_and_respond(gifts: list[tuple[Any, ...]], core: set[Any]) -> dict[str,
         times = [g[0] for g in rows]
         for i, g in enumerate(rows):
             kind = "誘い投げ" if g[1] in core and g[2] <= LURE_SMALL else "大きなギフト" if g[2] >= RESPOND_BIG else "そのほか"
-            answers = [h[1] for h in rows[i + 1:] if g[0] < h[0] <= g[0] + RESPOND_WINDOW and h[1] != g[1]]
+            answers = []  # rows は時刻の順なので、RESPOND_WINDOW 秒を過ぎたら見るのをやめる (前は配信の残りを全部見ていた)
+            for j in range(i + 1, len(rows)):
+                h = rows[j]
+                if h[0] > g[0] + RESPOND_WINDOW:
+                    break
+                if g[0] < h[0] and h[1] != g[1]:
+                    answers.append(h[1])
             kinds[kind][0] += 1
             kinds[kind][1] += bool(answers)
             if g[1] not in core:

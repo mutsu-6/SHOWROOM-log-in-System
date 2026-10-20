@@ -30,6 +30,7 @@ KEEP = 30 * 86400  # これだけ開かれなかったルームは、作って�
 TICK = 60  # 暇かどうかを見て、1 ルーム作る間隔 (秒)
 IDLE_ADMIN = 600  # 管理画面がこれだけ使われていなければ「暇」(秒)
 IDLE_IOWAIT = 0.10  # 自己点検で見たディスク待ちがこれより少なければ「暇」
+IOWAIT_SAMPLE = 5  # 作る直前に、今のディスク待ちを見る秒数
 SAVE = True  # 開いた時に作った分を保存するか (テストでは、ほかのテストの値を変えないように False にする)
 WAIT = False  # True なら、開いた時に作った分をその場で保存する (テスト用)
 
@@ -54,6 +55,28 @@ def idle(now: float | None = None) -> bool:
 
     iowait = (selfcheck.CHECKER.load.get("iowait") if selfcheck.CHECKER is not None else None)
     return iowait is None or iowait < IDLE_IOWAIT  # 測れない所 (Mac など) では、ほかの 2 つで決める
+
+
+def _cpu() -> tuple[float, float] | None:
+    """CPU 全体の時間と、そのうちのディスク待ち (/proc/stat。読めない所では None)。"""
+    try:
+        fields = [float(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+        return sum(fields[:8]), fields[4]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def quiet_now(stop: threading.Event, seconds: float = IOWAIT_SAMPLE) -> bool:
+    """今 (seconds 秒のあいだ) のディスク待ちが IDLE_IOWAIT より少ないか。測れなければ True。
+    自己点検のディスク待ちは 5 分の平均なので、その中の短い山 (10 秒ごとに見て 25〜43%。2026-10-20 に Cursor が測った) の
+    最中に作り始めないよう、作る直前にも見る。"""
+    a = _cpu()
+    if stop.wait(seconds) or a is None:
+        return a is None
+    b = _cpu()
+    if b is None or b[0] <= a[0]:
+        return True
+    return (b[1] - a[1]) / (b[0] - a[0]) < IDLE_IOWAIT
 
 
 def source(s: Any, room_id: int) -> float:
@@ -157,7 +180,7 @@ def run_forever(state_dir: Path, stop: threading.Event) -> None:
     from .research_store import Store
 
     while not stop.wait(TICK):
-        if not idle():
+        if not idle() or not quiet_now(stop):
             continue
         try:
             with memory.heavy(wait=False) as got:
