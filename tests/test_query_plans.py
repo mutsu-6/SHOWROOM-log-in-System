@@ -25,7 +25,7 @@ BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "ro
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
-    ("USING INDEX room_events_pending", "WHERE re.final=0", "取っていない分だけの索引を読む (取り終えた分は読まない)"),
+    ("USING COVERING INDEX room_events_todo", "WHERE re.final=0", "取っていない分だけの索引を読む (取り終えた分・ポイント 0 の分は読まない)"),
     ("SCAN gift_senders", "first_at, last_at, name, unknown FROM gift_senders",
      "ギフターの一覧・分析で、記録したギフトの全員の合計を 1 回読む (サーバーで 8 万行・8MB。前は記録のファイル全部 66MB を読み直していた)"),
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
@@ -403,3 +403,22 @@ def test_gifter_status_does_not_read_whole_tables(traced):
             gifter_status.ranking(s)
             gifter_status.lookup(s, [201, 101])
     check(traced, read)
+
+
+def test_next_ranking_is_chosen_from_the_index_only(tmp_path):
+    """次に取る貢献ランキングを選ぶ SQL は、表を引き直さずに索引 (room_events_todo) だけで選ぶ。
+
+    前は、ポイント 0 で取らないルームも索引に入っていて、その 1 行ずつ表を探しに行っていた (サーバーで平均 5.5 秒・最大 15 秒)。
+    """
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": e, "name": f"e{e}", "start": NOW - 9 * DAY, "end": NOW - 5 * DAY} for e in range(1, 4)])
+        s.link((r, e) for r in range(1, 4) for e in range(1, 4))
+        s.conn.execute("UPDATE room_events SET point = room_id - 1")  # ルーム 1 はポイント 0 (取らない)
+        args = (NOW - 3600, research.RANKING_RETRIES)
+        for sql in (f"""SELECT re.room_id, re.event_id, e.name FROM room_events re JOIN events e USING(event_id)
+                        WHERE {research.PENDING_RANKING} ORDER BY e.end DESC LIMIT 100""",
+                    f"SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id) WHERE {research.PENDING_RANKING}"):
+            plan = " ".join(r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + sql, args))
+            assert "COVERING INDEX room_events_todo" in plan, plan
+        assert s.scalar("SELECT COUNT(*) FROM room_events INDEXED BY room_events_todo WHERE final=0 AND (point IS NULL OR point > 0)") == 6
+        assert s.one("SELECT 1 FROM sqlite_master WHERE name='room_events_pending'") is None

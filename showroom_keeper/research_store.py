@@ -323,8 +323,13 @@ class Store:
                 # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS contributions_guessed ON contributions(room_id, event_id)
                                      WHERE guessed IS NOT NULL""")
-                # まだ貢献ランキングを取っていないルーム・イベントだけの索引 (次に取るものを選ぶ時に、取り終えた分を読まない)
-                self.conn.execute("CREATE INDEX IF NOT EXISTS room_events_pending ON room_events(event_id) WHERE final=0")
+                # まだ貢献ランキングを取っていないルーム・イベントだけの索引 (次に取るものを選ぶ時に、取り終えた分を読まない)。
+                # ポイントが 0 のルーム (取らない) を入れず、選ぶのに読む欄を全部入れて、表を引き直さずに索引だけで選ぶ。
+                # 前の room_events_pending (event_id だけ) は、ポイント 0 の取らない分が溜まり、その 1 行ずつ表を探しに行っていた
+                # (サーバーで 1 回 平均 5.5 秒・最大 15 秒。2026-10-20 に Cursor が測った)
+                self.conn.execute("DROP INDEX IF EXISTS room_events_pending")
+                self.conn.execute("""CREATE INDEX IF NOT EXISTS room_events_todo ON room_events(event_id, failures, ranking_at, point, final)
+                                     WHERE final=0 AND (point IS NULL OR point > 0)""")
                 # 前に作った research.db の user_room は、WITHOUT ROWID になる前の形 (表の本体と、主キーの索引が別) のことがある。
                 # その形だと、分析の土台が人の順に全部読む時に、索引から本体を 1 行ずつ飛び飛びに探しに行く (サーバーで 204 万行・70 秒。
                 # 2026-10-20 に Cursor が測った)。索引だけで読めるように、読む欄を全部入れた索引を作る (今の形の表には要らない)
