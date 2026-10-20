@@ -409,6 +409,9 @@ class Keeper:
         from . import room_parts
 
         room_parts.start(Path(self.cfg.state_file).parent)  # ルームのページの重い部品を、暇な時に作っておく
+        from . import gifter_status
+
+        gifter_status.start(Path(self.cfg.state_file).parent)  # ギフターのステータスを、1 日 1 回、暇な時に作っておく
         loop_watch = asyncio.ensure_future(selfcheck.watch_loop())  # 視聴の処理が待たされていないか
         gift_updates = asyncio.ensure_future(self._gift_updates())
         research = asyncio.ensure_future(self._research_updates())
@@ -430,6 +433,7 @@ class Keeper:
             loop_watch.cancel()
             selfcheck.stop()
             room_parts.stop()
+            gifter_status.stop()
             if admin is not None:
                 admin.shutdown()
 

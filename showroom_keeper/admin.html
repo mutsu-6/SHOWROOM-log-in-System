@@ -300,6 +300,15 @@ section[data-page].active { display: block; }
 .subnav a:hover { text-decoration: none; color: var(--text); }
 .subnav a.active { background: var(--text); color: var(--bg); border-color: var(--text); }
 .subnav a .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.st-head { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 14px; align-items: start; margin-bottom: 10px; }
+@media (max-width: 720px) { .st-head { grid-template-columns: 1fr; } }
+.st-grade { font-size: 34px; font-weight: 800; line-height: 1; }
+.st-grade.S { color: var(--accent); } .st-grade.A { color: var(--warn); } .st-grade.B { color: var(--ok); }
+.sbar { display: inline-block; width: 70px; height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+.sbar i { display: block; height: 100%; background: var(--accent); }
+svg.radar text { font-size: 11px; fill: var(--muted); }
+svg.radar .ring { fill: none; stroke: var(--line); }
+svg.radar .shape { fill: color-mix(in srgb, var(--accent) 22%, transparent); stroke: var(--accent); stroke-width: 2; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: block; color: var(--text); min-width: 0; }
 a.tile:hover { text-decoration: none; border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
@@ -489,6 +498,7 @@ td a.name-link, td a { word-break: break-word; }
       <a href="#gifters" data-sub="list">一覧</a>
       <a href="#gifters/trend" data-sub="trend">離れつつある・伸びている</a>
       <a href="#gifters/watch" data-sub="watch">気になる</a>
+      <a href="#gifters/power" data-sub="power">戦力ランキング</a>
     </nav>
     <div class="hint" id="r-analyzed" style="margin:-6px 0 10px"></div>
     <div id="gf-body"></div>
@@ -1752,6 +1762,129 @@ const STATE_NOTE = {
 };
 const TIER_NOTE = "その月にどこかの貢献ランキングに出た全員の中で、上から 0.1% (少ない月でも 1 人) までが頂点・1% までが大口・10% までが中堅・それより下が少額 (月ごとに区切るので、時期や規模でずれない)";
 const WALL_NOTE = "見えた回 = 貢献ランキング (各ルームの上位 100 人) に出たイベント×ルーム。壁ぎわ = 100 人に届いた回で、ポイントが 100 位の 1.2 倍まで (見えない回にも送っていたかもしれない)。壁ぎわの回が半分以上の人は、見えている額が下限 (全体では大口でも、ルームごとには壁ぎわのことがある)。どの線も仮の値です";
+/* ------------------------------------------------------------ ギフターのステータス (gifter_status.py。docs/分析の見方.md の「ステータス」) */
+const ptYen = (v) => v ? `${shortNum(v)} <small>pt</small>` : "—";
+const yenOf = (v) => v ? `およそ ${shortNum(Math.round(v / 3))} 円` : "";
+// [キー, 名前, 値の出し方, 説明]
+const STATUS_GROUPS = [
+  ["財布", "どれだけ撃てるか", [
+    ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど"],
+    ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月の予算 − 今月ここまで (${shortNum(st.spent)} pt。終わったイベントの分。開催中のイベントはまだ入らない)`],
+    ["fire", "火力", (st) => `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}</span>`, (st) => `${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く)。${yenOf(st.fire)}`],
+    ["max_out", "最大出力", (st) => ptYen(st.max_out), "直近 12 か月の、1 イベント × 1 ルームの最大 (無理をした時の天井)"],
+    ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、火力の半分以上を出したイベントの数 (送った月の中ほど)"],
+    ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (予算の 3 割以下) のあと、予算に戻るまでの月数。短いほど上"],
+  ]],
+  ["腕", "どう撃つか", [
+    ["intel", "知性", (st) => st.intel == null ? "—" : pctText(st.intel), (st) => `勝負になった回に出した量のうち、ルームが目標 (特典の順位) に届いた回の割合。届かない勝負に弾を捨てないほど上 (${num(st.intel_rounds)} 回)`],
+    ["hit", "命中", (st) => st.hit == null ? "—" : pctText(st.hit), (st) => `火力の半分以上を出した回のうち、ルームが目標に届いた割合 (${num(st.hit_rounds)} 回)`],
+  ]],
+  ["心", "撃つ気があるか", [
+    ["momentum", "勢い", (st) => st.momentum == null ? "—" : `${st.momentum.toFixed(2)} <small>倍</small>${st.new_high ? ' <span class="tag live">上限を更新</span>' : ""}`, "直近 3 か月の量 ÷ その前の 3 か月"],
+    ["fatigue", "疲労", (st) => st.fatigue == null ? "—" : `${st.fatigue.toFixed(2)}`, "直近 30 日に出した量 ÷ 月の予算。1 を超えると疲労 (少ないほど上)"],
+  ]],
+  ["経歴", "どれだけ戦ってきたか", [
+    ["achievements", "実績", (st) => `${num(st.achievements)} <small>回</small>`, (st) => `直近 2 年で、ルームが目標に届いた回に、そのルームの貢献の 3 位までだった回数 (うち 1 位 ${num(st.tops)} 回)`],
+    ["exp", "経験値", (st) => `Lv ${st.level} <small>(${num(st.exp)} 回)</small>`, "直近 2 年で、勝負になった回に出た数。1・3・10・30・100・300 回でレベルが上がる"],
+    ["career", "キャリア", (st) => `${Math.floor(st.career / 12)} <small>年</small> ${Math.round(st.career % 12)} <small>か月</small>`, "初めて貢献ランキングに見えてから"],
+    ["spread", "掛け持ちの広さ", (st) => st.spread == null ? "—" : `${st.spread.toFixed(1)} <small>ルーム</small>`, (st) => `直近 12 か月の量の分け方から出した、実際のルームの数 (火力の半分以上を出したルームは ${num(st.main_rooms)})`],
+  ]],
+  ["相性", "どの戦場で強いか", [
+    ["contest", "大会での強さ", (st) => st.contest == null ? "—" : `${st.contest.toFixed(2)} <small>倍</small>`, "大会の 2 段階目より後の 1 イベントの量 (中ほど) ÷ ふつうのイベント"],
+  ]],
+];
+const RADAR = [["fire", "火力"], ["stamina", "持久力"], ["intel", "知性"], ["hit", "命中"], ["momentum", "勢い"], ["exp", "経験値"]];
+function radarSvg(scores) {
+  const W = 260, H = 230, cx = W / 2, cy = H / 2 + 4, R = 82;
+  const pt = (i, r) => { const a = -Math.PI / 2 + i * 2 * Math.PI / RADAR.length; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+  const ring = (f) => RADAR.map((_, i) => pt(i, R * f).join(",")).join(" ");
+  const shape = RADAR.map(([k], i) => pt(i, R * Math.max(0.03, (scores[k] || 0) / 100)).join(",")).join(" ");
+  const labels = RADAR.map(([k, l], i) => { const [x, y] = pt(i, R + 18); return `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle">${l} ${scores[k] == null ? "—" : scores[k]}</text>`; }).join("");
+  return `<svg class="radar" viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px" role="img" aria-label="ステータスのレーダー">
+    ${[0.25, 0.5, 0.75, 1].map((f) => `<polygon class="ring" points="${ring(f)}"/>`).join("")}
+    ${RADAR.map((_, i) => `<line class="ring" x1="${cx}" y1="${cy}" x2="${pt(i, R)[0]}" y2="${pt(i, R)[1]}"/>`).join("")}
+    <polygon class="shape" points="${shape}"/>${labels}</svg>`;
+}
+const MARK_NOTE = { "上り調子": "直近 3 か月が、その前の 3 か月の 1.5 倍以上", "安定": "大きな増え減りがない", "温存中": "直近 3 か月が多かった 3 か月の 3 割以下なのに、アクティブファンに残っている (見えない戦力)",
+  "枯渇": "直近 3 か月が少なくなり、アクティブファンからも消えた (今は弾が無い)", "離脱": "3 か月どこの貢献ランキングにもアクティブファンにも出ていない",
+  "疲労": "直近 30 日に、月の予算より多く出した", "新顔": "初めて見えてから 3 か月以内" };
+const markTag = (m) => `<span class="tag ${["枯渇", "離脱", "疲労"].includes(m) ? "warn" : ["上り調子", "温存中"].includes(m) ? "live" : ""}" title="${esc(MARK_NOTE[m] || "")}">${esc(m)}</span>`;
+const CLASS_NOTE = { "主砲": "ルームでの戦力が、このルームの決め手の量 (隣の順位と分かれた差の中ほど) 以上。一人で順位を動かせる",
+  "主力": "決め手の量の 3 分の 1 以上。2〜3 人そろえば決められる", "支え": "それより下で、勝負の回に半分以上出てくる", "付き合い": "付き合い投げか、勝負の回にあまり出てこない。このルームの戦力には数えない" };
+function gifterStatus(st, uid) {
+  const runNote = (r) => r.queued ? `今の回は、あと ${num(r.queued)} 人を作っています` : r.done ? `${tm(r.done, true)} に作り終えました` : "まだ 1 回も作り終えていません";
+  let h = `<h3>ステータス <small class="muted">戦力を、ゲームのキャラクターのように項目ごとの数字にしたもの。1 日 1 回、サーバーが空いている時に作ります</small></h3>`;
+  if (!st.found) {
+    return h + `<div class="hint" style="margin-top:0">この人のステータスはまだありません。作るのは、直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人 (パワーギフター) だけです。${esc(runNote(st.run))}。</div>`;
+  }
+  const sc = st.scores || {};
+  const bar = (v) => v == null ? '<span class="uid">—</span>' : `<span class="sbar"><i style="width:${v}%"></i></span>${v}`;
+  h += `<div class="st-head"><div><div class="tiles" style="margin-bottom:8px">
+      ${tile("総合力", `<span class="st-grade ${esc(st.grade || "")}">${esc(st.grade || "—")}</span> ${shortNum(st.overall)} <small>pt</small>`, `全体 ${num(st.rank)} 位${st.people ? ` / ${num(st.people)} 人` : ""} ・ 評価 ${sc.overall ?? "—"}`)}
+      ${tile("今撃てる量", ptYen(st.ready), `火力と残弾の小さい方。状態と腕で ×${st.factor}`)}
+      ${tile("火力", ptYen(st.fire), `${esc(st.scale)} ・ ${yenOf(st.fire)}`)}
+      ${tile("状態", st.marks.map(markTag).join(" "), st.fan ? "直近 3 か月のアクティブファンにいる" : "直近 3 か月のアクティブファンにいない")}
+    </div><div class="hint" style="margin-top:0">総合力 = 次の勝負で、一人で動かせる量の見込み (火力と残弾の小さい方 × 状態 × 腕)。ランクは、パワーギフターの中で上から 1% が S・5% が A・20% が B・50% が C、それより下が D。
+      評価 (1〜100) は、パワーギフターの中で上から何番目くらいか。${esc(st.month.replace("-", "/"))} までの集め終わった月と、今月ここまでの分から。${esc(runNote(st.run))}。どの線も仮の値です</div></div>
+    <div>${radarSvg(sc)}</div></div>`;
+  const rows = [];
+  for (const [g, gl, items] of STATUS_GROUPS) for (const [k, l, val, note] of items) rows.push({ g, gl, k, l, val: val(st), raw: st[k], sc: sc[k], note: typeof note === "function" ? note(st) : note });
+  h += dataTable("gp-status", [
+    { label: "分類", value: (r) => r.g, html: (r) => `<b>${esc(r.g)}</b><div class="uid">${esc(r.gl)}</div>`, sort: false },
+    { label: "項目", value: (r) => r.l, html: (r) => `<b>${esc(r.l)}</b>`, cls: "name", sort: false },
+    { label: "値", value: (r) => r.raw, html: (r) => r.val, sort: false },
+    { label: "評価", num: true, value: (r) => r.sc, html: (r) => bar(r.sc) },
+    { label: "決め方", sort: false, value: (r) => r.note, html: (r) => `<span class="uid">${esc(r.note)}</span>` },
+  ], rows, { limit: 30, phone: [1, 2, 3], csvName: `ギフター_${uid}_ステータス`,
+    note: "戦術・速さ・隠密 (潜伏)・誘発・1 手の大きさは、記録しているルームのギフトから、あとで足します。貢献ランキングは各ルームの上位 100 人までなので、どの量も「少なくとも」の量です" });
+  if (st.rooms.length) {
+    h += `<h3>ルームとの関係 <small class="muted">ルームでの戦力 = 総合力 × 忠誠心 × 出動率。いちばん多く送ったルームから ${num(st.rooms.length)} ルーム</small></h3>` + dataTable("gp-status-rooms", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => r.key ? roomLink(r.key, r.name) : esc(r.name), cls: "name" },
+      { label: "クラス", value: (r) => r.class, html: (r) => `<span class="tag ${r.class === "主砲" ? "live" : r.class === "主力" ? "warn" : r.class === "支え" ? "ok" : ""}" title="${esc(CLASS_NOTE[r.class] || "")}">${esc(r.class)}</span> <span class="uid">${esc(r.kind)}</span>` },
+      { label: "ルームでの戦力", num: true, value: (r) => r.power, html: (r) => `<b>${shortNum(r.power)}</b><div class="uid">決め手 ${shortNum(r.edge)}</div>` },
+      { label: "忠誠心", num: true, value: (r) => r.share, html: (r) => `${pctText(r.share)}<div class="uid">${shortNum(r.points)} pt</div>` },
+      { label: "出動率", num: true, value: (r) => r.sortie, html: (r) => r.sortie == null ? `<span class="uid">勝負 ${num(r.fights)} 回</span>` : `${pctText(r.sortie)}<div class="uid">勝負 ${num(r.fights)} 回</div>` },
+      { label: "士気", num: true, value: (r) => r.morale, html: (r) => r.morale == null ? "-" : `${r.morale.toFixed(2)} <small>倍</small>` },
+      { label: "友好度", num: true, value: (r) => r.fan_level || 0, html: (r) => `${r.fan_level ? `Lv ${num(r.fan_level)} ・ ${num(r.fan_months)} か月` : "-"}${r.visits ? `<div class="uid">来場 ${num(r.visits)} 回</div>` : ""}` },
+      { label: "実績", num: true, value: (r) => r.wins, html: (r) => r.wins ? `${num(r.wins)} 回` : "-" },
+    ], st.rooms, { sort: 2, phone: [0, 1, 2], csvName: `ギフター_${uid}_ルームとの関係`,
+      note: "忠誠心 = 直近 12 か月の量のうち、このルームの割合。出動率 = このルームが勝負になった回 (3 回以上) のうち、このルームでの上限の半分以上を出した割合 (分からない時は 0.5 で数える)。士気 = このルームでの直近 3 か月 ÷ その前の 3 か月。友好度 = 直近 12 か月のアクティブファンのレベル (いちばん高い月) と月の数・累計ランキングの来場。実績 = 直近 2 年で、このルームが目標に届いた回に貢献の 3 位までだった回数" });
+  }
+  return h;
+}
+const power = { grade: "all", data: null };
+async function showPowerRanking(box) {
+  if (!power.data) box.innerHTML = loadingHtml("戦力ランキングを読み込んでいます…");
+  try { power.data = await api("/api/research/power?limit=500"); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "gifters") return;
+  drawPowerRanking(box);
+}
+function drawPowerRanking(box) {
+  const d = power.data;
+  if (!d.rows.length) {
+    box.innerHTML = `<div class="empty">まだありません。ギフターのステータスは、1 日 1 回、サーバーが空いている時に作ります${d.run && d.run.started && !d.run.done ? " (今作っています)" : ""}。</div>`;
+    return;
+  }
+  const rows = power.grade === "all" ? d.rows : d.rows.filter((r) => r.grade === power.grade);
+  box.innerHTML = `<div class="summary">${stat(num(d.people || d.rows.length), "パワーギフター (人)")}${["S", "A", "B"].map((g) => stat(num(d.rows.filter((r) => r.grade === g).length), `上位 ${num(d.rows.length)} 人のうち ${g}`)).join("")}</div>
+    <div class="hint">SHOWROOM 全体で、次の勝負で一人で動かせる量の見込み (総合力) の多い順。パワーギフター = 直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。${d.at ? `${tm(d.at, true)} に作り終えた分` : ""}。どの線も仮の値です</div>
+    <div class="row" style="margin:8px 0"><div class="filters grow">${[["all", "すべて"], ["S", "S"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"]].map(([g, l]) => `<button type="button" class="fchip ${power.grade === g ? "active" : ""}" data-pg="${g}">${l}</button>`).join("")}</div></div>`
+    + dataTable("power-rank", [
+      { label: "順位", num: true, value: (r) => r.rank, html: (r) => `<b>${num(r.rank)}</b>` },
+      { label: "ギフター", value: (r) => r.name || String(r.user_id), html: (r) => `${gifterLink(r.user_id, r.name || `ID ${r.user_id}`)} <span class="uid uid-id">ID ${esc(r.user_id)}</span>`, cls: "name" },
+      { label: "総合力", num: true, value: (r) => r.overall, html: (r) => powerCell({ grade: r.grade, overall: r.overall, scale: "" }) },
+      { label: "火力", num: true, value: (r) => r.firepower, html: (r) => `${shortNum(r.firepower)}<div class="uid">${esc(r.scale)}</div>` },
+      { label: "HP (月の予算)", num: true, value: (r) => r.budget, html: (r) => shortNum(r.budget) },
+      { label: "残弾", num: true, value: (r) => r.left_pt, html: (r) => shortNum(r.left_pt) },
+      { label: "状態", value: (r) => r.state, html: (r) => markTag(r.state) },
+      { label: "主なルーム", value: (r) => r.top_name || "", html: (r) => r.top_key ? `${roomLink(r.top_key, r.top_name)}<div class="uid">忠誠心 ${pctText(r.top_share)}</div>` : "-" },
+    ], rows, { sort: 0, desc: false, phone: [1, 2, 3], csvName: "戦力ランキング", rowAttr: (r) => `class="clickable" data-go="#gifter/${esc(r.user_id)}"`,
+      note: "上位 500 人まで。くわしくは、名前を押すと出るギフターのページの「ステータス」" });
+}
+$("#gf-body").addEventListener("click", (ev) => {
+  const g = ev.target.closest("[data-pg]");
+  if (g && power.data) { power.grade = g.dataset.pg; delete DT["power-rank"]; drawPowerRanking($("#gf-body")); }
+});
 function gifterStates(st) {
   const ym = (m) => m.replace("-", "/");
   let h = `<h3>今の状態 <small class="muted">${ym(st.month)} (集め終わったいちばん新しい月) を、その前の 3 か月とくらべる。イベントの貢献ランキングから</small></h3>`;
@@ -2184,9 +2317,10 @@ async function loadRecorded(days) {
   return (recorded[days] = { at: Date.now(), rows: r.listeners, catalog: r.catalog });
 }
 async function showGifters(sub) {
-  sub = ["list", "trend", "watch"].includes(sub) ? sub : "list";
+  sub = ["list", "trend", "watch", "power"].includes(sub) ? sub : "list";
   setSub("#gf-tabs", sub);
   const box = $("#gf-body");
+  if (sub === "power") { showPowerRanking(box); return; }
   if (!research.data) box.innerHTML = loadingHtml("集計しています (全ルーム分だと、初めは数十秒かかることがあります)…");
   let d, rec = null;
   try {
@@ -2202,7 +2336,21 @@ async function showGifters(sub) {
     return;
   }
   box.innerHTML = gifterList(d, rec);
+  loadPowerFor(d);
 }
+// 一覧の「戦力」の列: 一覧を出してから、出した人の分だけ読んで描き直す (一覧を開くのを待たせない)
+async function loadPowerFor(d) {
+  if (research.powerOf === d) return;
+  research.powerOf = d;
+  const ids = [...new Set([...d.candidates, ...(d.signup_candidates || []), ...(d.fans || [])].map((u) => u.user_id))];
+  if (!ids.length) return;
+  try {
+    const r = await api(`/api/research/power?users=${ids.join(",")}`);
+    research.power = { ...(research.power || {}), ...r.users };
+  } catch (e) { return; }
+  if (research.data === d && page.name === "gifters" && $("#gf-body [data-dt=gifters]")) redrawGifters();  // 一覧を開いたままの時だけ
+}
+const powerCell = (p) => p ? `${p.grade ? `<span class="tag ${p.grade === "S" ? "live" : p.grade === "A" ? "warn" : p.grade === "B" ? "ok" : ""}">${esc(p.grade)}</span> ` : ""}${shortNum(p.overall)}<div class="uid">${esc(p.scale)}</div>` : "-";
 // 集計 (ランキング) で分かった人と、記録したギフトの送り主を 1 つの一覧にする
 function mergeGifters(d, rec) {
   const base = research.signup === "all" ? d.candidates : d.candidates.concat(d.signup_candidates || []);
@@ -2246,6 +2394,8 @@ function gifterList(d, rec) {
     { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid uid-id">ID ${esc(u.user_id)}</span>${u.rec_only ? ' <span class="tag info" title="集めたランキング (上位 30 人・100 人) には出ていない、または上位に入っていない人">記録だけ</span>' : ""}`, cls: "name" },
     ...(all ? [{ label: "分かった pt", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]
       : [{ label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]),
+    { label: "戦力", num: true, value: (u) => ((research.power || {})[u.user_id] || {}).overall ?? null,
+      csv: (u) => { const p = (research.power || {})[u.user_id]; return p ? `${p.grade || ""} ${p.overall}` : ""; }, html: (u) => powerCell((research.power || {})[u.user_id]) },
     { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
     { label: "ルーム", num: true, value: (u) => u.room_count, html: (u) => num(u.room_count) },
     { label: "イベント", num: true, value: (u) => u.event_count, html: (u) => u.event_count ? `${num(u.event_count)}${u.best_rank ? `<div class="uid">最高 ${num(u.best_rank)} 位</div>` : ""}` : "-" },
@@ -2257,7 +2407,7 @@ function gifterList(d, rec) {
     { label: "登録 (推測)", value: (u) => u.signup_at || null, csv: (u) => u.signup_at ? signupText(u) : "", html: (u) => u.signup_at ? `<span title="${esc(signupRange(u))}">${esc(signupText(u))}</span>` : "-" },
     { label: "よく送る時間", sort: false, value: (u) => u.habits ? `${u.habits.top_weekday}曜 ${hourText(u.habits.top_hours)}` : "", html: habitCell },
   ];
-  html += dataTable("gifters", cols, rows, { sort: period ? 8 : 1, phone: [0, 1, 3], csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
+  html += dataTable("gifters", cols, rows, { sort: period ? 9 : 1, phone: [0, 1, 2], csvName: "ギフター一覧", empty: "当てはまるギフターはいません",
     rowAttr: (u) => `class="clickable" data-go="#gifter/${esc(u.user_id)}"`,
     note: `集計で上位 ${num(d.candidates.length)} 人と、記録したギフトの送り主 ${num(recCount)} 人。記録 pt・有料・回数は、記録しているルームの分だけです${narrow
       ? `。${research.signup !== "all" ? "登録時期" : "この絞り込み"}は、集計で上位 ${num(d.candidates.length)} 人${research.signup !== "all" ? `と、登録した年ごとの上位 ${num(SIGNUP_YEAR_LIMIT)} 人` : ""}の中から選んでいます (記録したギフトだけで分かっている人は、登録時期・イベントの順位が分からないので入りません)` : ""}` });
@@ -2364,6 +2514,7 @@ async function showGifter(uid) {
   if (rec) tiles.push(tile("記録したギフト", `${shortNum(rec.total.points)} <small>pt</small>`, `有料 ${shortNum(rec.total.paid_points)} ・ ${num(rec.total.times)} 回 ・ 最後 ${ago(rec.last_at)}`));
   html += `<div class="tiles">${tiles.join("")}</div>`;
   if (s && (s.total_points || s.event_count)) html += SCOPE_NOTE;
+  if (d.found && d.status) html += gifterStatus(d.status, uid);
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
   if (d.found && d.states) html += gifterStates(d.states);

@@ -194,6 +194,21 @@ CREATE TABLE IF NOT EXISTS room_profile (
 -- src は作った時の、ルームのイベントの貢献ランキングがいちばん後に入った時刻 (変わったら作り直す)。opened は管理画面で開いた時刻
 CREATE TABLE IF NOT EXISTS room_parts (
     room_id INTEGER PRIMARY KEY, version INTEGER, at REAL, src REAL, opened REAL, rounds TEXT, overlap TEXT, rooms TEXT);
+-- イベントの最終の順位のうち、上の方 (上から GifterStatus の ROUND_RANKS 位か、特典の順位の 1 つ下まで) と、隣の順位との差・
+-- 勝負になった回か (特典の境目で、差がポイントの 1 割以内か、大会の 2 段階目より後)・目標 (特典の順位) に届いたか。
+-- ギフターのステータス (gifter_status.py) が、終わったイベントを 1 回ずつ作る。event_rounds_done は作り終えたイベント
+CREATE TABLE IF NOT EXISTS event_rounds (
+    event_id INTEGER, room_id INTEGER, end REAL, rank INTEGER, point INTEGER, gap INTEGER, battle INTEGER, reached INTEGER,
+    PRIMARY KEY (event_id, room_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS event_rounds_room ON event_rounds(room_id, end);
+CREATE TABLE IF NOT EXISTS event_rounds_done (event_id INTEGER PRIMARY KEY, end REAL, at REAL);
+-- ギフターのステータス (総合力・火力・残弾・忠誠心など。gifter_status.py が 1 日 1 回、暇な時に作る)。data はステータスの全部 (JSON)。
+-- 並べ替え・一覧に使う値だけ列にも持つ。gifter_status_queue は、今の回でまだ作っていない人
+CREATE TABLE IF NOT EXISTS gifter_status (
+    user_id INTEGER PRIMARY KEY, version INTEGER, at REAL, overall REAL, firepower INTEGER, budget INTEGER, left_pt INTEGER,
+    state TEXT, top_room INTEGER, top_share REAL, data TEXT);
+CREATE INDEX IF NOT EXISTS gifter_status_overall ON gifter_status(overall);
+CREATE TABLE IF NOT EXISTS gifter_status_queue (user_id INTEGER PRIMARY KEY);
 -- 大会 (段階ごとに別のイベントになっている大きな大会) のまとまり。木の形: 大会 → 道すじ (route。本選権#1・SR枠 など) → 段階。
 -- series_id は大会の最初の段階のイベント番号 (大会でないと調べたイベントは NULL)。parents は前の段階のイベント番号 (「,」区切り。
 -- 道すじが合流する段階は複数)。brand は名前の【】の印から取った大会の名前。how は auto (自動) か manual (手で直した)。series.py が作る

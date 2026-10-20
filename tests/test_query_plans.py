@@ -21,7 +21,7 @@ DAY = 86400
 # ルームの一覧で絞り込み・並べ替えのために全部読むので入れない
 BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "room_events", "user_month", "cumulative",
        "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives",
-       "gift_senders", "gift_events"}
+       "gift_senders", "gift_events", "event_rounds", "gifter_status"}
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
@@ -29,6 +29,8 @@ ALLOWED = [
     ("SCAN gift_senders", "first_at, last_at, name, unknown FROM gift_senders",
      "ギフターの一覧・分析で、記録したギフトの全員の合計を 1 回読む (サーバーで 8 万行・8MB。前は記録のファイル全部 66MB を読み直していた)"),
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
+    ("SCAN gifter_status", "SELECT data FROM gifter_status", "ステータスの評価の区切りを作る。1 日 1 回、回し終えた時だけ (パワーギフターの分だけ)"),
+    ("SCAN gifter_status", "DELETE FROM gifter_status WHERE at <", "パワーギフターでなくなった人を消す。1 日 1 回、回し終えた時だけ"),
 ]
 
 
@@ -377,3 +379,27 @@ def test_room_parts_do_not_read_whole_tables(traced, monkeypatch):
         with Store(d) as s:
             room_parts.step(s, NOW + room_parts.EVERY + 60)
     check(traced, step)
+
+
+def test_gifter_status_does_not_read_whole_tables(traced):
+    """ギフターのステータスを作る (1 日 1 回、少しずつ)・ページで読む・戦力ランキング・一覧の列。"""
+    from showroom_keeper import gifter_analysis, gifter_status
+
+    gifter_analysis._cuts.clear()
+    with Store(traced[0]) as s:
+        s.set_meta("user_month_upto", True)
+        s.set_contributions(1, 2, [{"user_id": 201, "point": 50}], NOW, True)  # 月の量を入れる
+
+    def run(d):
+        with Store(d) as s:
+            for _ in range(20):
+                if not gifter_status.step(s, NOW):
+                    break
+    check(traced, run)
+
+    def read(d):
+        with Store(d) as s:
+            gifter_status.read(s, 201)
+            gifter_status.ranking(s)
+            gifter_status.lookup(s, [201, 101])
+    check(traced, read)
