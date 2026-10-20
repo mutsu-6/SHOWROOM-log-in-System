@@ -407,6 +407,16 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import research
 
                 self._json({"watch": research.watch_list(self._state_dir(), self._support(q))})
+            elif url.path == "/api/research/power":
+                from . import gifter_status
+                from .research_store import Store
+
+                with Store(self._state_dir()) as s:
+                    if q.get("users"):  # 一覧に出す人の総合力・ランク (作ってある人だけ)
+                        ids = [int(x) for x in q["users"].split(",")[:2000] if x.strip().isdigit()]
+                        self._json({"users": {str(k): v for k, v in gifter_status.lookup(s, ids).items()}})
+                    else:  # SHOWROOM 全体の戦力ランキング
+                        self._json(gifter_status.ranking(s, min(2000, int(q.get("limit") or 500))))
             elif url.path == "/api/research/gifter":
                 from . import research
 
