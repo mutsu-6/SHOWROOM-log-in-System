@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 PATH = "/api/live/onlives"
 SHARE_TTL = 60  # この秒数より新しい一覧は、取り直さずに使う
+WAIT = 20.0  # ほかが取っている時に待つ上限 (秒)。収集は順番待ちの中で何時間も休むことがあり、入室・視聴を巻き込まないため
 
 _cache: dict[str, Any] = {"at": 0.0, "data": None}
 _lock = threading.Lock()
@@ -37,12 +38,16 @@ def remember(data: Any, now: float | None = None) -> None:
 
 
 def get(fetch: Callable[[], Any], max_age: float = SHARE_TTL) -> Any:
-    with _fetching:  # 同じ時に何か所からも取らない (取っている間は待って、取れた一覧を使う)
+    got = _fetching.acquire(timeout=WAIT)  # 同じ時に何か所からも取らない (取っている間は待って、取れた一覧を使う)
+    try:
         data = fresh(max_age)
         if data is None:
             data = fetch()
             remember(data)
         return data
+    finally:
+        if got:
+            _fetching.release()
 
 
 def public_fetch() -> Any:
