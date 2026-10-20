@@ -608,7 +608,9 @@ def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
     """1 つのルームの、集めた情報 (累計ランキング・ギフター・イベントの成績・重なるルーム)。同じページを同時に開いた時は、1 回だけ数える (once)。"""
     from . import once
 
-    return once.shared(("room", str(state_dir), str(key)), lambda: _room_detail(state_dir, key))
+    with Store(state_dir) as s:  # URL の名前と番号で同じルームを開いた時も、1 回にまとめる (2026-10-20 に Codex が見つけた)
+        row = _find_room(s, key)
+    return once.shared(("room", str(state_dir), row["room_id"] if row is not None else str(key)), lambda: _room_detail(state_dir, key))
 
 
 def _room_detail(state_dir: Path, key: Any) -> dict[str, Any]:

@@ -36,7 +36,7 @@ WAIT = False  # True なら、開いた時に作った分をその場で保存�
 
 _lock = threading.Lock()
 _opened: dict[tuple[str, int], float] = {}  # 開いた時刻 (裏で作る時に表へ書く。開くたびには書き込まない)
-_saving: set[tuple[str, int]] = set()  # 開いた時に作って、裏で保存している最中のルーム
+_built: dict[tuple[str, int], dict[str, Any]] = {}  # 開いた時に作って、裏で保存し終えるまでの分 (その間に開いた人は、これを使う)
 _seen = time.time()  # 管理画面がいちばん後に使われた時刻 (起動してすぐはディスクのキャッシュが冷たいので、使われたものとして 10 分待つ)
 
 
@@ -120,20 +120,32 @@ def for_page(s: Any, room_id: int) -> dict[str, Any]:
     r = s.one("SELECT * FROM room_parts WHERE room_id=? AND version=?", (rid, VERSION))
     if r is not None:
         return _row(r)
-    src = source(s, rid)
-    parts = build(s, rid)
-    if not SAVE:
-        return {"at": now, "src": src, **parts}
-    if WAIT:
-        save(s, rid, parts, src, now)
-        return {"at": now, "src": src, **parts}
+    # 同じルームを同時に開いた時 (URL の名前と番号の両方で開いた時も) は、1 回だけ作る (once。2026-10-20 に Codex が見つけた)
+    from . import once
+
+    return once.shared(("room-parts", key), lambda: _build_for_page(s, rid, key, now))
+
+
+def _build_for_page(s: Any, rid: int, key: tuple[str, int], now: float) -> dict[str, Any]:
     with _lock:
-        if key in _saving:
-            return {"at": now, "src": src, **parts}
-        _saving.add(key)
+        hit = _built.get(key)  # 作ったが、まだ保存し終えていない
+    if hit is not None:
+        return hit
+    r = s.one("SELECT * FROM room_parts WHERE room_id=? AND version=?", (rid, VERSION))  # 待っている間に、保存し終えた
+    if r is not None:
+        return _row(r)
+    src = source(s, rid)
+    out = {"at": now, "src": src, **build(s, rid)}
+    if not SAVE:
+        return out
+    if WAIT:
+        save(s, rid, out, src, now)
+        return out
+    with _lock:
+        _built[key] = out
     # 書き込みの順番 (Store.tx) を、ページの要求で待たない
-    threading.Thread(target=_save_later, args=(Path(s.state_dir), rid, parts, src, now), name="room-parts-save", daemon=True).start()
-    return {"at": now, "src": src, **parts}
+    threading.Thread(target=_save_later, args=(Path(s.state_dir), rid, out, src, now), name="room-parts-save", daemon=True).start()
+    return out
 
 
 def _save_later(state_dir: Path, rid: int, parts: dict[str, Any], src: float, now: float) -> None:
@@ -146,7 +158,7 @@ def _save_later(state_dir: Path, rid: int, parts: dict[str, Any], src: float, no
         log.debug("ルームの部品を保存できませんでした (%s): %s", rid, e)
     finally:
         with _lock:
-            _saving.discard((str(state_dir), rid))
+            _built.pop((str(state_dir), rid), None)
 
 
 def step(s: Any, now: float | None = None) -> bool:
