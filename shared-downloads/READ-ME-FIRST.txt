@@ -1,0 +1,14 @@
+SHOWROOM Analytics 共有パッケージ
+対象コミット: b21607fda0236dc0cbcfdc85b77e9af6bcc491b1
+ブランチ: codex/gemini-team-onboarding-20261020 (統合先へは未マージ)
+
+最初に GEMINI.md、AGENTS.md、docs/チーム共有.md を読んでください。
+Gemini に渡す開始文は docs/チーム共有.md の末尾です。
+
+full ZIP: Git に記録済みの全127ファイル。コード、テスト、説明資料、設定サンプルを含みます。
+startup ZIP: 説明資料と各AI向けの指示。コードの確認には full ZIP を使います。
+gemini-start.txt: GEMINI.md、AGENTS.md、docs/チーム共有.md をUTF-8テキストへ連結したものです。
+
+.git、.venv、実際の.env、認証Cookie、実データ、ローカル設定は含めていません。
+ソーススナップショットのため、通常のgit pullにはGitHubから取得したチェックアウトが必要です。
+コードの実行前には README.md のセットアップ手順を確認してください。
