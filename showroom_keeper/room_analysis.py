@@ -584,8 +584,8 @@ def followers_growth(s: Store, room_id: int, now: float, days: int = 30) -> dict
             "change": rows[-1]["followers"] - rows[0]["followers"]}
 
 
-def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str, Any]:
-    """ルームのページに出す分析 (その場で作る)。トップの人の名前は入れない。"""
+def room_analysis(s: Store, room_id: int, now: float | None = None, rounds: dict[str, Any] | None = None) -> dict[str, Any]:
+    """ルームのページに出す分析 (その場で作る。リス活は重いので、作っておいた分 (room_parts) を rounds に渡せる)。トップの人の名前は入れない。"""
     now = time.time() if now is None else now
     m = metrics(_event_rows(s, room_id))
     cuts = s.meta(CUTS_META)
@@ -605,7 +605,7 @@ def room_analysis(s: Store, room_id: int, now: float | None = None) -> dict[str,
             "depth": depth, "depth_note": DEPTH_NOTES.get(depth or ""), "depths": DEPTH_NOTES,
             "size_name": SIZE_NAMES[m["size_class"]] if m else None,
             "momentum": momentum(s, room_id, now), "style": room_style(s, room_id), "event_styles": styles,
-            "tactics": tactics(s, room_id), "rounds": listener_rounds(s, room_id), "regulars": regulars(s, room_id),
+            "tactics": tactics(s, room_id), "rounds": rounds if rounds is not None else listener_rounds(s, room_id), "regulars": regulars(s, room_id),
             "new_share": new_share(s, room_id), "followers": followers_growth(s, room_id, now), "daily": daily[::-1],
             "types": TYPES, "styles": STYLES, "caution": CAUTION}
 

@@ -190,6 +190,10 @@ CREATE TABLE IF NOT EXISTS room_profile (
     room_id INTEGER PRIMARY KEY, at REAL, events INTEGER, size_class INTEGER, top1 REAL, top3 REAL, contributors REAL,
     capped INTEGER, rel_top10 REAL, rel_per_contrib REAL, rel_point REAL, type TEXT,
     momentum REAL, recent_place REAL, prev_place REAL, style TEXT, style_events INTEGER, style_counts TEXT);
+-- ルームのページの重い部品 (リス活・重なるルーム・ギフターごとのルーム数。JSON)。room_parts が暇な時に作り直す。
+-- src は作った時の、ルームのイベントの貢献ランキングがいちばん後に入った時刻 (変わったら作り直す)。opened は管理画面で開いた時刻
+CREATE TABLE IF NOT EXISTS room_parts (
+    room_id INTEGER PRIMARY KEY, version INTEGER, at REAL, src REAL, opened REAL, rounds TEXT, overlap TEXT, rooms TEXT);
 -- 大会 (段階ごとに別のイベントになっている大きな大会) のまとまり。木の形: 大会 → 道すじ (route。本選権#1・SR枠 など) → 段階。
 -- series_id は大会の最初の段階のイベント番号 (大会でないと調べたイベントは NULL)。parents は前の段階のイベント番号 (「,」区切り。
 -- 道すじが合流する段階は複数)。brand は名前の【】の印から取った大会の名前。how は auto (自動) か manual (手で直した)。series.py が作る

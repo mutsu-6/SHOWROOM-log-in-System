@@ -406,6 +406,9 @@ class Keeper:
         from . import selfcheck
 
         selfcheck.start(self)  # 自己点検 (バグチェックと自浄)。5 分ごと
+        from . import room_parts
+
+        room_parts.start(Path(self.cfg.state_file).parent)  # ルームのページの重い部品を、暇な時に作っておく
         loop_watch = asyncio.ensure_future(selfcheck.watch_loop())  # 視聴の処理が待たされていないか
         gift_updates = asyncio.ensure_future(self._gift_updates())
         research = asyncio.ensure_future(self._research_updates())
@@ -426,6 +429,7 @@ class Keeper:
             backups.cancel()
             loop_watch.cancel()
             selfcheck.stop()
+            room_parts.stop()
             if admin is not None:
                 admin.shutdown()
 

@@ -362,3 +362,18 @@ def test_watch_list_reads_only_the_watched_gifters(traced):
         s.set_watch(101, True, "", NOW)
     check(traced, lambda d: research.watch_list(d, ["k2"]))
     assert not [p for q, plan in traced[1] for p in plan if p.startswith("SCAN gift_senders")]
+
+
+def test_room_parts_do_not_read_whole_tables(traced, monkeypatch):
+    """ルームのページの重い部品 (リス活・重なるルーム・ギフターごとのルーム数) を作る・読む・作り直す所。"""
+    from showroom_keeper import room_parts
+
+    monkeypatch.setattr(room_parts, "SAVE", True)
+    monkeypatch.setattr(room_parts, "WAIT", True)
+    check(traced, lambda d: explore.room_detail(d, "k2"))  # 作って保存する
+    check(traced, lambda d: explore.room_detail(d, "k2"))  # 作っておいた分を読む
+
+    def step(d):
+        with Store(d) as s:
+            room_parts.step(s, NOW + room_parts.EVERY + 60)
+    check(traced, step)
