@@ -331,3 +331,34 @@ def test_news_does_not_read_whole_tables(traced):
         s.add_final(1, [{"room_id": 1, "point": 5, "rank": 1}], NOW - 10 * DAY - 30)
         s.conn.execute("INSERT INTO user_month(user_id, month, points) VALUES (101, ?, 5)", (news._month(NOW),))
     check(traced, lambda d: news.build(d, 31, now=NOW))
+
+
+def test_room_page_rounds_and_event_series_use_indexes(traced):
+    """ルームのページのリス活 (推し・付き合い投げ) と、イベントのページの続きもの探し。
+    ディスクの取り合いで遅かった (2026-10-20 に Cursor が py-spy で見た) ので、人ごとの貢献を索引で読むことを確かめる。"""
+    from showroom_keeper import event_analysis
+
+    with Store(traced[0]) as s:
+        s.conn.execute("UPDATE events SET rooms_at = end + 1")
+        s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level, title_id, at) VALUES (2, '202601', 201, 5, 1, 0)")
+    ra._oshi_cache.clear()
+    event_analysis._series.clear()
+
+    def run(d):
+        with Store(d) as s:
+            assert ra.listener_rounds(s, 2)["events"]
+            event_analysis.similar_events(s, 1)
+    check(traced, run)
+    plans = [" ".join(plan) for q, plan in traced[1] if "contributions" in q and "user_id=?" in q]
+    assert plans and all("contributions_user_pt" in p or "PRIMARY KEY" in p for p in plans), plans
+
+
+def test_watch_list_reads_only_the_watched_gifters(traced):
+    """気になるギフターの一覧は、気になる人の分だけを送り主の表から読む (前は全員の分を読んでいた。1 回 平均 28 秒)。"""
+    with Store(traced[0]) as s:
+        with s.tx() as c:
+            c.execute("INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points) VALUES ('k1', 101, 3, 1, 'a', 30)")
+            c.execute("INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points) VALUES ('k1', 999, 3, 1, 'b', 30)")
+        s.set_watch(101, True, "", NOW)
+    check(traced, lambda d: research.watch_list(d, ["k2"]))
+    assert not [p for q, plan in traced[1] for p in plan if p.startswith("SCAN gift_senders")]

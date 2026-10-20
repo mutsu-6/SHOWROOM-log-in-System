@@ -26,3 +26,7 @@ def no_gift_updates(monkeypatch):
 
     # テストを動かす機械のメモリの空きで、重い集計の後回しが変わらないようにする (後回しは、それを確かめるテストで決める)
     monkeypatch.setattr(memory, "free_mb", lambda: None)
+    from showroom_keeper import catchup
+
+    # ページを開く時の書き足しは裏の仕事に頼むが、テストではその場で足し終えてから確かめる (裏の仕事は test_catchup で確かめる)
+    monkeypatch.setattr(catchup, "WAIT", True)

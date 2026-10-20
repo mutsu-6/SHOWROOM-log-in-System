@@ -49,7 +49,7 @@ def build(state_dir: Path, days: float = 7, now: float | None = None, use_cache:
         with Store(state_dir) as s:
             from .feed import _catch_up
 
-            _catch_up(state_dir, s)  # 記録したギフトの新しい分を足してから読む
+            _catch_up(state_dir, s)  # 記録したギフトの新しい分を足すよう、裏の仕事に頼む (待たずに、前に足した分で作る)
             names = _Names(s)
             topics = [
                 ("big_gifts", "大きなギフト", _big_gifts(state_dir, s, since)),

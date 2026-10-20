@@ -195,6 +195,18 @@ def refresh(s: Store, budget: float = SEARCH_BUDGET) -> dict[str, bool]:
         return {"three": all(k in st["done"] for k in KINDS), "two": all(k + "2" in st["done"] for k in KINDS)}
 
 
+def ready(s: Store) -> dict[str, bool]:
+    """使える (入れ終わった) 索引 {"three": 3 文字ずつ, "two": 2 文字ずつ}。読むだけで、索引は足さない (検索の時に使う。
+    足すのは収集の合間と裏の仕事 catchup。前は検索のたびに足していて、書き込みの順番を収集のうしろで待っていた。2026-10-20)。"""
+    if not ensure(s):
+        return {"three": False, "two": False}
+    st = s.meta("search_index")
+    if not st or st.get("v") != VERSION:
+        return {"three": False, "two": False}
+    done = st.get("done") or []
+    return {"three": all(k in done for k in KINDS), "two": all(k + "2" in done for k in KINDS)}
+
+
 def where(table: str, cols: tuple[str, ...], folded: str, two: bool = False) -> tuple[str, str, list[Any]]:
     """そろえた形 folded を含む行を選ぶ (読む表, 条件, その値)。
 

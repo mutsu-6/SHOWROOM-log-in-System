@@ -323,7 +323,11 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
 
     with Store(state_dir) as s:
         # 名前の索引 (search_index)。入れ終わるまで・作れない SQLite では、前のやり方 (名前を全部 LIKE でくらべる)
-        ready = search_index.refresh(s)
+        # 索引を足すのは裏の仕事に頼み、ここでは足し終えた分で引く (書き込みの順番を待たない)
+        ready = search_index.ready(s)
+        from . import catchup
+
+        catchup.soon(state_dir)
         two = ready["two"]
         indexed = ready["three"]  # 2 文字ずつの索引がまだ無い間の 2 文字は、3 文字ずつの索引の中を全部くらべる
 
@@ -559,8 +563,10 @@ def room_daily_metrics(state_dir: Path, key: Any, days: int = METRIC_DAYS) -> di
     if rkey:
         if rkey in listing._record_files(state_dir):
             recorded = True
+            from . import catchup
+
+            catchup.soon(state_dir)  # 新しいギフトの分は裏で足す (ここでは前に足した分で出し、書き込みの順番を待たない)
             with Store(state_dir) as s:
-                update_gift_daily(state_dir, s, rkey)  # 新しいギフトの分だけ足す
                 start = day_of(since)
                 for r in s.all("SELECT day, paid_points, free_points, gifts FROM room_gift_daily WHERE room_key=? AND day >= ?", (rkey, start)):
                     put(r["day"], "paid_points", r["paid_points"])
@@ -599,7 +605,13 @@ def room_daily_metrics(state_dir: Path, key: Any, days: int = METRIC_DAYS) -> di
 
 
 def room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
-    """1 つのルームの、集めた情報 (累計ランキング・ギフター・イベントの成績・重なるルーム)。"""
+    """1 つのルームの、集めた情報 (累計ランキング・ギフター・イベントの成績・重なるルーム)。同じページを同時に開いた時は、1 回だけ数える (once)。"""
+    from . import once
+
+    return once.shared(("room", str(state_dir), str(key)), lambda: _room_detail(state_dir, key))
+
+
+def _room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
     now = time.time()
     with Store(state_dir) as s:
         row = _find_room(s, key)
@@ -737,7 +749,14 @@ def event_choice(state_dir: Path, support: list[str]) -> dict[str, Any]:
 
 
 def event_detail(state_dir: Path, event_id: Any, support: list[str] | None = None) -> dict[str, Any]:
-    """1 つのイベントの参加ルームの順位・ポイントの推移・貢献者。"""
+    """1 つのイベントの参加ルームの順位・ポイントの推移・貢献者。同じページを同時に開いた時は、1 回だけ数える (once)。"""
+    from . import once
+
+    return once.shared(("event", str(state_dir), str(event_id), tuple(support or ())),
+                       lambda: _event_detail(state_dir, event_id, support))
+
+
+def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = None) -> dict[str, Any]:
     ref = str(event_id or "").strip()
     if not ref:
         raise ValueError("イベント番号か URL キーを指定してください")

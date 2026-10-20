@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import memory
+from . import catchup, memory
 from .gifts import contribution_cache, fetch_catalog, gift_dir, gift_label
 from .schedule import parse_slots, previous_time
 from .status import JST
@@ -600,14 +600,13 @@ def _sender_rooms(state_dir: Path, user: int | None = None, since: float | None 
     表にまだ足し終えていないルーム (ギフトの一覧がまだ無い時など) は、いつもファイルを読む。
     前は、ギフターのページ・ギフターの一覧を開くたびに、記録のファイル全部 (サーバーで 66MB) を読んでいた (2026-10-19)。
     """
-    from .explore import update_all_gift_senders
     from .research_store import Store
 
     files = _record_files(state_dir)
     with Store(state_dir) as s:
-        update_all_gift_senders(state_dir, s)  # 前に足したあとの新しい分だけ
+        catchup.soon(state_dir)  # 新しい分は裏で足す (待たずに、前に足した分で数える)
         pos = {r[0]: r[1] for r in s.all("SELECT room_key, pos FROM gift_sender_pos")}
-        done = {k for k, p in files.items() if _size(p) is not None and pos.get(k) == _size(p)}
+        done = _added(files, pos)
         rows: list[Any] = []
         names: list[Any] = []
         if user is not None:
@@ -642,14 +641,13 @@ def _period_rows(state_dir: Path, since: float) -> tuple[list[str], list[Any], l
     (読むルーム, [人ごとの合計, 人ごとの多いルーム TOP_ROOMS 個], 名前の行)。表に足し終えていないルームだけファイルを読む。
     前は、その間に送りのあったルーム (サーバーではほぼ全部の 816 ルーム・70MB) のファイルを読み、41〜44 秒・メモリ +520MB かかった (2026-10-19)。
     """
-    from .explore import update_all_gift_senders
     from .research_store import Store
 
     files = _record_files(state_dir)
     with Store(state_dir) as s:
-        update_all_gift_senders(state_dir, s)  # 送り主の表と一緒に、ギフト 1 件ずつの表にも新しい分を足す
+        catchup.soon(state_dir)  # 新しい分は裏で足す (待たずに、前に足した分で数える)
         pos = {r[0]: r[1] for r in s.all("SELECT room_key, pos FROM gift_event_pos")}
-        done = {k for k, p in files.items() if _size(p) is not None and pos.get(k) == _size(p)}
+        done = _added(files, pos)
         catalog = gift_catalog(state_dir, sorted(done))
         cur = s.conn.cursor()
         cur.row_factory = None
@@ -675,6 +673,17 @@ PERIOD_SQL = """SELECT e.user_id, e.room_key, SUM(e.num * COALESCE(c.point, 0)),
                 FROM event_done d CROSS JOIN gift_events e ON e.room_key = d.room_key AND e.at >= ?
                 LEFT JOIN period_catalog c ON c.gift_id = e.gift_id
                 GROUP BY e.user_id, e.room_key"""
+
+
+def _added(files: dict[str, Path], pos: dict[str, int]) -> set[str]:
+    """表に足してあるルーム (足したあとに増えた分は、裏の仕事が足すまで数えない。ページを開く時に書き足して、
+    書き込みの順番を待たないため。2026-10-20)。ファイルが前より小さくなったルーム (作り直し) は、ファイルを読む。"""
+    out = set()
+    for k, p in files.items():
+        size = _size(p)
+        if size is not None and 0 < (pos.get(k) or 0) <= size:
+            out.add(k)
+    return out
 
 
 def _size(path: Path) -> int | None:
@@ -844,7 +853,13 @@ def _list_listeners(state_dir: Path, days: float | None = None, room: str | None
 
 
 def listener_detail(state_dir: Path, user_id: Any, days: float | None = None) -> dict[str, Any]:
-    """1 人のリスナーの、記録した全ルームでの履歴 (ルーム別・日別・一覧)。"""
+    """1 人のリスナーの、記録した全ルームでの履歴 (ルーム別・日別・一覧)。同じページを同時に開いた時は、1 回だけ数える (once)。"""
+    from . import once
+
+    return once.shared(("listener", str(state_dir), str(user_id), days), lambda: _listener_detail(state_dir, user_id, days))
+
+
+def _listener_detail(state_dir: Path, user_id: Any, days: float | None = None) -> dict[str, Any]:
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
