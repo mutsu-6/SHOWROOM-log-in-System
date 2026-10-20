@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import event_analysis, room_analysis, search_index, series as series_mod
+from . import event_analysis, room_analysis, room_parts, search_index, series as series_mod
 from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store
 
@@ -622,13 +622,23 @@ def _room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
             """SELECT c.rank, c.user_id, COALESCE(u.name, '') AS name, c.point, c.visits FROM cumulative c
                LEFT JOIN users u USING(user_id) WHERE c.room_id=? ORDER BY COALESCE(c.rank, 999), c.point DESC""", (rid,))]
         gifter_total = s.scalar("SELECT COUNT(*) FROM user_room WHERE room_id=? AND MAX(cumulative, events) > 0", (rid,))
+        # リス活・重なるルーム・ギフターごとのルーム数は、作っておいた分を読む (無ければここで作る。room_parts)
+        parts = room_parts.for_page(s, rid)
         gifters = [dict(r) for r in s.all(
             """SELECT ur.user_id, COALESCE(u.name, '') AS name, MAX(ur.cumulative, ur.events) AS points, ur.cumulative,
-                      ur.cumulative_rank, ur.events, ur.visits,
-                      (SELECT COUNT(*) FROM user_room o WHERE o.user_id=ur.user_id AND MAX(o.cumulative, o.events) > 0) AS rooms
+                      ur.cumulative_rank, ur.events, ur.visits
                FROM user_room ur LEFT JOIN users u USING(user_id)
                WHERE ur.room_id=? AND MAX(ur.cumulative, ur.events) > 0 ORDER BY points DESC, ur.user_id LIMIT ?""",
             (rid, ROOM_GIFTERS))]
+        missing = [g["user_id"] for g in gifters if g["user_id"] not in parts["rooms"]]  # 作ったあとに上位に入った人だけ数える
+        counts = dict(parts["rooms"])
+        for i in range(0, len(missing), 500):
+            chunk = missing[i:i + 500]
+            counts.update({r[0]: r[1] for r in s.all(
+                f"""SELECT user_id, COUNT(*) FROM user_room WHERE user_id IN ({",".join("?" * len(chunk))})
+                    AND MAX(cumulative, events) > 0 GROUP BY user_id""", chunk)})
+        for g in gifters:
+            g["rooms"] = counts.get(g["user_id"], 0)
         event_total = s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=?", (rid,))
         events = []
         for r in s.all("""SELECT e.*, re.point, re.rank, re.ranking_at, re.final, re.c_count, re.c_sum,
@@ -641,7 +651,7 @@ def _room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                            # 100 位より下の人たちの分 (100 人に届いたイベントだけ。ポイント - 上位 100 人の合計)
                            "below": max(0, (r["point"] or 0) - r["c_sum"]) if r["final"] and (r["c_count"] or 0) >= 100
                            and r["c_sum"] is not None and r["end"] and (r["rooms_at"] or 0) >= r["end"] else None})
-        overlap = _overlap(s, rid)
+        overlap = _overlap(s, parts["overlap"])
         info = s.one("SELECT * FROM room_info WHERE room_id=?", (rid,))
         profile = None
         if info is not None:
@@ -655,7 +665,8 @@ def _room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
                 "followers": row["followers"], "live_at": row["live_at"], "collected_at": row["collected_at"],
                 "found_at": row["found_at"], "cumulative": cumulative, "gifters": gifters, "gifter_total": gifter_total,
                 "events": events, "event_total": event_total, "overlap": overlap,
-                "event_stats": _room_event_stats(s, rid), "analysis": room_analysis.room_analysis(s, rid, now),
+                "parts_at": parts["at"],
+                "event_stats": _room_event_stats(s, rid), "analysis": room_analysis.room_analysis(s, rid, now, rounds=parts["rounds"]),
                 "balance": room_analysis.balance(state_dir, row["key"], now) if row["key"] else None,
                 "lure": room_analysis.lure_throws(state_dir, row["key"], now, store=s, room_id=rid) if row["key"] else None,
                 "stage": room_analysis.stage_regulars(state_dir, row["key"], now, store=s) if row["key"] else None,
@@ -671,20 +682,26 @@ def _room_event_stats(s: Store, rid: int) -> dict[str, Any]:
     return {k: (r[k] or 0) if k != "best" else r[k] for k in ("n", "wins", "top3", "best", "points")}
 
 
-def _overlap(s: Store, rid: int) -> list[dict[str, Any]]:
-    """このルームのギフター (多い順に OVERLAP_GIFTERS 人) が、ほかに送っているルーム (共通のギフターの多い順)。"""
+def overlap_rows(s: Store, rid: int) -> list[list[Any]]:
+    """このルームのギフター (多い順に OVERLAP_GIFTERS 人) が、ほかに送っているルーム (共通のギフターの多い順)。[[room_id, 共通の人数, ポイント]]。
+    重いので、ルームのページは作っておいた分 (room_parts) を読む。"""
     rows = s.all(f"""SELECT o.room_id, COUNT(*) AS shared, SUM(MAX(o.cumulative, o.events)) AS points
                      FROM (SELECT user_id FROM user_room WHERE room_id=? AND MAX(cumulative, events) > 0
                            ORDER BY MAX(cumulative, events) DESC LIMIT {OVERLAP_GIFTERS}) g
                      JOIN user_room o USING(user_id)
                      WHERE o.room_id != ? AND MAX(o.cumulative, o.events) > 0
                      GROUP BY o.room_id ORDER BY shared DESC, points DESC LIMIT ?""", (rid, rid, OVERLAP_ROOMS))
+    return [[r["room_id"], r["shared"], r["points"]] for r in rows]
+
+
+def _overlap(s: Store, rows: list[list[Any]]) -> list[dict[str, Any]]:
+    """重なるルームに、今のルームの名前を付ける。"""
     out = []
-    for r in rows:
-        info = s.room(room_id=r["room_id"])
-        out.append({"room_id": r["room_id"], "key": info["key"] if info is not None else None,
-                    "name": (info["name"] if info is not None else None) or str(r["room_id"]),
-                    "shared": r["shared"], "points": r["points"]})
+    for room_id, shared, points in rows:
+        info = s.room(room_id=room_id)
+        out.append({"room_id": room_id, "key": info["key"] if info is not None else None,
+                    "name": (info["name"] if info is not None else None) or str(room_id),
+                    "shared": shared, "points": points})
     return out
 
 

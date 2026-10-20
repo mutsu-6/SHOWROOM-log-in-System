@@ -3032,7 +3032,7 @@ async function showRoom(key) {
       { label: "共通のギフター", num: true, value: (o) => o.shared, html: (o) => `<b>${num(o.shared)}</b> 人` },
       { label: "その人たちの pt", num: true, value: (o) => o.points, html: (o) => shortNum(o.points) },
     ], d.overlap, { sort: 1, csvName: `${d.key}_重なるルーム`, rowAttr: (o) => `class="clickable" data-go="#room/${esc(o.key || o.room_id)}"`, empty: "まだありません",
-      note: "このルームの上位 300 人が、ほかに送っているルーム" })}</div></div>`;
+      note: `このルームの上位 300 人が、ほかに送っているルーム。${ago(d.parts_at)}に作った分 (リス活と、ギフターごとのルーム数も。貢献ランキングが入った時と 1 日 1 回、サーバーが暇な時に作り直します)` })}</div></div>`;
   html += `<h3>このルームに送っているギフター</h3>` + dataTable("rp-gifters", [
     { label: "ギフター", value: (g) => g.name, html: (g) => `${gifterLink(g.user_id, g.name)} <span class="uid uid-id">ID ${esc(g.user_id)}</span>`, cls: "name" },
     { label: "分かった pt", num: true, value: (g) => g.points, html: (g) => `<b>${num(g.points)}</b>` },

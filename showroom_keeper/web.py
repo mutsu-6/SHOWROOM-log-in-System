@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from . import selfcheck
+from . import room_parts, selfcheck
 from .config import SETTINGS_KEYS, fold_support, normalize_room_key, save_settings
 from .status import LOGIN_KEY, fetch, read_live_stats
 
@@ -343,6 +343,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._get()
         finally:
             selfcheck.note_page(urlparse(self.path).path, time.monotonic() - started)  # 開くのが遅い画面を、自己点検で見つける
+            room_parts.seen()  # 管理画面が使われている間は、ルームの部品を裏で作らない
 
     def _get(self) -> None:
         if not self._allowed():

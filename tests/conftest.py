@@ -30,3 +30,7 @@ def no_gift_updates(monkeypatch):
 
     # ページを開く時の書き足しは裏の仕事に頼むが、テストではその場で足し終えてから確かめる (裏の仕事は test_catchup で確かめる)
     monkeypatch.setattr(catchup, "WAIT", True)
+    from showroom_keeper import room_parts
+
+    # ルームのページの部品を保存しない (保存すると、あとから足したデータがページに出なくなる。保存はそれを確かめるテストで)
+    monkeypatch.setattr(room_parts, "SAVE", False)
