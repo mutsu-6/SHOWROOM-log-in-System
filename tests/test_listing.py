@@ -473,3 +473,13 @@ def test_warm_listeners_does_not_wait_for_other_heavy_work(tmp_path, monkeypatch
     assert calls == []
     listing.warm_listeners(tmp_path)
     assert len(calls) == 1
+
+
+def test_list_from_table_skips_senders_added_between_reads():
+    """合計を読んだあとに裏で足された送り主が、多いルームの行にだけいても止まらない (2026-10-20 に「listeners」が KeyError で止まった)。"""
+    from showroom_keeper import listing
+
+    totals = [(1, 3, 300, 0, 10.0, 20.0, "a", 1)]
+    top = [(1, "k1", 300), (2, "k1", 50)]  # 2 は合計に無い
+    r = listing._from_table([totals, top], [], {}, {})
+    assert [u["user_id"] for u in r["listeners"]] == [1] and r["listeners"][0]["rooms"][0]["points"] == 300

@@ -108,3 +108,36 @@ def test_waits_out_short_disk_wait_spikes(monkeypatch):
     assert room_parts.quiet_now(stop, 0)  # 5%
     monkeypatch.setattr(room_parts, "_cpu", lambda: None)
     assert room_parts.quiet_now(stop, 0)  # 測れない所では、ほかの条件で決める
+
+
+def test_same_room_opened_twice_at_once_is_built_once(db, monkeypatch):
+    """URL の名前と番号で、同じルームを同時に開いても、部品は 1 回だけ作る (保存し終えるまでに開いた人も、作った分を使う)。"""
+    import threading
+
+    monkeypatch.setattr(room_parts, "WAIT", False)
+    built, gate = [], threading.Event()
+    real = room_parts.build
+
+    def slow(s, rid):
+        built.append(rid)
+        gate.wait(5)
+        return real(s, rid)
+
+    monkeypatch.setattr(room_parts, "build", slow)
+    out = {}
+    threads = [threading.Thread(target=lambda k=k: out.setdefault(k, explore.room_detail(db, k))) for k in ("aaa", "1")]
+    for t in threads:
+        t.start()
+    time.sleep(0.3)
+    gate.set()
+    for t in threads:
+        t.join(10)
+    assert built == [1] and out["aaa"]["overlap"] == out["1"]["overlap"]
+    explore.room_detail(db, "aaa")  # 保存し終える前でも後でも、作り直さない
+    assert built == [1]
+    for _ in range(50):
+        if stored(db):
+            break
+        time.sleep(0.05)
+    assert [r["room_id"] for r in stored(db)] == [1]
+    assert built == [1]
