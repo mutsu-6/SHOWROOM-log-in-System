@@ -460,10 +460,29 @@ def test_next_ranking_is_chosen_from_the_index_only(tmp_path):
         s.link((r, e) for r in range(1, 4) for e in range(1, 4))
         s.conn.execute("UPDATE room_events SET point = room_id - 1")  # ルーム 1 はポイント 0 (取らない)
         args = (NOW - 3600, research.RANKING_RETRIES)
-        for sql in (f"""SELECT re.room_id, re.event_id, e.name FROM room_events re JOIN events e USING(event_id)
-                        WHERE {research.PENDING_RANKING} ORDER BY e.end DESC LIMIT 100""",
+        for sql in (sweep.NEXT_RANKING_SQL + " LIMIT 100",
                     f"SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id) WHERE {research.PENDING_RANKING}"):
             plan = " ".join(r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + sql, args))
             assert "COVERING INDEX room_events_todo" in plan, plan
         assert s.scalar("SELECT COUNT(*) FROM room_events INDEXED BY room_events_todo WHERE final=0 AND (point IS NULL OR point > 0)") == 6
         assert s.one("SELECT 1 FROM sqlite_master WHERE name='room_events_pending'") is None
+
+
+def test_next_ranking_reads_newest_events_first_whatever_the_statistics(tmp_path):
+    """次に取る貢献ランキングは、イベントを終わった順の索引で新しい方から読む (並べ替えのために全部読まない)。
+
+    サーバーの統計 (sqlite_stat1) だと、取っていない分を全部読んでから並べ替える読み方が選ばれていた (平均 5.3 秒)。
+    統計がそう見えても、読む順番が変わらないことを確かめる。
+    """
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": e, "name": f"e{e}", "start": NOW - 9 * DAY, "end": NOW - 5 * DAY - e} for e in range(1, 4)])
+        s.link((r, e) for r in range(1, 4) for e in range(1, 4))
+        s.conn.execute("ANALYZE")
+        s.conn.execute("DELETE FROM sqlite_stat1 WHERE idx IN ('events_end', 'room_events_todo')")
+        s.conn.execute("""INSERT INTO sqlite_stat1(tbl, idx, stat) VALUES ('events', 'events_end', '30000 30000'),
+                          ('room_events', 'room_events_todo', '1000 1 1 1 1 1 1')""")
+    with Store(tmp_path) as s:  # 統計は開き直した接続から使われる
+        args = (NOW - 3600, research.RANKING_RETRIES)
+        plan = " ".join(r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + sweep.NEXT_RANKING_SQL + " LIMIT 100", args))
+        assert "USING INDEX events_end" in plan and "INDEX room_events_todo" in plan and "TEMP B-TREE" not in plan, plan
+        assert [(r["room_id"], r["event_id"]) for r in s.all(sweep.NEXT_RANKING_SQL, args)][:3] == [(1, 1), (2, 1), (3, 1)]
