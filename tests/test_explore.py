@@ -4,6 +4,7 @@ import time
 import pytest
 
 from showroom_keeper import explore, listing, search_index
+from showroom_keeper.gifts import record_gift
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -256,3 +257,60 @@ def test_gift_daily_is_added_incrementally(tmp_path):
         rows = {r["day"]: tuple(r)[2:] for r in s.all("SELECT * FROM room_gift_daily WHERE room_key='aaa'")}
         assert rows == {"2026-10-18": (100, 0, 1)}
     assert explore._jst_day(t1) == "2026-10-17" and explore._jst_day(t2) == "2026-10-18"
+
+
+def test_adding_gifts_from_two_processes_at_once_does_not_double(tmp_path, monkeypatch):
+    """別のプロセスが同じ所から同時に足しても、同じギフトを 2 回足さない (2026-10-21 に Cursor の計測で二重になった)。
+    ロックは同じプロセスの中しか守らないので、ここではロックを外し、読んだあと・書く前に、もう 1 つの Store から足す。"""
+    import threading
+    from types import SimpleNamespace
+
+    db = tmp_path
+    (db / "cache").mkdir()
+    (db / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 1, "free": True}}}))
+    for k in range(3):
+        record_gift(db, "rec_room", 1, {"u": 55 + k, "ac": "名前", "g": 1, "n": 1, "created_at": NOW + k})
+    monkeypatch.setattr(explore, "_sender_lock", threading.RLock())
+    monkeypatch.setattr(explore, "_event_lock", threading.RLock())
+    busy = []
+
+    def loads(line):  # 読んだあと・書く前に、もう 1 つのプロセスが足し終える
+        if not busy:
+            busy.append(1)
+            with Store(db) as other:
+                explore.update_gift_senders(db, other, "rec_room")
+        return json.loads(line)
+
+    monkeypatch.setattr(explore, "json", SimpleNamespace(loads=loads, dumps=json.dumps))
+    with Store(db) as s:
+        explore.update_gift_senders(db, s, "rec_room")
+        explore.update_gift_senders(db, s, "rec_room")  # 先に足された分は飛ばし、続きが無いので何もしない
+        assert s.scalar("SELECT COUNT(*) FROM gift_events") == 3
+        assert s.scalar("SELECT SUM(times) FROM gift_senders") == 3
+        assert s.scalar("SELECT records FROM gift_room_totals") == 3
+
+
+def test_gift_room_index_is_built_in_the_background_on_old_databases(tmp_path, monkeypatch):
+    """前からある research.db (ギフト 1 件ずつの表に行があり、前の索引だけ) では、起動の時には作らず、裏の仕事で 1 回だけ作り替える。"""
+    from showroom_keeper import research_store
+
+    def indexes(s):
+        return {r[0] for r in s.all("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='gift_events'")}
+
+    new = {"gift_events_room_at", "gift_events_user_at"}
+    with Store(tmp_path) as s:
+        assert indexes(s) == new  # 空の表: 初めから作る
+        with s.tx() as c:
+            c.execute("DROP INDEX gift_events_room_at")
+            c.execute("DROP INDEX gift_events_user_at")
+            c.execute("CREATE INDEX gift_events_room ON gift_events(room_key, at)")
+            c.execute("CREATE INDEX gift_events_user ON gift_events(user_id, at)")
+            c.execute("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (1, 1, 'k', 1, 1)")
+    monkeypatch.setattr(research_store, "_ready", set())
+    with Store(tmp_path) as s:
+        assert indexes(s) == {"gift_events_room", "gift_events_user"}  # 起動の時には作らない
+        explore.ensure_gift_event_indexes(s, holding=lambda: True)  # 視聴を先にする時は作らない
+        assert indexes(s) == {"gift_events_room", "gift_events_user"}
+        explore.ensure_gift_event_indexes(s)
+        assert indexes(s) == new
+        explore.ensure_gift_event_indexes(s)  # 2 回目は何もしない

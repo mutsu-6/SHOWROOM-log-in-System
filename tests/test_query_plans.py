@@ -260,7 +260,7 @@ def test_listeners_in_a_period_use_the_gift_events_index(traced):
             s.conn.execute(sql)
         plan = [r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + listing.PERIOD_SQL, (NOW,))]
     assert not [p for p in plan if p.startswith("SCAN e")], plan
-    assert any("gift_events_room" in p for p in plan), plan
+    assert any("COVERING INDEX gift_events_room_at" in p for p in plan), plan  # 表を引き直さない
 
 
 def test_signup_anchor_does_not_read_whole_contributions(traced):

@@ -44,6 +44,17 @@ def _event_row(e: Any, now: float) -> dict[str, Any]:
 _sender_lock = threading.Lock()
 
 
+def _same_pos(c: Any, table: str, room_key: str, row: Any) -> bool:
+    """書き込みのトランザクションの中で、どこまで読んだか (table) が、読み始めた時 (row) のままかを確かめる。
+
+    ロックは同じプロセスの中しか守らないので、別のプロセス (計測など) が同じ所から同時に足すと、同じギフトを 2 回足していた
+    (2026-10-21 に Cursor が見つけた。8 ルームで 1〜20 件・gift_events は 4 ルームで 2〜84 件多かった)。
+    先に足されていた時は何も書かず、次に頼まれた時に、その続きから足す。
+    """
+    now = c.execute(f"SELECT pos, size FROM {table} WHERE room_key=?", (room_key,)).fetchone()
+    return (None if now is None else tuple(now)) == (None if row is None else (row["pos"], row["size"]))
+
+
 def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[str, Path] | None = None) -> None:
     """記録したギフトのファイルの、前に読んだところから先だけを、送り主の表 (gift_senders・gift_sender_names) に足す。
 
@@ -64,19 +75,15 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
         except OSError:
             return
         row = s.one("SELECT pos, size FROM gift_sender_pos WHERE room_key=?", (room_key,))
-        pos = row["pos"] if row is not None else 0
-        if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
-            with s.tx() as c:
-                c.execute("DELETE FROM gift_senders WHERE room_key=?", (room_key,))
-                c.execute("DELETE FROM gift_room_totals WHERE room_key=?", (room_key,))
-            pos = 0
-        if size <= pos:
+        reset = row is not None and size < row["size"]  # ファイルが小さくなった: 最初から (消すのは、足すのと同じトランザクションで)
+        pos = 0 if reset or row is None else row["pos"]
+        if size <= pos and not reset:
             return
         with path.open("rb") as f:
             f.seek(pos)
             chunk = f.read(size - pos)
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
-        if end <= 0:
+        if end <= 0 and not reset:
             return
         catalog = listing.gift_catalog(state_dir, [room_key])
         if not catalog:  # ギフトの一覧がまだ取れていない: 全部 0 pt で足すと戻せないので、次に回す
@@ -104,6 +111,11 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             if name:
                 names[(uid, name)] = max(at, names.get((uid, name), 0.0))
         with s.tx() as c:
+            if not _same_pos(c, "gift_sender_pos", room_key, row):
+                return
+            if reset:
+                c.execute("DELETE FROM gift_senders WHERE room_key=?", (room_key,))
+                c.execute("DELETE FROM gift_room_totals WHERE room_key=?", (room_key,))
             c.executemany("""INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points, free_points, first_at, unknown)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                              ON CONFLICT(room_key, user_id) DO UPDATE SET times=times+excluded.times,
@@ -135,6 +147,21 @@ def ensure_room_totals(s: Store) -> None:
         c.execute("INSERT INTO meta(k, v) VALUES ('gift_room_totals', '1') ON CONFLICT(k) DO UPDATE SET v=excluded.v")
 
 
+def ensure_gift_event_indexes(s: Store, holding: Any = lambda: False) -> None:
+    """前からある research.db に、人・ルームと時刻で引く読む欄入りの索引を 1 つずつ作り、前の索引を消す (research_store.GIFT_EVENT_INDEXES)。
+    サーバーで 143 万行。作る間は書き込みを待たせるので、起動の時ではなく、裏の仕事で (視聴を先にする時は次に回す)。"""
+    from .research_store import GIFT_EVENT_INDEXES
+
+    for new, sql, old, _ in GIFT_EVENT_INDEXES:
+        if s.one("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (new,)) is not None:
+            continue
+        if holding():
+            return
+        with _event_lock, s.tx() as c:
+            c.execute(sql)
+            c.execute(f"DROP INDEX IF EXISTS {old}")
+
+
 _event_lock = threading.Lock()
 
 
@@ -152,18 +179,15 @@ def update_gift_events(state_dir: Path, s: Store, room_key: str, files: dict[str
         except OSError:
             return
         row = s.one("SELECT pos, size FROM gift_event_pos WHERE room_key=?", (room_key,))
-        pos = row["pos"] if row is not None else 0
-        if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
-            with s.tx() as c:
-                c.execute("DELETE FROM gift_events WHERE room_key=?", (room_key,))
-            pos = 0
-        if size <= pos:
+        reset = row is not None and size < row["size"]  # ファイルが小さくなった: 最初から (消すのは、足すのと同じトランザクションで)
+        pos = 0 if reset or row is None else row["pos"]
+        if size <= pos and not reset:
             return
         with path.open("rb") as f:
             f.seek(pos)
             chunk = f.read(size - pos)
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
-        if end <= 0:
+        if end <= 0 and not reset:
             return
         rows = []
         for line in chunk[:end].splitlines():
@@ -174,6 +198,10 @@ def update_gift_events(state_dir: Path, s: Store, room_key: str, files: dict[str
             except (ValueError, TypeError):
                 continue
         with s.tx() as c:
+            if not _same_pos(c, "gift_event_pos", room_key, row):
+                return
+            if reset:
+                c.execute("DELETE FROM gift_events WHERE room_key=?", (room_key,))
             c.executemany("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (?, ?, ?, ?, ?)", rows)
             c.execute("""INSERT INTO gift_event_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
@@ -500,19 +528,15 @@ def update_gift_daily(state_dir: Path, s: Store, room_key: str, files: dict[str,
         except OSError:
             return
         row = s.one("SELECT pos, size FROM room_gift_pos WHERE room_key=?", (room_key,))
-        pos = row["pos"] if row is not None else 0
-        if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
-            with s.tx() as c:
-                c.execute("DELETE FROM room_gift_daily WHERE room_key=?", (room_key,))
-                c.execute("DELETE FROM room_gift_day_users WHERE room_key=?", (room_key,))
-            pos = 0
-        if size <= pos:
+        reset = row is not None and size < row["size"]  # ファイルが小さくなった: 最初から (消すのは、足すのと同じトランザクションで)
+        pos = 0 if reset or row is None else row["pos"]
+        if size <= pos and not reset:
             return
         with path.open("rb") as f:
             f.seek(pos)
             chunk = f.read(size - pos)
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
-        if end <= 0:
+        if end <= 0 and not reset:
             return
         catalog = listing.gift_catalog(state_dir, [room_key])
         sums: dict[str, list[int]] = {}
@@ -532,6 +556,11 @@ def update_gift_daily(state_dir: Path, s: Store, room_key: str, files: dict[str,
             if not free and g.get("user_id") is not None:
                 users.add((d, int(g["user_id"])))
         with s.tx() as c:
+            if not _same_pos(c, "room_gift_pos", room_key, row):
+                return
+            if reset:
+                c.execute("DELETE FROM room_gift_daily WHERE room_key=?", (room_key,))
+                c.execute("DELETE FROM room_gift_day_users WHERE room_key=?", (room_key,))
             c.executemany("""INSERT INTO room_gift_daily(room_key, day, paid_points, free_points, gifts) VALUES (?, ?, ?, ?, ?)
                              ON CONFLICT(room_key, day) DO UPDATE SET paid_points=paid_points+excluded.paid_points,
                                free_points=free_points+excluded.free_points, gifts=gifts+excluded.gifts""",
@@ -819,13 +848,16 @@ def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = No
         pending = s.scalar(f"""SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id)
                                WHERE re.event_id=? AND {PENDING_RANKING}""", (eid, now - 3600, RANKING_RETRIES))
         # 退会したユーザーも出す (イベントの実際の顔ぶれなので)。前の名前が分かれば、それも出す
+        # 先に人ごとに合計して上位 CONTRIBUTORS 人に絞ってから、名前と、いちばん送ったルームを引く。
+        # 前は、参加した全員 (大きなイベントで数万人) の分、名前の表と、その人の全イベントの貢献を引いていて、
+        # サーバーでイベントのページが 40 秒かかっていた (2026-10-21 に Cursor が測った)
         contributors = [dict(r) for r in s.all(
-            """SELECT c.user_id, COALESCE(u.name, '') AS name, SUM(c.point) AS point, COUNT(*) AS rooms, MIN(c.rank) AS best_rank,
-                      MAX(c.guessed IS NOT NULL) AS guessed,
+            """SELECT t.user_id, COALESCE(u.name, '') AS name, t.point, t.rooms, t.best_rank, t.guessed,
                       (SELECT COALESCE(r.name, r.key) FROM contributions c2 LEFT JOIN rooms r USING(room_id)
-                        WHERE c2.event_id=c.event_id AND c2.user_id=c.user_id ORDER BY c2.point DESC LIMIT 1) AS top_room
-               FROM contributions c LEFT JOIN users u USING(user_id) WHERE c.event_id=?
-               GROUP BY c.user_id ORDER BY point DESC LIMIT ?""", (eid, CONTRIBUTORS))]
+                        WHERE c2.event_id=? AND c2.user_id=t.user_id ORDER BY c2.point DESC LIMIT 1) AS top_room
+               FROM (SELECT user_id, SUM(point) AS point, COUNT(*) AS rooms, MIN(rank) AS best_rank, MAX(guessed IS NOT NULL) AS guessed
+                     FROM contributions WHERE event_id=? GROUP BY user_id ORDER BY point DESC LIMIT ?) t
+               LEFT JOIN users u USING(user_id) ORDER BY t.point DESC""", (eid, eid, CONTRIBUTORS))]
         shown = _user_names(s, None, [c["user_id"] for c in contributors if c["name"] in LEFT_NAMES])
         for c in contributors:
             c["left"] = c["name"] in LEFT_NAMES
@@ -901,7 +933,7 @@ def series_link(state_dir: Path, event_id: Any, to_event: Any = None) -> dict[st
 
 
 def _strength(s: Store, eid: int, now: float, support: list[str] | None) -> dict[str, Any]:
-    st = event_analysis.event_strength(s, eid, now, _room_ids(s, support))
+    st = event_analysis.event_strength(s, eid, now, _room_ids(s, support), event_analysis.strength_cache(s, now))
     st["rooms"] = st["rooms"][:EVENT_ROOMS]
     _room_labels(s, st["rooms"])
     _room_labels(s, st["focus"])
