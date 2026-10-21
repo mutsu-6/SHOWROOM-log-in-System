@@ -459,10 +459,13 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 if q.get("kind") == "gifters":
                     self._json(heat.gifters(self._state_dir(), q.get("month") or None))
+                elif q.get("kind") == "room_power":
+                    self._json(heat.room_power(self._state_dir(), q.get("room", "")))
                 else:
                     slot = q.get("slot")
                     self._json(heat.rooms(self._state_dir(), int(slot) if slot and slot.lstrip("-").isdigit() else None,
-                                          q.get("span", "12h"), q.get("compare", "week"), q.get("group", "genre")))
+                                          q.get("span", "12h"), q.get("compare", "week"), q.get("group", "genre"),
+                                          q.get("size", "point")))
             elif url.path == "/api/news":
                 from . import news
 

@@ -88,3 +88,77 @@ def test_gifter_heatmap_groups_by_the_favorite_room(tmp_path):
     groups = {g["name"]: {x["user_id"]: (x["size"], x["change"]) for x in g["items"]} for g in out["groups"]}
     assert groups == {"推しのルーム": {10: (1000, 1.0), 11: (300, -1.0)}, "最推しのルームが分からない": {12: (50, None)}}
     assert out["groups"][0]["room_key"] == "k1"
+
+
+def _status(s, uid, state, fire, hp, mp, rooms):
+    import json
+
+    from showroom_keeper import gifter_status as gs
+
+    s.conn.execute("INSERT INTO gifter_status(user_id, version, state, data) VALUES (?, ?, ?, ?)",
+                   (uid, gs.VERSION, state, json.dumps({"state": state, "fire": fire, "hp": hp, "mp": mp, "rooms": rooms})))
+
+
+def test_room_power_adds_up_fighters_and_their_ammo(tmp_path):
+    import json
+
+    from showroom_keeper import gifter_status as gs
+
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2)], "archive", NOW)
+        s.conn.execute("INSERT INTO users(user_id, name) VALUES (10, '主砲の人')")
+        _status(s, 10, "安定", 1000, 100, 25, [{"room_id": 1, "share": 0.8, "sortie": 1.0, "class": "主砲"},
+                                              {"room_id": 2, "share": 0.2, "sortie": None, "class": "付き合い"}])  # 付き合いは数えない
+        _status(s, 11, "枯渇", 1000, 100, 100, [{"room_id": 1, "share": 1.0, "sortie": None, "class": "支え"}])  # 枯渇 0.2・出動率 0.5
+        _status(s, 12, "離脱", 9999, 100, 100, [{"room_id": 1, "share": 1.0, "sortie": 1.0, "class": "主力"}])  # 離脱は 0
+        assert not heat.power_due(s)  # ステータスをまだ作り終えていない
+        s.set_meta(gs.RUN_META, json.dumps({"done": NOW}))
+        assert heat.power_due(s)
+        assert heat.build_power(s, NOW) == 1
+        assert not heat.power_due(s)
+        r = s.one("SELECT * FROM room_power WHERE room_id=1")
+        assert (r["power"], r["left_pt"], r["people"], r["guns"], r["mains"]) == (800 + 100, 200 + 100, 2, 1, 0)
+    out = heat.room_power(tmp_path, "k1")
+    assert out["found"] and out["rank"] == 1
+    assert [(g["user_id"], g["power"], g["left"], g["class"], g["state"]) for g in out["gifters"]] == [
+        (10, 800, 0.25, "主砲", "安定"), (11, 100, 1.0, "支え", "枯渇")]
+    assert out["gifters"][0]["name"] == "主砲の人"
+    assert not heat.room_power(tmp_path, "k2")["found"]
+
+
+def test_room_heatmap_by_power_and_league(tmp_path):
+    i = heat.slot_of(NOW) - 2
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2, 3)], "archive", NOW)
+        s.conn.executemany("INSERT INTO room_point_12h(slot, room_id, point, events) VALUES (?, ?, ?, 1)", [(i, 1, 200), (i, 3, 10)])
+        s.conn.executemany("INSERT INTO room_power(room_id, at, power, left_pt, people, guns, mains, data) VALUES (?, ?, ?, ?, 1, 1, 0, '[]')",
+                           [(1, NOW, 1000, 250), (2, NOW, 500, 500)])
+        s.conn.executemany("INSERT INTO room_info(room_id, league_id) VALUES (?, ?)", [(1, 9), (2, 30)])
+    out = heat.rooms(tmp_path, size="power", group="league")
+    assert out["size"] == "power" and out["group"] == "league"
+    got = {g["name"]: {x["room_id"]: (x["size"], x["now"], x["left_pt"]) for x in g["items"]} for g in out["groups"]}
+    assert got == {"SS": {1: (1000, 200, 250)}, "B": {2: (500, 0, 500)}}  # 地力の無いルーム 3 は出ない
+    assert {g["name"]: (g["power"], g["left_pt"]) for g in out["groups"]} == {"SS": (1000, 250), "B": (500, 500)}
+    # ポイントの大きさのままでも、地力と残弾が付く (色を残弾にする時)
+    pt = {x["room_id"]: (x["size"], x["power"]) for g in heat.rooms(tmp_path)["groups"] for x in g["items"]}
+    assert pt == {1: (200, 1000), 3: (10, 0)}
+
+
+def test_power_step_builds_a_little_at_a_time_when_idle(tmp_path, monkeypatch):
+    import json
+
+    from showroom_keeper import gifter_status as gs, room_parts
+
+    monkeypatch.setattr(heat, "CHUNK", 2)
+    with Store(tmp_path) as s:
+        for u in range(5):
+            _status(s, u + 1, "安定", 100, 10, 10, [{"room_id": 1, "share": 1.0, "sortie": 1.0, "class": "支え"}])
+        s.set_meta(gs.RUN_META, json.dumps({"done": NOW}))
+        monkeypatch.setattr(room_parts, "idle", lambda now=None: False)
+        assert not heat.power_step(s, NOW)  # 暇でなければ何もしない
+        monkeypatch.setattr(room_parts, "idle", lambda now=None: True)
+        steps = 0
+        while heat.power_step(s, NOW):
+            steps += 1
+        assert steps == 3  # 2 人・2 人・1 人 (足し終えて保存)
+        assert s.scalar("SELECT people FROM room_power WHERE room_id=1") == 5
