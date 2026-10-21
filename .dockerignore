@@ -1,0 +1,10 @@
+# 作り直しに使うのは requirements.txt と showroom_keeper/ だけ。集めた記録 (data/ は数 GB) などを送らない
+data/
+state/
+.git/
+.venv/
+tests/
+docs/
+*.db
+*.db-wal
+*.db-shm

@@ -306,3 +306,9 @@ def test_alerts_for_stalled_sweep_pauses_and_disk_forecast(tmp_path, monkeypatch
     monkeypatch.setattr(sweep, "state", lambda: {"enabled": False})
     alerts = web.build_alerts(tmp_path, {}, now)
     assert len(alerts) == 1 and "あと 10 日ほど" in alerts[0]
+    # 取り終わるまでの見込み: 空き 10GB で、収集を止めるまで 8GB。その 7 割 (5.6GB) を超えたら知らせる
+    monkeypatch.setattr(backup, "backlog", lambda d, n: {"pending": 525307, "per_ranking": 5000, "bytes": 6 << 30})
+    alerts = web.build_alerts(tmp_path, {}, now)
+    assert any("取り終わるまでに、ディスクをあと約 6.0GB" in a and "525,307 件" in a for a in alerts)
+    monkeypatch.setattr(backup, "backlog", lambda d, n: {"pending": 1000, "per_ranking": 5000, "bytes": 5 << 20})
+    assert not any("取り終わる" in a for a in web.build_alerts(tmp_path, {}, now))
