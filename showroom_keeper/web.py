@@ -262,6 +262,11 @@ def host_is_loopback(host_header: str | None) -> bool:
     return host.lower() in LOOPBACK_HOSTS
 
 
+# 管理画面を開いたままにすると、決まった間隔で読み直す要求 (15 秒・3 秒・60 秒ごと)。人が使っている印 (room_parts.seen) には数えない。
+# 前は数えていたので、誰かが画面を開いている間は、ルームの部品や地力を裏でいつまでも作れなかった (2026-10-21 に Cursor が見つけた)
+POLLED = {"/api/overview", "/api/logs", "/api/feed", "/api/research/status", "/api/research/collect"}
+
+
 class AdminHandler(BaseHTTPRequestHandler):
     server_version = "showroom-keeper"
     keeper: Any = None
@@ -343,7 +348,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._get()
         finally:
             selfcheck.note_page(urlparse(self.path).path, time.monotonic() - started)  # 開くのが遅い画面を、自己点検で見つける
-            room_parts.seen()  # 管理画面が使われている間は、ルームの部品を裏で作らない
+            if urlparse(self.path).path not in POLLED:
+                room_parts.seen()  # 管理画面が使われている間は、ルームの部品を裏で作らない (開いたままの画面の読み直しは数えない)
 
     def _get(self) -> None:
         if not self._allowed():

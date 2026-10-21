@@ -165,8 +165,7 @@ CREATE TABLE IF NOT EXISTS gift_room_totals (room_key TEXT PRIMARY KEY, records 
 -- ギフターのページ・分析で、1 人のギフトや、1 つのルームの全員のギフトを、ファイルを読み直さずに引く
 -- (前は開くたびにファイルを読み直していた。送る量の多い人のページで 9.2 秒。2026-10-19 に Cursor が測った)
 CREATE TABLE IF NOT EXISTS gift_events (user_id INTEGER, at REAL, room_key TEXT, gift_id INTEGER, num INTEGER);
-CREATE INDEX IF NOT EXISTS gift_events_user ON gift_events(user_id, at);
-CREATE INDEX IF NOT EXISTS gift_events_room ON gift_events(room_key, at);
+-- 人・ルームと時刻で引く索引 (gift_events_user_at・gift_events_room_at) は、下の Store の初めで作る (前からある research.db では、裏の仕事 catchup が作る)
 CREATE TABLE IF NOT EXISTS gift_event_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
 -- イベントごとの、貢献ランキングに出たいちばん大きいユーザー ID (名前で推測した分を除く。uid が NULL なら、まだ出た人がいない)。
 -- 登録時期の目印に使う。前は分析のたびに貢献ランキングの表を全部読んでいた (サーバーで 27 秒。2026-10-19)
@@ -285,6 +284,14 @@ def _timed(sql: str, started: float) -> None:
             hook(sql, took)
 
 
+# ギフト 1 件ずつの表の索引 (新しい名前, 作る SQL, 前の索引, 前の索引の欄)。どちらも読む欄を全部入れて、表を引き直さずに読む
+GIFT_EVENT_INDEXES = [
+    ("gift_events_room_at", "CREATE INDEX IF NOT EXISTS gift_events_room_at ON gift_events(room_key, at, gift_id, num, user_id)",
+     "gift_events_room", "room_key, at"),
+    ("gift_events_user_at", "CREATE INDEX IF NOT EXISTS gift_events_user_at ON gift_events(user_id, at, room_key, gift_id, num)",
+     "gift_events_user", "user_id, at"),
+]
+
 class Store:
     """research.db への接続 1 本。スレッドごとに作って使う (with 文で閉じる)。"""
 
@@ -355,6 +362,20 @@ class Store:
                                      WHERE progress_at IS NOT NULL AND end IS NOT NULL AND style_at IS NULL""")
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS events_thin_todo ON events(end)
                                      WHERE style_at IS NOT NULL AND thinned_at IS NULL""")
+                # ルームと時刻で引く索引に、読む欄 (gift_id・num・user_id) も入れて、表を引き直さずに読む
+                # (大口のギフト・期間を決めたギフターの一覧が、直近の分を 1 件ずつ表に探しに行き、サーバーで 13 秒・55 秒かかっていた。
+                # 2026-10-21 に Cursor が測った)。人で引く索引も同じ (ギフターのページ)。表が空の時はここで作る。
+                # 前からある表は、起動を止めないように catchup が作る (GIFT_EVENT_INDEXES)
+                have = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='gift_events'")}
+                empty = self.conn.execute("SELECT 1 FROM gift_events LIMIT 1").fetchone() is None
+                for new, sql, old, old_cols in GIFT_EVENT_INDEXES:
+                    if new in have:
+                        continue
+                    if empty:
+                        self.conn.execute(sql)
+                        self.conn.execute(f"DROP INDEX IF EXISTS {old}")
+                    elif old not in have:  # 作り替える前に、前の索引も無い (ふつうは無い): 引けるように前の形を作っておく
+                        self.conn.execute(f"CREATE INDEX IF NOT EXISTS {old} ON gift_events({old_cols})")
                 _import_json(self)
                 _mark_guessed(self)
                 _ready.add(str(path))

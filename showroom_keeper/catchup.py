@@ -49,7 +49,12 @@ def _run(state_dir: Path, mark: bool = True) -> None:
     try:
         with Store(state_dir) as s:
             explore.ensure_room_totals(s)
+            explore.ensure_gift_event_indexes(s, memory.holding)
             files = listing._record_files(state_dir)
+            try:
+                explore.repair_doubled_gifts(state_dir, s, files, memory.holding)  # 1 回だけ (終われば何もしない)
+            except Exception as e:  # noqa: BLE001 - 直せなくても、新しい分は足す
+                log.debug("二重に足した所を直せませんでした: %s", e)
             for key in files:
                 for fn in (explore.update_gift_senders, explore.update_gift_daily):  # 送り主の表は、ギフト 1 件ずつの表と一緒に足す
                     try:

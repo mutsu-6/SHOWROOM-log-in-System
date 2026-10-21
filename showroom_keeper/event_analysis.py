@@ -239,6 +239,15 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
             "leagues": [LEAGUES.get(x, str(x)) for x in leagues] if leagues else None}
 
 
+def strength_cache(s: Store, now: float) -> dict[int, Any]:
+    """ルームの強さを、イベントをまたいで使い回す入れ物 (1 ルームはいくつものイベントに出るので)。STRENGTH_TTL ごとに作り直す。
+    イベントのページ (参加ルームが千を超えることがある) と、出るイベントの選び方で一緒に使う。"""
+    held = _strengths.get(str(s.state_dir))
+    if held is None or now - held[0] > STRENGTH_TTL:
+        held = _strengths[str(s.state_dir)] = (now, {})
+    return held[1]
+
+
 def event_choice(s: Store, focus: list[int], now: float | None = None) -> dict[str, Any]:
     """開催中・これからのイベントごとに、応援ルームが出たら何位くらいか (参加ルームの強さから)。"""
     now = time.time() if now is None else now
@@ -246,11 +255,7 @@ def event_choice(s: Store, focus: list[int], now: float | None = None) -> dict[s
     hit = _choice.get(key)
     if hit and now - hit[0] < CHOICE_TTL:
         return hit[1]
-    # ルームの強さは、イベントをまたいで使い回す (1 ルームはいくつものイベントに出るので)。STRENGTH_TTL ごとに作り直す
-    held = _strengths.get(str(s.state_dir))
-    if held is None or now - held[0] > STRENGTH_TTL:
-        held = _strengths[str(s.state_dir)] = (now, {})
-    cache = held[1]
+    cache = strength_cache(s, now)
     events = s.all("""SELECT e.event_id, e.name, e.start, e.end, COUNT(re.room_id) AS rooms FROM events e
                       JOIN room_events re USING(event_id) WHERE e.end > ? GROUP BY e.event_id HAVING rooms >= ?
                       ORDER BY e.start""", (now, CHOICE_MIN_ROOMS))

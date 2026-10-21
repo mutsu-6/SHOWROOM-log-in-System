@@ -260,7 +260,7 @@ def test_listeners_in_a_period_use_the_gift_events_index(traced):
             s.conn.execute(sql)
         plan = [r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + listing.PERIOD_SQL, (NOW,))]
     assert not [p for p in plan if p.startswith("SCAN e")], plan
-    assert any("gift_events_room" in p for p in plan), plan
+    assert any("COVERING INDEX gift_events_room_at" in p for p in plan), plan  # 表を引き直さない
 
 
 def test_signup_anchor_does_not_read_whole_contributions(traced):
@@ -467,3 +467,17 @@ def test_next_ranking_is_chosen_from_the_index_only(tmp_path):
             assert "COVERING INDEX room_events_todo" in plan, plan
         assert s.scalar("SELECT COUNT(*) FROM room_events INDEXED BY room_events_todo WHERE final=0 AND (point IS NULL OR point > 0)") == 6
         assert s.one("SELECT 1 FROM sqlite_master WHERE name='room_events_pending'") is None
+
+
+def test_repairing_doubled_gifts_reads_one_room_at_a_time(traced):
+    from showroom_keeper import listing
+    from showroom_keeper.gifts import record_gift
+
+    record_gift(traced[0], "k1", 1, {"u": 100, "ac": "a", "g": 100, "n": 1, "created_at": NOW})
+
+    def run(d):
+        with Store(d) as s:
+            files = listing._record_files(d)
+            explore.update_gift_events(d, s, "k1", files)
+            explore.repair_doubled_gifts(d, s, files)
+    check(traced, run)
