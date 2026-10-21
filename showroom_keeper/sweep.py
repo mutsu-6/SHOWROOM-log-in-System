@@ -76,6 +76,12 @@ DISK_CHECK_EVERY = 600  # ディスクの空きを確かめる間隔 (秒)
 BATCH = 100  # 次の仕事の候補をまとめて調べる件数
 ANCHOR_ROOMS = 3  # 1 つのイベントで貢献ランキングを取るルームの数 (上位・中ほど・下位)
 RANKING_SHARE = 0.7  # 問い合わせのうち、終わったイベントの貢献ランキングに回す割合 (取る分が残っている間。残りはほかの仕事)
+# 次に取る貢献ランキング: イベントを終わった順の索引で新しい方から読み、そのイベントの取っていない分を room_events_todo で探す
+# (BATCH 件で止まる)。順番を書かないと、サーバーでは取っていない分 (約 59 万行) を全部読んでから並べ替えていた
+# (1 回 平均 5.3 秒・最大 12.8 秒。2026-10-21 に Cursor が測った)。CROSS JOIN は、この順番で読ませる書き方
+NEXT_RANKING_SQL = f"""SELECT re.room_id, re.event_id, e.name
+    FROM events e INDEXED BY events_end CROSS JOIN room_events re ON re.event_id = e.event_id
+    WHERE {PENDING_RANKING} ORDER BY e.end DESC"""
 SHARE_WINDOW = 2000  # 割合を数える問い合わせの数 (これを超えたら半分にして、最近の分を重く見る)
 
 
@@ -759,8 +765,7 @@ class Sweeper:
         """終わったイベントの貢献ランキングを、新しいイベントから 1 件取る (失敗は数えて RANKING_RETRIES 回まで)。"""
         if not self._rankings:
             self.c.flush_rankings()  # 次の候補を選ぶ前に、ためている分を保存する (同じものをもう一度取らないように)
-        r = self._take(self._rankings, f"""SELECT re.room_id, re.event_id, e.name FROM room_events re JOIN events e USING(event_id)
-                WHERE {PENDING_RANKING} ORDER BY e.end DESC""", (now - 3600, RANKING_RETRIES))
+        r = self._take(self._rankings, NEXT_RANKING_SQL, (now - 3600, RANKING_RETRIES))
         if r is None:
             return False
         self.doing = f"貢献ランキング ({r['name'] or r['event_id']})"
