@@ -36,11 +36,12 @@ BACKFILL_DAYS = 28  # 初めて作る時に、さかのぼって作る日数 (�
 ROOM_LIMIT = 300  # ヒートマップに出すルームの数 (今の期間の上位と、前の期間の上位)
 GIFTER_LIMIT = 300  # ヒートマップに出すギフターの数 (今の月の上位と、前の月の上位)
 GROUP_LIMIT = 40  # まとめる箱の数の上限 (残りは「そのほか」)
-POWER_VERSION = 1  # 地力の作り方を変えたら上げる (作り直す)
-CHUNK = 2000  # 1 回に足すギフターの数 (手元で 5 万人を 2.6 秒。1 回を 0.1 秒ほどにする)
+POWER_VERSION = 2  # 地力の作り方を変えたら上げる (作り直す)
+CHUNK = 2000  # 1 回に足すギフターの数 (手元で 5 万人を 2.6 秒。サーバーで 9,273 人を 5 回・15 秒。2026-10-21 に Cursor が測った)
+CHUNK_BUSY = 300  # 管理画面が使われている間に 1 回に足す数 (1 回を 0.5 秒ほどにして、ページを開くのと重なっても待たせない)
 PEOPLE = 60  # ルームごとに残す、出せる量の多い人の数 (ルームのページの中のギフターのマップ)
 SORTIE_UNKNOWN = 0.5  # 出動率が分からない人 (勝負の回が少ないルーム) の出動率 (gifter_status の power と同じ)
-FIGHTERS = ("主砲", "主力", "支え")  # 地力に数えるクラス (付き合いは数えない)
+FIGHTERS = ("主砲", "主力", "支え")  # 地力に数えるクラス (このルームでの本気の上限を、決め手の量とくらべて分ける)
 STATES = ("上り調子", "安定", "温存中", "枯渇", "離脱")
 
 
@@ -314,16 +315,17 @@ class _PowerRun:
             d = json.loads(data)
             state = d.get("state")
             factor = gifter_status.STATE_FACTOR.get(state, 1.0)
-            fire, hp = d.get("fire") or 0, d.get("hp") or 0
+            hp = d.get("hp") or 0
             ratio = min(1.0, max(0.0, (d.get("mp") or 0) / hp)) if hp else 0.0
             for r in d.get("rooms") or []:
-                cls = r.get("class")
-                if cls not in FIGHTERS:
+                if r.get("kind") == "付き合い":  # 最推しのルームとくらべてごく少ない (付き合い投げ)
                     continue
                 sortie = r.get("sortie")
-                power = int(fire * (r.get("share") or 0) * (SORTIE_UNKNOWN if sortie is None else sortie) * factor)
+                power = int((r.get("cap") or 0) * (SORTIE_UNKNOWN if sortie is None else sortie) * factor)
                 if power <= 0:
                     continue
+                edge = r.get("edge") or 0
+                cls = "主砲" if edge and power >= edge else "主力" if edge and power >= edge / 3 else "支え"
                 rid = int(r["room_id"])
                 t = self.totals.setdefault(rid, [0, 0, 0, 0, 0])
                 t[0] += power
@@ -359,8 +361,15 @@ _runs: dict[str, _PowerRun] = {}  # 作り直しの途中 (state_dir ごと。�
 def build_power(s: Store, now: float | None = None) -> int:
     """ギフターのステータスから、ルームごとの地力・残弾と、出せる量の多い人を一度に作り直す (戻り値はルームの数。テスト用)。
 
-    1 人のこのルームへの地力 = 火力 (勝負の回の 1 イベントの量の上から 2 番目) × このルームに向ける割合 × このルームの出動率
-    × 状態の係数 (離脱 0・枯渇 0.2。gifter_status と同じ)。残弾をかけないので、月の途中でも大きさは動かない (色の残弾で見る)。
+    1 人のこのルームへの地力 = このルームでの本気の上限 (直近 12 か月の、このルームの 1 イベントの量の上から 2 番目。gifter_status の cap)
+    × このルームの出動率 (分からなければ 0.5) × 状態の係数 (離脱 0・枯渇 0.2。gifter_status と同じ)。付き合い投げの先は数えない。
+    クラスは、この地力をルームの決め手の量 (edge) とくらべて分ける (以上なら主砲・3 分の 1 以上なら主力・それより下は支え)。
+
+    はじめ (POWER_VERSION 1) は、火力 (どのルームでもよい上限) × 向ける割合 にして、gifter_status のクラス (残弾をかけた総合力で分ける)
+    で付き合いを除いていた。サーバーで、大きなルームほど地力が少なく (イベントの多い 20 ルーム中 19 で、いちばん大きいイベントの
+    0.6 倍以下)、よその火力が残る小さなルームで 66 倍になった (2026-10-21 に Cursor が測った)。残弾の少ない時期は総合力が小さく、
+    決め手の量の大きいルームの人ほど「付き合い」に落ちていたため。地力は残弾をかけない量なので、クラスもここで分け直す。
+    残弾をかけないので、月の途中でも大きさは動かない (色の残弾で見る)。
     ステータスは少しずつ読み、全部をメモリに持たない (ルームごとに出せる量の多い PEOPLE 人だけ、数を 1 つの整数につめて持つ)。
     """
     run = _PowerRun(_power_src(s))
@@ -381,16 +390,30 @@ def _unpack(x: int) -> list[Any]:
             STATES[state] if state < len(STATES) else None]
 
 
+def quiet() -> bool:
+    """ディスクが空いているか (自己点検が後回しにしておらず、ディスク待ちが room_parts.IDLE_IOWAIT より少ない)。
+
+    room_parts.idle と違い、管理画面が使われているかは見ない。管理画面は開いている間 15 秒ごとに読み直すので、
+    それを見ると、開いたままの間はいつまでも作られなかった (2026-10-21 に Cursor が測った)。
+    代わりに、使われている間は 1 回に足す人数を CHUNK_BUSY に減らす。"""
+    from . import memory, room_parts, selfcheck
+
+    if memory.holding() > 0:
+        return False
+    iowait = selfcheck.CHECKER.load.get("iowait") if selfcheck.CHECKER is not None else None
+    return iowait is None or iowait < room_parts.IDLE_IOWAIT
+
+
 def power_step(s: Store, now: float | None = None) -> bool:
-    """作り直す時で、サーバーが暇なら、CHUNK 人ずつ足していき、全員を足し終えたら保存する (収集の 1 回の仕事を長く止めない。
-    ほかの重い集計とは重ならないようにする)。何かしたら True。"""
+    """作り直す時で、ディスクが空いていれば、CHUNK 人ずつ (管理画面が使われている間は CHUNK_BUSY 人ずつ) 足していき、
+    全員を足し終えたら保存する (収集の 1 回の仕事を長く止めない。ほかの重い集計とは重ならないようにする)。何かしたら True。"""
     from . import memory, room_parts
 
     key = str(s.state_dir)
     if not power_due(s):
         _runs.pop(key, None)
         return False
-    if not room_parts.idle(now):
+    if not quiet():
         return False
     with memory.heavy(wait=False) as got:
         if not got:
@@ -399,7 +422,7 @@ def power_step(s: Store, now: float | None = None) -> bool:
         run = _runs.get(key)
         if run is None or run.src != src:  # ステータスが作り直されたら、初めから
             run = _runs[key] = _PowerRun(src)
-        if run.add(s, CHUNK):
+        if run.add(s, CHUNK if room_parts.idle(now) else CHUNK_BUSY):
             run.save(s, time.time() if now is None else now)
             del _runs[key]
             memory.release()

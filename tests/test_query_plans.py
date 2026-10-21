@@ -350,7 +350,7 @@ def test_heatmaps_do_not_read_whole_tables(traced):
         s.add_progress(9, [{"room_id": r, "point": r * 10} for r in range(1, 6)], t0 + 6 * 3600)
         s.conn.execute("INSERT INTO user_month(user_id, month, points) VALUES (101, ?, 5)", (month,))
         s.conn.execute("INSERT INTO gifter_status(user_id, top_room, version, data) VALUES (101, 1, ?, ?)", (gs.VERSION, json.dumps(
-            {"state": "安定", "fire": 1000, "hp": 100, "mp": 50, "rooms": [{"room_id": 1, "share": 1.0, "sortie": 1.0, "class": "主砲"}]})))
+            {"state": "安定", "fire": 1000, "hp": 100, "mp": 50, "rooms": [{"room_id": 1, "kind": "推し", "cap": 1000, "sortie": 1.0, "edge": 100}]})))
         s.conn.execute("INSERT INTO room_info(room_id, league_id) VALUES (1, 9)")
         s.set_meta(gs.RUN_META, json.dumps({"done": NOW}))
 
