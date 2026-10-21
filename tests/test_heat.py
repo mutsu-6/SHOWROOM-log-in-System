@@ -107,10 +107,12 @@ def test_room_power_adds_up_fighters_and_their_ammo(tmp_path):
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2)], "archive", NOW)
         s.conn.execute("INSERT INTO users(user_id, name) VALUES (10, '主砲の人')")
-        _status(s, 10, "安定", 1000, 100, 25, [{"room_id": 1, "share": 0.8, "sortie": 1.0, "class": "主砲"},
-                                              {"room_id": 2, "share": 0.2, "sortie": None, "class": "付き合い"}])  # 付き合いは数えない
-        _status(s, 11, "枯渇", 1000, 100, 100, [{"room_id": 1, "share": 1.0, "sortie": None, "class": "支え"}])  # 枯渇 0.2・出動率 0.5
-        _status(s, 12, "離脱", 9999, 100, 100, [{"room_id": 1, "share": 1.0, "sortie": 1.0, "class": "主力"}])  # 離脱は 0
+        # 地力 = このルームでの本気の上限 (cap) × 出動率 × 状態の係数。クラスは決め手の量 (edge) とくらべて分け直す
+        _status(s, 10, "安定", 1000, 100, 25, [
+            {"room_id": 1, "kind": "推し", "cap": 800, "sortie": 1.0, "edge": 500, "class": "付き合い"},  # 残弾の少ない時の「付き合い」でも数える
+            {"room_id": 2, "kind": "付き合い", "cap": 50, "sortie": None, "edge": 10, "class": "付き合い"}])  # 付き合い投げの先は数えない
+        _status(s, 11, "枯渇", 1000, 100, 100, [{"room_id": 1, "kind": "掛け持ち", "cap": 1000, "sortie": None, "edge": 500}])  # 0.2・0.5
+        _status(s, 12, "離脱", 9999, 100, 100, [{"room_id": 1, "kind": "推し", "cap": 9999, "sortie": 1.0, "edge": 500}])  # 離脱は 0
         assert not heat.power_due(s)  # ステータスをまだ作り終えていない
         s.set_meta(gs.RUN_META, json.dumps({"done": NOW}))
         assert heat.power_due(s)
@@ -150,15 +152,19 @@ def test_power_step_builds_a_little_at_a_time_when_idle(tmp_path, monkeypatch):
     from showroom_keeper import gifter_status as gs, room_parts
 
     monkeypatch.setattr(heat, "CHUNK", 2)
+    monkeypatch.setattr(heat, "CHUNK_BUSY", 1)
     with Store(tmp_path) as s:
         for u in range(5):
-            _status(s, u + 1, "安定", 100, 10, 10, [{"room_id": 1, "share": 1.0, "sortie": 1.0, "class": "支え"}])
+            _status(s, u + 1, "安定", 100, 10, 10, [{"room_id": 1, "kind": "推し", "cap": 100, "sortie": 1.0, "edge": 1000}])
         s.set_meta(gs.RUN_META, json.dumps({"done": NOW}))
-        monkeypatch.setattr(room_parts, "idle", lambda now=None: False)
-        assert not heat.power_step(s, NOW)  # 暇でなければ何もしない
+        monkeypatch.setattr(heat, "quiet", lambda: False)
+        assert not heat.power_step(s, NOW)  # ディスクが混んでいれば何もしない
+        monkeypatch.setattr(heat, "quiet", lambda: True)
+        monkeypatch.setattr(room_parts, "idle", lambda now=None: False)  # 管理画面が使われていても、少しずつ進む
+        assert heat.power_step(s, NOW) and heat._runs[str(s.state_dir)].after == 1
         monkeypatch.setattr(room_parts, "idle", lambda now=None: True)
-        steps = 0
+        steps = 1
         while heat.power_step(s, NOW):
             steps += 1
-        assert steps == 3  # 2 人・2 人・1 人 (足し終えて保存)
+        assert steps == 4  # 1 人 (使われている間)・2 人・2 人 (足し終えて保存)
         assert s.scalar("SELECT people FROM room_power WHERE room_id=1") == 5
