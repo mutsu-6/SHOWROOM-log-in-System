@@ -217,6 +217,23 @@ def test_analyze_candidates_fans_and_similar_rooms(collected):
     assert 50 in [c["user_id"] for c in research.analyze(tmp_path, ["support"], max_age=0)["candidates"]]
 
 
+def test_analysis_reuses_each_gifters_summary_for_a_while(collected, monkeypatch):
+    """数え直しても、人ごとのまとめ (見るルームに関係ない分) は SUMMARY_TTL 秒使い回し、読み直さない。
+    見るルームを変えても、使い回した分から作った結果は、読み直して作ったものと同じ。"""
+    tmp_path = collected[0]
+    first = research.analyze(tmp_path, ["support"])
+    seen = {g["user_id"] for kind in ("candidates", "fans", "signup_candidates") for g in first[kind]}
+    read = []
+    real = research._event_stats
+    monkeypatch.setattr(research, "_event_stats", lambda s, uids: read.append(list(uids)) or real(s, uids))
+    drop = {"analyzed_at", "base_at", "analysis_seconds", "view_seconds"}
+    again = {k: v for k, v in research.analyze(tmp_path, ["other"], max_age=0).items() if k not in drop}
+    assert len(read) == 1 and seen and not seen & set(read[0]) and again["fans"]
+    monkeypatch.setattr(research, "SUMMARY_TTL", 0)  # 使い回さない
+    fresh = {k: v for k, v in research.analyze(tmp_path, ["other"], max_age=0).items() if k not in drop}
+    assert read[-1] and fresh == again
+
+
 def test_recorded_only_rooms_are_counted(tmp_path):
     record_gift(tmp_path, "nowhere", 9, {"t": 2, "u": 70, "ac": "記録だけ", "g": 5, "n": 2, "created_at": NOW - 60})
     r = research.analyze(tmp_path, [])
