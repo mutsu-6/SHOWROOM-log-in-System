@@ -2,6 +2,7 @@
 
 動いている版は、tools/update.sh が作り直す前に showroom_keeper/VERSION に書く (コミットの番号と日時)。
 最新の版は、GitHub の公開 API から 1 時間に 1 回だけ、別のスレッドで調べる (画面の表示は待たせない)。
+動いている版が変わった時 (自動の更新が、説明書だけの変更で起動し直さずに VERSION だけ進めた時など) は、すぐ調べ直す。
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ BRANCH = "claude/showroom-login-persistence-gfdxzo"
 CHECK_EVERY = 3600  # GitHub に最新の版を問い合わせる間隔 (秒)
 RETRY_AFTER = 600  # 調べられなかった時に、もう一度試すまでの時間 (秒)
 
-_latest: dict[str, Any] = {"at": 0.0, "data": None, "checking": False}
+# seen = 最後に調べ始めた時の動いている版、for = data を調べた時の動いている版
+_latest: dict[str, Any] = {"at": 0.0, "data": None, "checking": False, "seen": None, "for": None}
 _lock = threading.Lock()
 
 
@@ -45,11 +47,11 @@ def _fetch_latest() -> dict[str, Any]:
             "message": str(commit.get("message") or "").splitlines()[0][:120]}
 
 
-def _check(fetch: Callable[[], dict[str, Any]]) -> None:
+def _check(fetch: Callable[[], dict[str, Any]], seen: str | None) -> None:
     try:
         data = fetch()
         with _lock:
-            _latest.update(at=time.time(), data=data)
+            _latest.update(at=time.time(), data=data, **{"for": seen})
     except Exception as e:  # noqa: BLE001 - 調べられなくても動作には関係ない
         log.info("GitHub で最新の版を調べられませんでした (%s)", str(e).splitlines()[0] if str(e) else type(e).__name__)
         with _lock:
@@ -61,15 +63,21 @@ def _check(fetch: Callable[[], dict[str, Any]]) -> None:
 
 def info(fetch: Callable[[], dict[str, Any]] = _fetch_latest, wait: bool = False, path: Path = VERSION_FILE) -> dict[str, Any]:
     """{current, latest, outdated}。outdated は、分からない時 None。"""
+    cur = current(path)
+    seen = cur["commit"] if cur else None
     with _lock:
-        due = not _latest["checking"] and time.time() - _latest["at"] >= CHECK_EVERY
+        changed = seen != _latest["seen"]
+        due = not _latest["checking"] and (changed or time.time() - _latest["at"] >= CHECK_EVERY)
         if due:
-            _latest["checking"] = True
+            _latest.update(checking=True, seen=seen)
     if due:
-        t = threading.Thread(target=_check, args=(fetch,), daemon=True, name="version")
+        t = threading.Thread(target=_check, args=(fetch, seen), daemon=True, name="version")
         t.start()
         if wait:
             t.join()
-    cur, latest = current(path), _latest["data"]
-    outdated = None if not cur or not latest or not latest.get("commit") else not latest["commit"].startswith(cur["commit"][:7])
+    with _lock:
+        latest, stale = _latest["data"], _latest["for"] != seen
+    # 前の版のときに調べた答えではくらべない (「更新が残っています」と間違えて出さない)
+    outdated = (None if stale or not cur or not latest or not latest.get("commit")
+                else not latest["commit"].startswith(cur["commit"][:7]))
     return {"current": cur, "latest": latest, "outdated": outdated}

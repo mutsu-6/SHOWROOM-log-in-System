@@ -454,6 +454,15 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 self._json(feed.build(self._state_dir(), self._support(q),
                                       float(q.get("hours") or 24), int(q.get("min_point") or feed.DEFAULT_MIN_POINT)))
+            elif url.path == "/api/heat":
+                from . import heat
+
+                if q.get("kind") == "gifters":
+                    self._json(heat.gifters(self._state_dir(), q.get("month") or None))
+                else:
+                    slot = q.get("slot")
+                    self._json(heat.rooms(self._state_dir(), int(slot) if slot and slot.lstrip("-").isdigit() else None,
+                                          q.get("span", "12h"), q.get("compare", "week"), q.get("group", "genre")))
             elif url.path == "/api/news":
                 from . import news
 
