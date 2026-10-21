@@ -149,6 +149,7 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
 
 
 DISK_WARN_DAYS = 180  # ディスクがこの日数のうちにいっぱいになりそうなら知らせる
+BACKLOG_WARN_SHARE = 0.7  # 取り終わるまでに使う見込みが、収集を止めるまでの空きのこの割合を超えたら知らせる
 
 
 def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str]:
@@ -176,6 +177,11 @@ def build_alerts(state_dir: Path, login: dict[str, Any], now: float) -> list[str
             top = backup.growth(state_dir, now)[:1]
             most = f"。いちばん増えているのは {top[0][0]} (1 日 約 {top[0][1] / 1e6:.0f}MB)" if top and top[0][1] > 0 else ""
             out.append(f"このままだと、ディスクがあと {days:.0f} 日ほどでいっぱいになります (空き {free / 2**30:.1f}GB{most})")
+        # 取り終わるまでの分は、ここ数日の増え方では見えない (取り終わると増え方が急に下がる) ので、別に見積もる
+        left = backup.backlog(state_dir, now)
+        if left and left["bytes"] > (free - sweep.DISK_MIN) * BACKLOG_WARN_SHARE:
+            out.append(f"貢献ランキングを取り終わるまでに、ディスクをあと約 {left['bytes'] / 2**30:.1f}GB 使う見込みです"
+                       f" (残り {left['pending']:,} 件・空き {free / 2**30:.1f}GB)。足りなくなりそうです")
     st = sweep.state()
     if st.get("enabled") and st.get("last_step_at") and not st.get("disk_low") and now - st["last_step_at"] > 3600:
         out.append(f"全ルームの収集が {(now - st['last_step_at']) / 3600:.0f} 時間進んでいません (「{st.get('doing') or ''}」で止まっています)")

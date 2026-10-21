@@ -141,9 +141,10 @@ class Config:
     # 開催中のイベントの推移・配信中の一覧などは、割合に数えず先に行う)。ページが遅くなった時は下げる
     research_ranking_share: float = 0.7
     research_archive_gap: float = 6.0  # Internet Archive への問い合わせの間隔 (秒)
-    # research.db のバックアップ (state_dir/backup/ に SQLite のバックアップの仕組みで写す) の時刻 (日本時間、毎日) と残す数
+    # research.db のバックアップ (state_dir/backup/ に縮めて写す) の時刻 (日本時間、毎日) と残す数
+    # (古い日は Google Cloud のディスクの写し 14 日分で戻すので 1 つ。2026-10-21 に利用者が決めた)
     research_backup_times: str = "4:00"
-    research_backup_keep: int = 2
+    research_backup_keep: int = 1
     # バックアップをサーバーの外にも送る Google Cloud Storage のバケット名 (空なら送らない。VM に書き込む権限が要る)
     research_backup_gcs: str = ""
     # リアルタイム視聴者数を取得する (SHOWROOM のサロン形式で使われる在室確認 API。要ログイン)
