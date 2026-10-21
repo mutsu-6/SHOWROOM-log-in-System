@@ -50,11 +50,10 @@ def _run(state_dir: Path, mark: bool = True) -> None:
         with Store(state_dir) as s:
             explore.ensure_room_totals(s)
             files = listing._record_files(state_dir)
-            try:  # どちらも 1 回だけ (終われば何もしない)
-                explore.ensure_gift_event_indexes(s, memory.holding)
-                explore.repair_doubled_gifts(state_dir, s, files, memory.holding)
+            try:
+                explore.ensure_gift_event_indexes(s, memory.holding)  # 1 回だけ (作り終えれば何もしない)
             except Exception as e:  # noqa: BLE001 - できなくても、新しい分は足す
-                log.warning("ギフトの表の索引の作り替え・二重に足した所の直しができませんでした: %s", e)
+                log.warning("ギフトの表の索引を作り替えられませんでした: %s", e)
             for key in files:
                 for fn in (explore.update_gift_senders, explore.update_gift_daily):  # 送り主の表は、ギフト 1 件ずつの表と一緒に足す
                     try:

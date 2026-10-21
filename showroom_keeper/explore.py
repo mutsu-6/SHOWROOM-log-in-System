@@ -162,63 +162,6 @@ def ensure_gift_event_indexes(s: Store, holding: Any = lambda: False) -> None:
             c.execute(f"DROP INDEX IF EXISTS {old}")
 
 
-REPAIR_KEY = "gift_repair_2026_10_21"  # 二重に足した所を 1 回だけ探して直す (meta に、どのルームまで見たか。終わったら "done")
-REPAIR_BUDGET = 20.0  # 1 回に探す秒数 (超えたら、次に頼まれた時に続きから)
-
-
-def _file_rows(path: Path, upto: int) -> int:
-    """記録のファイルの upto バイトまでの、表に足す行 (送り主と時刻のある行) の数。"""
-    n = 0
-    with path.open("rb") as f:
-        for line in f.read(upto).splitlines():
-            try:
-                g = json.loads(line)
-                if isinstance(g, dict) and g.get("user_id") is not None and "at" in g:
-                    int(g["user_id"]), float(g["at"])
-                    n += 1
-            except (ValueError, TypeError):
-                continue
-    return n
-
-
-def repair_doubled_gifts(state_dir: Path, s: Store, files: dict[str, Path], holding: Any = lambda: False) -> list[str]:
-    """2026-10-21 に別のプロセスと同時に足して二重になったルームを探し、そのルームの分だけ最初から足し直す。戻り値は直したルーム。
-
-    ルームごとに、どこまで読んだかの位置までのファイルの行の数と、表の件数 (gift_events の行・送り主の表の回数の合計) をくらべ、
-    多いルームだけ、送り主の表・ルームごとの件数・ギフト 1 件ずつの表の、そのルームの分を消して読み直す
-    (サーバーで 8 ルームほど・およそ 150 件。名前の表は「最後に使った時刻」なので、二重になっても値は変わらず、消さない)。
-    1 回に REPAIR_BUDGET 秒まで。視聴を先にする時 (holding()) は、そこで止めて次に続きから。
-    """
-    seen = s.meta(REPAIR_KEY)
-    if seen == "done":
-        return []
-    started, fixed = time.monotonic(), []
-    keys = sorted(k for k in files if seen is None or k > seen)
-    for key in keys:
-        if time.monotonic() - started > REPAIR_BUDGET or holding():
-            return fixed
-        with _sender_lock, _event_lock:  # 足すのと重ならないように
-            ev = s.one("SELECT pos FROM gift_event_pos WHERE room_key=?", (key,))
-            se = s.one("SELECT pos FROM gift_sender_pos WHERE room_key=?", (key,))
-            bad = False
-            if ev is not None:
-                have = s.one("SELECT COUNT(*) FROM gift_events WHERE room_key=?", (key,))[0]
-                bad = have > _file_rows(files[key], ev["pos"])
-            if not bad and se is not None:
-                have = s.one("SELECT COALESCE(SUM(times), 0) FROM gift_senders WHERE room_key=?", (key,))[0]
-                bad = have > _file_rows(files[key], se["pos"])
-            if bad:
-                with s.tx() as c:
-                    for t in ("gift_events", "gift_event_pos", "gift_senders", "gift_sender_pos", "gift_room_totals"):
-                        c.execute(f"DELETE FROM {t} WHERE room_key=?", (key,))
-                fixed.append(key)
-            s.set_meta(REPAIR_KEY, key)
-        if bad:
-            update_gift_senders(state_dir, s, key, files)  # ギフト 1 件ずつの表も一緒に、最初から足し直す
-    s.set_meta(REPAIR_KEY, "done")
-    return fixed
-
-
 _event_lock = threading.Lock()
 
 

@@ -290,30 +290,6 @@ def test_adding_gifts_from_two_processes_at_once_does_not_double(tmp_path, monke
         assert s.scalar("SELECT records FROM gift_room_totals") == 3
 
 
-def test_doubled_rooms_are_found_and_added_again(tmp_path):
-    db = tmp_path
-    (db / "cache").mkdir()
-    (db / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 1, "free": True}}}))
-    for room in ("a_room", "b_room"):
-        for k in range(3):
-            record_gift(db, room, 1, {"u": 55 + k, "ac": "名前", "g": 1, "n": 1, "created_at": NOW + k})
-    files = listing._record_files(db)
-    with Store(db) as s:
-        for room in files:
-            explore.update_gift_senders(db, s, room, files)
-        with s.tx() as c:  # b_room だけ、同じギフトを 2 回足した形にする
-            c.execute("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (55, ?, 'b_room', 1, 1)", (NOW,))
-            c.execute("UPDATE gift_senders SET times=times+1 WHERE room_key='b_room' AND user_id=55")
-            c.execute("UPDATE gift_room_totals SET records=records+1 WHERE room_key='b_room'")
-        assert explore.repair_doubled_gifts(db, s, files) == ["b_room"]
-        for room in files:
-            assert s.scalar("SELECT COUNT(*) FROM gift_events WHERE room_key=?", (room,)) == 3
-            assert s.scalar("SELECT SUM(times) FROM gift_senders WHERE room_key=?", (room,)) == 3
-            assert s.scalar("SELECT records FROM gift_room_totals WHERE room_key=?", (room,)) == 3
-        assert explore.repair_doubled_gifts(db, s, files) == []  # 1 回だけ
-        assert s.meta(explore.REPAIR_KEY) == "done"
-
-
 def test_gift_room_index_is_built_in_the_background_on_old_databases(tmp_path, monkeypatch):
     """前からある research.db (ギフト 1 件ずつの表に行があり、前の索引だけ) では、起動の時には作らず、裏の仕事で 1 回だけ作り替える。"""
     from showroom_keeper import research_store
