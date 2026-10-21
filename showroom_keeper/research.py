@@ -20,6 +20,7 @@ SHOWROOM が混んでいる・止められていそうなときは間隔を自�
 from __future__ import annotations
 
 import heapq
+import json
 import logging
 import math
 import threading
@@ -830,21 +831,29 @@ def _user_names(store: Store, rec: _Recorded | None, uids: list[int]) -> dict[in
 
 def _summary(uid: int, name: str | None, slots: dict[int, dict[str, Any]], ev: Any, gifts: list[Any],
              rooms: _Rooms, support: set[int], signup: tuple[float, float, float] | None = None) -> dict[str, Any]:
+    part = _summary_part(slots, ev, gifts, support)
+    return _summary_from(uid, name, part, {rid: room_score(v) for rid, v in slots.items() if rid in support}, rooms, support, signup)
+
+
+SUMMARY_TOP = 50  # 人ごとのまとめに残す、送ったポイントの多いルームの数 (見るルームを除いて上位 3 つを出すため)
+
+
+def _summary_part(slots: dict[int, dict[str, Any]], ev: Any, gifts: list[Any], support: set[int] = frozenset()) -> dict[str, Any]:
+    """1 人のまとめのうち、見るルームに関係ない分 (使い回せる分)。"""
     scores = {rid: room_score(v) for rid, v in slots.items()}
     total = sum(scores.values())
-    other = {rid: s for rid, s in scores.items() if rid not in support and s > 0}
-    top = sorted(other.items(), key=lambda kv: -kv[1])
+    top = sorted(((rid, s) for rid, s in scores.items() if s > 0), key=lambda kv: -kv[1])
+    # 上位 SUMMARY_TOP ルームを残す (ほかの見るルームでも、それを除いた上位 3 つを出せるように)。
+    # 今の見るルームを除いた上位 3 つが入りきらなければ、それも足す
+    keep = top[:SUMMARY_TOP]
+    short = 3 - sum(1 for rid, _ in keep if rid not in support)
+    if short > 0:
+        keep += [kv for kv in top[SUMMARY_TOP:] if kv[0] not in support][:short]
     h = habits(gifts)
     return {
-        "user_id": uid, "name": name or "(名前なし)",
-        # 推測した登録時期と、その前後の目印 (この間に登録したと考えられる)
-        "signup_at": signup and signup[0], "signup_from": signup and signup[1], "signup_to": signup and signup[2],
-        "support_points": sum(s for rid, s in scores.items() if rid in support),
-        "other_points": sum(other.values()), "total_points": total,
-        "room_count": sum(1 for s in scores.values() if s > 0),
-        # いちばん多く送るルームの割合 (1 に近いほど 1 つのルームに集中している)
+        "total": total, "room_count": sum(1 for s in scores.values() if s > 0),
         "focus": round(max(scores.values()) / total, 2) if total else None,
-        "top_rooms": [{"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "points": s} for rid, s in top[:3]],
+        "top": [[rid, s] for rid, s in keep],
         "event_count": ev["n"] if ev else 0,
         "event_points": ev["p"] if ev else 0,
         "best_rank": ev["best"] if ev else None,
@@ -852,6 +861,67 @@ def _summary(uid: int, name: str | None, slots: dict[int, dict[str, Any]], ev: A
         "habits": None if h is None else {k: h[k] for k in ("times", "top_weekday", "top_hours", "avg_point", "last_at")},
         "sources": sorted({src for v in slots.values() for src in ("recorded", "cumulative", "events") if v[src]}),
     }
+
+
+def _summary_from(uid: int, name: str | None, part: dict[str, Any], sup_scores: dict[int, int], rooms: _Rooms, support: set[int],
+                  signup: tuple[float, float, float] | None = None) -> dict[str, Any]:
+    """使い回せる分 (part) に、見るルームの分 (sup_scores: 見るルーム → その人が送ったポイント) を当てはめる。"""
+    support_points = sum(sup_scores.values())
+    top = [(rid, s) for rid, s in part["top"] if rid not in support][:3]
+    return {
+        "user_id": uid, "name": name or "(名前なし)",
+        # 推測した登録時期と、その前後の目印 (この間に登録したと考えられる)
+        "signup_at": signup and signup[0], "signup_from": signup and signup[1], "signup_to": signup and signup[2],
+        "support_points": support_points,
+        "other_points": part["total"] - support_points, "total_points": part["total"],
+        "room_count": part["room_count"],
+        # いちばん多く送るルームの割合 (1 に近いほど 1 つのルームに集中している)
+        "focus": part["focus"],
+        "top_rooms": [{"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "points": s} for rid, s in top],
+        "event_count": part["event_count"], "event_points": part["event_points"], "best_rank": part["best_rank"],
+        "visits": part["visits"], "habits": part["habits"], "sources": part["sources"],
+    }
+
+
+SUMMARY_TTL = 6 * 3600  # 分析で、人ごとのまとめ (見るルームに関係ない分) を使い回す時間 (秒)
+
+
+class _SummaryCache:
+    """分析で出す人 (1,700 人ほど) の、見るルームに関係ないまとめを SUMMARY_TTL 秒使い回す (cache の小さな DB)。
+
+    前は 1 時間ごとの数え直しのたびに、全員の user_room・貢献ランキング・記録したギフトを読み直していて、
+    サーバーで見るルームごとの集計が 342 秒 (そのうちディスクから読む所が 232 秒。2026-10-21 に Cursor が測った)。
+    同じ人は数え直しても多くが同じなので、作ってから SUMMARY_TTL 秒たった人だけ読み直す。
+    """
+
+    def __init__(self, state_dir: Path):
+        path = Path(state_dir) / "cache" / "analysis-summary.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS s (user_id INTEGER PRIMARY KEY, at REAL, data TEXT)")
+
+    def get(self, uids: list[int], now: float) -> dict[int, dict[str, Any]]:
+        out = {}
+        for part in _chunks(sorted(uids)):
+            for uid, data in self.conn.execute(f"SELECT user_id, data FROM s WHERE user_id IN ({','.join('?' * len(part))}) AND at > ?",
+                                               (*part, now - SUMMARY_TTL)):
+                out[uid] = json.loads(data)
+        return out
+
+    def put(self, parts: dict[int, dict[str, Any]], now: float) -> None:
+        self.conn.execute("BEGIN")
+        try:
+            self.conn.execute("DELETE FROM s WHERE at <= ?", (now - SUMMARY_TTL,))
+            self.conn.executemany("INSERT OR REPLACE INTO s VALUES (?, ?, ?)",
+                                  [(uid, now, json.dumps(p, ensure_ascii=False)) for uid, p in sorted(parts.items())])
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        self.conn.execute("COMMIT")
+
+    def close(self) -> None:
+        self.conn.close()
 
 
 _analysis: dict[Any, tuple[float, dict[str, Any]]] = {}  # 見るルームごとの結果 (土台を数えた時刻, 結果)
@@ -1284,22 +1354,27 @@ def _analyze_base(state_dir: Path, limit: int) -> dict[str, Any]:
             "trend": trend, "signup_years": signup_years}
 
 
-def _support_points(s: Store, rooms: _Rooms, rec: _Recorded, sup: set[int]) -> dict[int, int]:
-    """見るルームに送ったポイント (人ごと)。ルームごとに、累計ランキング・貢献ランキング・記録したギフトの大きい方を足す。"""
+def _support_scores(s: Store, rooms: _Rooms, rec: _Recorded, sup: set[int]) -> dict[int, dict[int, int]]:
+    """見るルームに送ったポイント (人 → 見るルーム → pt)。ルームごとに、累計ランキング・貢献ランキング・記録したギフト
+    (ルームの記録の合計) の大きい方 (room_score と同じ)。"""
     pts: dict[tuple[int, int], int] = {}
     for part in _chunks(sorted(sup)):
         for uid, rid, pt in s.conn.execute(f"""SELECT user_id, room_id, MAX(cumulative, events) FROM user_room
                                                WHERE room_id IN ({','.join('?' * len(part))}) AND MAX(cumulative, events) > 0""",
                                            part):
             pts[(uid, rid)] = pt
+    recorded: dict[tuple[int, int], int] = defaultdict(int)
     for (uid, key), pt in rec.points.items():
         if pt:
             rid = rooms.id(key)
             if rid in sup:
-                pts[(uid, rid)] = max(pts.get((uid, rid), 0), pt)
-    out: dict[int, int] = defaultdict(int)
-    for (uid, _), pt in pts.items():
-        out[uid] += pt
+                recorded[(uid, rid)] += pt
+    for pair, pt in recorded.items():
+        if pt > pts.get(pair, 0):
+            pts[pair] = pt
+    out: dict[int, dict[int, int]] = defaultdict(dict)
+    for (uid, rid), pt in pts.items():
+        out[uid][rid] = pt
     return dict(out)
 
 
@@ -1342,7 +1417,8 @@ def _analyze_view(state_dir: Path, base: dict[str, Any], support: list[str], lim
         c.execute("ATTACH DATABASE ? AS b", (str(Path(state_dir) / "cache" / base["db"]),))
         try:
             _rec_names(s, rec)
-            points = _support_points(s, rooms, rec, sup) if sup else {}
+            sup_scores = _support_scores(s, rooms, rec, sup) if sup else {}
+            points = {uid: sum(v.values()) for uid, v in sup_scores.items()}
             fan_order = sorted(points, key=lambda u: (-points[u], u))
             fan_count = len(fan_order)
             fan_ids = fan_order[:limit]
@@ -1382,16 +1458,27 @@ def _analyze_view(state_dir: Path, base: dict[str, Any], support: list[str], lim
         trend = base["trend"]
         trend_ids = [r["user_id"] for kind in ("falling", "rising", "hidden") for r in trend[kind]]
         uids = list(dict.fromkeys(fan_ids + cand_ids + extra_ids + trend_ids))
-        evs, names = _event_stats(s, uids), _user_names(s, rec, uids)
+        names = _user_names(s, rec, uids)
         signup = _signup(s, rec)
-        # ルームごとの内訳は SUMMARY_STEP 人ずつまとめて読み、まとめを作ったら捨てる
-        # (前は 1 人ずつ読んでいて、サーバーで 1,400 回・24 秒。全員を一度に読むと、数万ルームに出てくる人もいてメモリが足りなくなる)
-        summary = {}
-        for part in _chunks(uids, SUMMARY_STEP):
-            slots = _slots(s, rooms, rec, part)
-            summary.update({u: _summary(u, names.get(u), slots.get(u, {}), evs.get(u), rec.gifts.get(u, []),
-                                        rooms, sup, signup.guess(u)) for u in part})
-            del slots
+        now = time.time()
+        cache = _SummaryCache(state_dir)
+        try:
+            parts = cache.get(uids, now)  # 見るルームに関係ない分は、SUMMARY_TTL 秒使い回す
+            todo = [u for u in uids if u not in parts]
+            evs = _event_stats(s, todo)
+            # ルームごとの内訳は SUMMARY_STEP 人ずつまとめて読み、まとめを作ったら捨てる
+            # (前は 1 人ずつ読んでいて、サーバーで 1,400 回・24 秒。全員を一度に読むと、数万ルームに出てくる人もいてメモリが足りなくなる)
+            made = {}
+            for part in _chunks(todo, SUMMARY_STEP):
+                slots = _slots(s, rooms, rec, part)
+                made.update({u: _summary_part(slots.get(u, {}), evs.get(u), rec.gifts.get(u, []), sup) for u in part})
+                del slots
+            if made:
+                cache.put(made, now)
+        finally:
+            cache.close()
+        parts.update(made)
+        summary = {u: _summary_from(u, names.get(u), parts[u], sup_scores.get(u, {}), rooms, sup, signup.guess(u)) for u in uids}
         rec.gifts.close()
         room_list = [{**{k: v for k, v in r.items() if k != "room_id"}, "support": r["room_id"] in sup} for r in base["rooms"]]
         return {"mode": "support" if sup_ids else "all",
