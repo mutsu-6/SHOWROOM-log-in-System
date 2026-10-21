@@ -158,6 +158,9 @@ CREATE INDEX IF NOT EXISTS gift_senders_user ON gift_senders(user_id);
 CREATE TABLE IF NOT EXISTS gift_sender_names (
     user_id INTEGER, name TEXT, folded TEXT, at REAL, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS gift_sender_pos (room_key TEXT PRIMARY KEY, pos INTEGER, size INTEGER, at REAL);
+-- ルームごとの、送り主の表に足したギフトの件数と最後の時刻 (ルームの一覧に出す。前は一覧を開くたびに、記録のファイルを全部読んでいた)。
+-- explore.update_gift_senders が送り主の表と一緒に足す。前に足した分は catchup が 1 回だけ送り主の表から作る (meta の gift_room_totals)
+CREATE TABLE IF NOT EXISTS gift_room_totals (room_key TEXT PRIMARY KEY, records INTEGER, last_at REAL);
 -- 記録したギフト 1 件ずつ (人・ルームで引けるように。explore.update_gift_events が、記録のファイルの新しい分だけ足す)。
 -- ギフターのページ・分析で、1 人のギフトや、1 つのルームの全員のギフトを、ファイルを読み直さずに引く
 -- (前は開くたびにファイルを読み直していた。送る量の多い人のページで 9.2 秒。2026-10-19 に Cursor が測った)

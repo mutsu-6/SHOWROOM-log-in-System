@@ -48,6 +48,7 @@ def _run(state_dir: Path, mark: bool = True) -> None:
 
     try:
         with Store(state_dir) as s:
+            explore.ensure_room_totals(s)
             files = listing._record_files(state_dir)
             for key in files:
                 for fn in (explore.update_gift_senders, explore.update_gift_daily):  # 送り主の表は、ギフト 1 件ずつの表と一緒に足す
