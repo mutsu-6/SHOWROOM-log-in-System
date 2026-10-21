@@ -2855,7 +2855,7 @@ async function loadRoomPower(rid, key) {
       ${tile("主砲・主力", `${num(d.guns)} <small>人</small> ・ ${num(d.mains)} <small>人</small>`, `支えも入れて ${num(d.people)} 人`)}
     </div>
     <div class="row" style="margin:8px 0">${ammoLegend()}</div>
-    <div class="hint" style="margin-top:0">大きさ = その人がこのルームに勝負の時に出せる量 (火力 × このルームに向ける割合 × 出動率)、色 = その人の今月の残弾。
+    <div class="hint" style="margin-top:0">大きさ = その人がこのルームに勝負の時に出せる量 (このルームでの本気の上限 × 出動率)、色 = その人の今月の残弾。
       大きくて緑の人は、終盤にまだ来られる人です。付き合い投げの人は数えません。出せる量の多い ${num(d.gifters.length)} 人まで。${ago(d.at)}に作った分 (1 日 1 回、サーバーが暇な時に作り直します)</div>
     <div class="hm-wrap"><div class="hm"></div></div>`;
   const wrap = box.querySelector(".hm-wrap"), map = box.querySelector(".hm");
