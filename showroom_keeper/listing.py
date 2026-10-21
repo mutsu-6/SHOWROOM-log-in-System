@@ -51,7 +51,8 @@ _name_misses: dict[str, float] = {}  # {room_url_key: 次に問い合わせて�
 _file_cache: dict[Path, tuple[float, int, list[dict[str, Any]]]] = {}
 # 記録を覚えておく行数の上限 (グリッターのルームまで記録するとファイルが多いので、メモリ 2GB を使い切らないように。
 # 超えたら、長く使っていないファイルから忘れ、次に要る時に読み直す)
-FILE_CACHE_ROWS = 200_000  # (2026-10-19 に 60 万行から下げた。1 行が 0.5KB ほどになるので、60 万行で 300MB を超える)
+FILE_CACHE_ROWS = 30_000  # (2026-10-19 に 60 万行から 20 万行へ、2026-10-21 に 3 万行へ下げた。1 行が 0.5KB ほど。
+# ルームの一覧・ギフターのページ・ギフターの一覧は表から読むので、ファイルを読むのは 1 つのルームの分析 (誘い投げなど) と、表にまだ無いルームだけ)
 _event_cache: tuple[float, list[dict[str, Any]]] | None = None
 _live_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
 _search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
@@ -291,12 +292,13 @@ def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, 
     if lookup:
         fill_unknown_names(state_dir, keys, get=None if lookup is True else lookup)
     names = room_names(state_dir)
+    totals = _room_totals(state_dir, files)
     out: dict[str, dict[str, Any]] = {}
     for key in keys:
         info = names.get(key) or {}
         if key == typed and key not in registered and key not in files and not info.get("room_id"):
             continue  # SHOWROOM に無いルーム
-        rows = _load_file(files[key]) if key in files else []
+        records, last_at = totals.get(key) or (0, None)
         item = _room_item(key, live.get(key) or info.get("name"))
         tags = item["tags"]
         if key in settings.get("rooms", []):
@@ -309,10 +311,10 @@ def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, 
             tags.append("support")
         if key in settings.get("research_rooms", []):
             tags.append("research")
-        if rows:
+        if records:
             tags.append("has_records")
         item.update(room_id=info.get("room_id"), registered=key in registered, is_live=key in live,
-                    records=len(rows), last_at=max((g["at"] for g in rows), default=None), hit=key == typed)
+                    records=records, last_at=last_at, hit=key == typed)
         out[key] = item
     if showroom:
         for key, info in _quiet(lambda: showroom_live_rooms(get), {}).items():
@@ -326,6 +328,31 @@ def list_rooms(state_dir: Path, settings: dict[str, list[str]], live: dict[str, 
             item["is_live"] = item["is_live"] or info["is_live"]
             item["hit"] = True
     return list(out.values())
+
+
+def _room_totals(state_dir: Path, files: dict[str, Path]) -> dict[str, tuple[int, float | None]]:
+    """ルームごとの、記録したギフトの件数と最後の時刻 {room_key: (件数, 最後の時刻)}。
+
+    送り主の表に足した分の件数の表 (gift_room_totals) から読む。前はルームの一覧を開くたびに、記録のファイルを全部読み
+    (サーバーで 954 ルーム・109MB)、読んだ中身を 152MB 覚えていた (2026-10-20 に Cursor が測った)。まだ足していない新しい分は、
+    裏の仕事 (catchup) が足すまで数えない。表にまだ無いルーム (ギフトの一覧が取れていないルームなど) だけファイルを読む。
+    """
+    from .research_store import Store
+
+    if not files:
+        return {}
+    catchup.soon(state_dir)
+    with Store(state_dir) as s:
+        if s.meta("gift_room_totals"):
+            rows = s.all("SELECT room_key, records, last_at FROM gift_room_totals")
+        else:  # 件数の表をまだ作っていない (入れ替えた直後): 送り主の表からまとめる
+            rows = s.all("SELECT room_key, SUM(times), MAX(last_at) FROM gift_senders GROUP BY room_key")
+    out = {r[0]: (r[1] or 0, r[2]) for r in rows}
+    for key, path in files.items():
+        if key not in out:
+            got = _load_file(path)
+            out[key] = (len(got), max((g["at"] for g in got), default=None))
+    return out
 
 
 def _quiet(fn: Any, default: Any) -> Any:
@@ -642,14 +669,17 @@ def _sender_rooms(state_dir: Path, user: int | None = None, since: float | None 
     return sorted((picked & set(files)) | (set(files) - done)), rows, names
 
 
-def _period_rows(state_dir: Path, since: float) -> tuple[list[str], list[Any], list[Any]]:
+def _period_rows(state_dir: Path, since: float, room: str | None = None) -> tuple[list[str], list[Any], list[Any]]:
     """期間を決めたギフターの一覧の、ギフト 1 件ずつの表 (gift_events) から SQL でまとめた分。戻り値は _sender_rooms と同じ形
     (読むルーム, [人ごとの合計, 人ごとの多いルーム TOP_ROOMS 個], 名前の行)。表に足し終えていないルームだけファイルを読む。
     前は、その間に送りのあったルーム (サーバーではほぼ全部の 816 ルーム・70MB) のファイルを読み、41〜44 秒・メモリ +520MB かかった (2026-10-19)。
+    room なら、そのルームだけ (1 つのルームのギフターの一覧。前はそのルームのファイルを読んでいた)。
     """
     from .research_store import Store
 
     files = _record_files(state_dir)
+    if room is not None:
+        files = {room: files[room]} if room in files else {}
     with Store(state_dir) as s:
         catchup.soon(state_dir)  # 新しい分は裏で足す (待たずに、前に足した分で数える)
         pos = {r[0]: r[1] for r in s.all("SELECT room_key, pos FROM gift_event_pos")}
@@ -667,7 +697,11 @@ def _period_rows(state_dir: Path, since: float) -> tuple[list[str], list[Any], l
         # 一覧に無いギフトは 0 pt・無料として数える (_points と同じ)。
         # CROSS JOIN でルームから先に読む (ふつうの JOIN だと、GROUP BY のために gift_events を人の索引で全部読むことがある)
         per_room = cur.execute(PERIOD_SQL, (since,)).fetchall()
-        names = cur.execute("SELECT user_id, name, at FROM gift_sender_names WHERE at >= ?", (since,)).fetchall()
+        if room is None:
+            names = cur.execute("SELECT user_id, name, at FROM gift_sender_names WHERE at >= ?", (since,)).fetchall()
+        else:  # そのルームに送った人の名前だけ
+            names = cur.execute("""SELECT n.user_id, n.name, n.at FROM gift_senders g JOIN gift_sender_names n USING(user_id)
+                                   WHERE g.room_key=? AND n.at >= ?""", (room, since)).fetchall()
     return sorted(set(files) - done), per_room, names
 
 
@@ -700,7 +734,9 @@ def _size(path: Path) -> int | None:
 
 
 LISTENERS_TTL = 60  # ギフターの一覧 (記録したギフト) を使い回す秒数 (何人もが続けて開いた時に、数え直さない)
-_listeners_cache: dict[tuple[str, Any, Any], tuple[float, dict[str, Any]]] = {}
+# 結果は、画面に送る形 (JSON のバイト列) で覚える。Python の形のままだと 2 万人で 50MB、JSON なら 11MB ほど (2026-10-20 に Cursor が測った)
+_listeners_cache: dict[tuple[str, Any, Any], tuple[float, bytes]] = {}
+LISTENERS_KEEP = 4  # 覚えておく一覧の数 (すべての期間・24 時間・7 日・30 日。1 つのルームの一覧もここに入り、古い方から忘れる)
 LISTENERS_STALE = 6 * 3600  # これより古い結果は返さずに数え直す (収集の合間に先に数えておくので、ふだんは古くならない)
 _listeners_lock = threading.Lock()
 _listeners_running: set[tuple[str, Any, Any]] = set()
@@ -724,6 +760,11 @@ def warm_listeners(state_dir: Path) -> None:
 
 def list_listeners(state_dir: Path, days: float | None = None, room: str | None = None) -> dict[str, Any]:
     """記録したギフトのリスナー一覧 (全ルームまたは 1 ルーム)。ポイントの多い順。LISTENERS_TTL 秒は前の結果を使い回す。"""
+    return json.loads(listeners_json(state_dir, days, room))
+
+
+def listeners_json(state_dir: Path, days: float | None = None, room: str | None = None) -> bytes:
+    """list_listeners を、画面に送る JSON のバイト列で (覚えている形のまま送る。送るたびに作り直さない)。"""
     key = (str(state_dir), days or None, room or None)
     hit = _listeners_cache.get(key)
     if hit and time.time() - hit[0] < LISTENERS_TTL:
@@ -738,12 +779,14 @@ def list_listeners(state_dir: Path, days: float | None = None, room: str | None 
     return _refresh_listeners(state_dir, days, room, key)
 
 
-def _refresh_listeners(state_dir: Path, days: float | None, room: str | None, key: tuple[str, Any, Any]) -> dict[str, Any]:
+def _refresh_listeners(state_dir: Path, days: float | None, room: str | None, key: tuple[str, Any, Any]) -> bytes:
     try:
-        out = _list_listeners(state_dir, days, room)
-        if len(_listeners_cache) > 20:
-            _listeners_cache.clear()
+        out = json.dumps(_list_listeners(state_dir, days, room), ensure_ascii=False).encode("utf-8")
+        _listeners_cache.pop(key, None)
         _listeners_cache[key] = (time.time(), out)
+        # 古い方から忘れる。ただし、ふだん開く「すべての期間」の一覧 (収集の合間に先に数えておくもの) は忘れない
+        for k in [k for k in list(_listeners_cache) if k[1:] != (None, None)][:max(0, len(_listeners_cache) - LISTENERS_KEEP)]:
+            _listeners_cache.pop(k, None)
         return out
     finally:
         with _listeners_lock:
@@ -783,7 +826,8 @@ def _list_listeners(state_dir: Path, days: float | None = None, room: str | None
     sender_names: list[Any] = []
     period: list[Any] = []
     if room:
-        records = _records(state_dir, room, since)
+        keys, period, sender_names = _period_rows(state_dir, since or 0, room)
+        records = [kg for key in keys for kg in _records(state_dir, key, since)]
     elif since is not None:
         keys, period, sender_names = _period_rows(state_dir, since)
         files = _record_files(state_dir)
@@ -874,9 +918,7 @@ def _listener_detail(state_dir: Path, user_id: Any, days: float | None = None) -
     except (TypeError, ValueError):
         raise ValueError("ユーザー ID は数字で指定してください") from None
     since = time.time() - days * 86400 if days else None
-    keys = _sender_rooms(state_dir, user=uid)[0]  # この人が送ったルーム (と、送り主の表にまだ足し終えていないルーム) のファイルだけ
-    files = _record_files(state_dir)
-    hits = [(key, g) for key in keys for key, g in _records(state_dir, key, since, files) if g.get("user_id") == uid]
+    hits, live_start = _user_gifts(state_dir, uid, since)
     if not hits:
         return {"user_id": uid, "found": False}
     catalog = gift_catalog(state_dir, list(dict.fromkeys(key for key, _ in hits)))
@@ -910,7 +952,7 @@ def _listener_detail(state_dir: Path, user_id: Any, days: float | None = None) -
         "days": [{"day": d, **v} for d, v in days_map.items()],
         "history": list(reversed(history[-500:])),
         "first_at": hits[0][1]["at"], "last_at": hits[-1][1]["at"],
-        "charts": _behavior(state_dir, hits, catalog, [r["key"] for r in ranked[:CHART_ROOMS]]),
+        "charts": _behavior(hits, catalog, [r["key"] for r in ranked[:CHART_ROOMS]], live_start),
     }
 
 
@@ -921,19 +963,67 @@ TIMING_MAX_MIN = 180  # これより後は最後の棒にまとめる
 SIZE_BINS = (1, 10, 100, 1000, 10000)  # 1 回に送ったポイントの区切り
 
 
-def _behavior(state_dir: Path, hits: list[tuple[str, dict[str, Any]]], catalog: dict[int, dict[str, Any]],
-              top_rooms: list[str]) -> dict[str, Any]:
-    """1 人のリスナーの行動のグラフ用の集計 (いつ・どこに・配信のどの辺りで・どれくらいずつ送るか)。"""
-    from datetime import timedelta
+def _user_gifts(state_dir: Path, uid: int, since: float | None) -> tuple[list[tuple[str, dict[str, Any]]], Any]:
+    """1 人の記録したギフト [(ルーム, {at, gift_id, num, name, live_id})] (時刻の順) と、ギフトの時刻から配信の始まりを返す関数。
 
-    # 配信の始まりは記録に無いので、そのルームの記録で、その配信の最初のギフトの時刻を使う
+    ギフト 1 件ずつの表 (gift_events) を人の索引で読む。前は、その人が送ったルームの記録のファイルを全部読んでいた
+    (覚えておく分と合わせて、サーバーで 152MB。2026-10-20 に Cursor が測った)。表にまだ足していないルームだけファイルを読む。
+    - 名前: その時に使っていた名前 (送り主の名前の表の、その名前を最後に使った時刻から)
+    - 配信の始まり: 配信中の一覧 (room_lives。5 分ごと) の始まりの時刻。前は、記録の中のその配信の最初のギフトの時刻を使っていた
+    """
+    from bisect import bisect_left, bisect_right
+
+    from .research_store import Store
+
     files = _record_files(state_dir)
-    live_start: dict[tuple[str, Any], float] = {}
-    for key in dict.fromkeys(k for k, _ in hits):
-        for g in _load_file(files[key]) if key in files else []:
-            lk = (key, g.get("live_id"))
-            if g["at"] < live_start.get(lk, float("inf")):
-                live_start[lk] = g["at"]
+    with Store(state_dir) as s:
+        catchup.soon(state_dir)  # 新しい分は裏で足す (待たずに、前に足した分で数える)
+        done = _added(files, {r[0]: r[1] for r in s.all("SELECT room_key, pos FROM gift_event_pos")})
+        rows = s.all("SELECT at, room_key, gift_id, num FROM gift_events WHERE user_id=? AND at >= ? ORDER BY at",
+                     (uid, since or 0))
+        hits = [(r[1], {"at": r[0], "user_id": uid, "gift_id": r[2], "num": r[3]}) for r in rows if r[1] in done]
+        used = sorted((r[1] or 0, r[0]) for r in s.all("SELECT name, at FROM gift_sender_names WHERE user_id=?", (uid,)))
+        keys = [k for k in dict.fromkeys(k for k, _ in hits)]
+        rooms = {k: r[0] for k in keys for r in [s.one("SELECT room_id FROM rooms WHERE key=? ORDER BY room_id LIMIT 1", (k,))]
+                 if r is not None}
+        lives: dict[str, list[tuple[float, float]]] = {}
+        if hits:
+            lo, hi = hits[0][1]["at"] - 86400, hits[-1][1]["at"]
+            for k, rid in rooms.items():
+                lives[k] = [(r[0], r[1] or r[0]) for r in s.all(
+                    "SELECT started_at, last_seen FROM room_lives WHERE room_id=? AND started_at BETWEEN ? AND ? ORDER BY started_at",
+                    (rid, lo, hi))]
+    # 表にまだ足していないルーム (足し始める前・ファイルを作り直した時) は、ファイルから
+    others = [k for k in files if k not in done]
+    if others:
+        sent = set(_sender_rooms(state_dir, user=uid)[0])
+        for key, g in _records(state_dir, None, since, {k: files[k] for k in others if k in sent}):
+            if g.get("user_id") == uid:
+                hits.append((key, g))
+        hits.sort(key=lambda kg: kg[1]["at"])
+    ats = [a for a, _ in used]
+    for _, g in hits:
+        if g.get("name") is None and used:  # その時に使っていた名前 = その時刻のあとで、最初に「最後に使った」名前
+            i = bisect_left(ats, g["at"])
+            g["name"] = used[min(i, len(used) - 1)][1]
+
+    from .room_analysis import LIVE_SEEN_GAP
+
+    def start_of(key: str, g: dict[str, Any]) -> float | None:
+        v = lives.get(key)
+        if not v:
+            return None
+        i = bisect_right([x[0] for x in v], g["at"]) - 1
+        return v[i][0] if i >= 0 and g["at"] <= v[i][1] + LIVE_SEEN_GAP else None
+
+    return hits, start_of
+
+
+def _behavior(hits: list[tuple[str, dict[str, Any]]], catalog: dict[int, dict[str, Any]],
+              top_rooms: list[str], start_of: Any) -> dict[str, Any]:
+    """1 人のリスナーの行動のグラフ用の集計 (いつ・どこに・配信のどの辺りで・どれくらいずつ送るか)。
+    start_of(ルーム, ギフト) は、そのギフトを送った配信の始まりの時刻 (分からなければ None)。"""
+    from datetime import timedelta
 
     daily: dict[str, dict[str, Any]] = {}
     heat = {kind: [[0] * 24 for _ in range(7)] for kind in ("paid", "free")}  # [曜日 (月=0)][時]
@@ -947,8 +1037,7 @@ def _behavior(state_dir: Path, hits: list[tuple[str, dict[str, Any]]], catalog: 
         d[kind] += pt
         d["rooms"][key if key in top_rooms else "_other"] += pt
         heat[kind][t.weekday()][t.hour] += pt
-        # live_id の無い記録 (イベントのルームで配信が分かる前の分) は、どの配信か分からないので数えない
-        start = live_start.get((key, g.get("live_id"))) if g.get("live_id") is not None else None
+        start = start_of(key, g)  # どの配信か分からないギフトは数えない
         if start is not None:
             timing[min(int((g["at"] - start) // 60), TIMING_MAX_MIN) // TIMING_BIN_MIN][kind] += 1
         if pt > 0:

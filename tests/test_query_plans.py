@@ -28,6 +28,8 @@ ALLOWED = [
     ("USING COVERING INDEX room_events_todo", "WHERE re.final=0", "取っていない分だけの索引を読む (取り終えた分・ポイント 0 の分は読まない)"),
     ("SCAN gift_senders", "first_at, last_at, name, unknown FROM gift_senders",
      "ギフターの一覧・分析で、記録したギフトの全員の合計を 1 回読む (サーバーで 8 万行・8MB。前は記録のファイル全部 66MB を読み直していた)"),
+    ("SCAN gift_senders", "INSERT OR REPLACE INTO gift_room_totals",
+     "ルームごとの件数の表を、前に足した送り主の表から作る。入れ替えた時に 1 回だけ"),
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
     ("SCAN gifter_status", "SELECT data FROM gifter_status", "ステータスの評価の区切りを作る。1 日 1 回、回し終えた時だけ (パワーギフターの分だけ)"),
     ("SCAN gifter_status", "DELETE FROM gifter_status WHERE at <", "パワーギフターでなくなった人を消す。1 日 1 回、回し終えた時だけ"),
@@ -293,8 +295,11 @@ def test_listener_lists_read_the_tables_as_intended(traced, monkeypatch):
         record_gift(traced[0], f"k{k + 1}", 1, {"u": 100 + k, "ac": "a", "g": 100, "n": 1, "created_at": NOW - 60 * k})
     check(traced, lambda d: listing.list_listeners(d, days=7))
     check(traced, lambda d: listing.listener_detail(d, 100))
+    assert any("FROM gift_events WHERE user_id" in " ".join(q.split()) for q, _ in traced[1])  # ギフターのページは 1 人分を索引で読んだ
     check(traced, lambda d: listing.list_listeners(d))
     assert any("sender_done" in q and "gift_senders" in q for q, _ in traced[1])  # 一時表を使う SQL も確かめた
+    check(traced, lambda d: listing.list_listeners(d, room="k1"))  # 1 ルームの一覧は、そのルームの送り主だけを読む
+    check(traced, lambda d: listing.list_rooms(d, {}))  # ルームの一覧は、ルームごとの件数の表を読む
 
 
 def test_feed_does_not_read_whole_tables(traced):
@@ -391,7 +396,7 @@ def test_watch_list_reads_only_the_watched_gifters(traced):
             c.execute("INSERT INTO gift_senders(room_key, user_id, times, last_at, name, points) VALUES ('k1', 999, 3, 1, 'b', 30)")
         s.set_watch(101, True, "", NOW)
     check(traced, lambda d: research.watch_list(d, ["k2"]))
-    assert not [p for q, plan in traced[1] for p in plan if p.startswith("SCAN gift_senders")]
+    assert not [p for q, plan in traced[1] for p in plan if p.startswith("SCAN gift_senders") and "gift_room_totals" not in q]
 
 
 def test_room_parts_do_not_read_whole_tables(traced, monkeypatch):

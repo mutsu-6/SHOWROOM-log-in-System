@@ -72,15 +72,15 @@ def test_listener_detail_shows_every_room(tmp_path, monkeypatch):
 
 
 def test_listener_pages_read_only_the_needed_files(tmp_path, monkeypatch):
-    """ギフターのページは、その人が送ったルームのファイルだけ、ギフターの一覧 (すべての期間) は送り主の表だけを読む
-    (前は開くたびに記録のファイル全部を読んでいた)。送り主の表にまだ足していないルームは、ファイルを読む。"""
+    """ギフターのページはギフト 1 件ずつの表、ギフターの一覧 (すべての期間) は送り主の表だけを読み、記録のファイルを読まない
+    (前は開くたびに記録のファイルを読んでいた)。表にまだ足していないルームは、ファイルを読む。"""
     now = _setup(tmp_path, monkeypatch)
     record_gift(tmp_path, "room_c", 3, {"t": 2, "u": 8, "ac": "はなこ", "g": 100, "n": 1, "created_at": now - 30})
     read = []
     real = listing._load_file
     monkeypatch.setattr(listing, "_load_file", lambda path: read.append(path.stem) or real(path))
     assert listing.listener_detail(tmp_path, "7")["total"]["points"] == 205
-    assert sorted(set(read)) == ["room_a", "room_b"]
+    assert read == []
     read.clear()
     every = {u["user_id"]: u for u in listing.list_listeners(tmp_path)["listeners"]}
     assert read == [] and every[8]["points"] == 110 and every[8]["room_count"] == 2
@@ -126,17 +126,23 @@ def test_listener_detail_charts_show_when_where_and_how_much(tmp_path, monkeypat
     record_gift(tmp_path, "room_c", 9, {"t": 2, "u": 5, "ac": "じろう", "g": 100, "n": 3, "created_at": start + 25 * 60})
     record_gift(tmp_path, "room_c", 9, {"t": 2, "u": 5, "ac": "じろう", "g": 1, "n": 10, "created_at": start + 5 * 3600})
     record_gift(tmp_path, "room_c", 10, {"t": 2, "u": 5, "ac": "じろう", "g": 1, "n": 2, "created_at": start + 2 * 86400})
-    record_gift(tmp_path, "room_c", None, {"t": 2, "u": 5, "ac": "じろう", "g": 1, "n": 1, "created_at": start + 2 * 86400 + 60})
+    record_gift(tmp_path, "room_c", None, {"t": 2, "u": 5, "ac": "じろう", "g": 1, "n": 1, "created_at": start + 2 * 86400 + 3600})
+    from showroom_keeper.research_store import Store
+
+    with Store(tmp_path) as s:  # 配信の始まりは、配信中の一覧 (room_lives) から
+        s.upsert_rooms([{"room_id": 300, "key": "room_c"}], "live", start)
+        s.conn.executemany("INSERT INTO room_lives(room_id, started_at, live_id, last_seen) VALUES (300, ?, ?, ?)",
+                           [(start, 9, start + 5 * 3600 + 60), (start + 2 * 86400, 10, start + 2 * 86400 + 600)])
     c = listing.listener_detail(tmp_path, 5)["charts"]
-    assert sum(t["paid"] + t["free"] for t in c["timing"]) == 3  # どの配信か分からない 1 回は数えない
+    assert sum(t["paid"] + t["free"] for t in c["timing"]) == 3  # どの配信か分からない (配信が終わったあとの) 1 回は数えない
     assert [d["day"] for d in c["daily"]] == ["2026-10-12", "2026-10-13", "2026-10-14"]  # 送らなかった日も 0 で出す
     assert c["daily"][0] == {"day": "2026-10-12", "paid": 300, "free": 0, "rooms": {"room_c": 300}}
     assert c["daily"][1]["free"] == 10 and c["daily"][2]["free"] == 3
     assert c["heatmap"]["paid"][0][21] == 300 and c["heatmap"]["free"][1][2] == 10  # 26 時 = 火曜 2 時
     timing = {t["from"]: t for t in c["timing"]}
-    assert timing[20]["paid"] == 1  # 他の人の最初のギフトから 25 分後
+    assert timing[20]["paid"] == 1  # 配信が始まってから 25 分後
     assert timing[180]["free"] == 1  # 180 分以降はまとめる
-    assert timing[0]["free"] == 1  # 別の配信では、その配信の最初のギフト
+    assert timing[0]["free"] == 1  # 別の配信では、その配信の始まり
     sizes = {s["from"]: s for s in c["sizes"]}
     assert sizes[100]["paid"] == 1 and sizes[10]["free"] == 1 and sizes[1]["free"] == 2
     assert c["rooms"] == ["room_c"]
@@ -483,3 +489,17 @@ def test_list_from_table_skips_senders_added_between_reads():
     top = [(1, "k1", 300), (2, "k1", 50)]  # 2 は合計に無い
     r = listing._from_table([totals, top], [], {}, {})
     assert [u["user_id"] for u in r["listeners"]] == [1] and r["listeners"][0]["rooms"][0]["points"] == 300
+
+
+def test_listener_lists_are_kept_as_json_and_only_a_few(tmp_path, monkeypatch):
+    """ギフターの一覧は JSON のバイト列で、LISTENERS_KEEP 個まで覚える。「すべての期間」の一覧は忘れない。"""
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(listing, "LISTENERS_TTL", 60)
+    monkeypatch.setattr(listing, "_listeners_cache", {})
+    monkeypatch.setattr(listing, "LISTENERS_KEEP", 2)
+    every = listing.listeners_json(tmp_path)
+    assert isinstance(every, bytes) and json.loads(every)["total"] == 2
+    for days in (1, 7, 30):
+        listing.listeners_json(tmp_path, days)
+    assert sorted(k[1] or 0 for k in listing._listeners_cache) == [0, 30]
+    assert listing.list_listeners(tmp_path)["total"] == 2

@@ -68,6 +68,7 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
         if row is not None and size < row["size"]:  # ファイルが小さくなった: 最初から
             with s.tx() as c:
                 c.execute("DELETE FROM gift_senders WHERE room_key=?", (room_key,))
+                c.execute("DELETE FROM gift_room_totals WHERE room_key=?", (room_key,))
             pos = 0
         if size <= pos:
             return
@@ -114,9 +115,24 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
                              ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
                           [(uid, name, _fold(name), at) for (uid, name), at in names.items()])
+            if senders:
+                c.execute("""INSERT INTO gift_room_totals(room_key, records, last_at) VALUES (?, ?, ?)
+                             ON CONFLICT(room_key) DO UPDATE SET records=records+excluded.records,
+                               last_at=MAX(COALESCE(last_at, 0), excluded.last_at)""",
+                          (room_key, sum(x[0] for x in senders.values()), max(x[1] for x in senders.values())))
             c.execute("""INSERT INTO gift_sender_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
                       (room_key, pos + end, pos + end, time.time()))
+
+
+def ensure_room_totals(s: Store) -> None:
+    """ルームごとの件数の表 (gift_room_totals) を、前に足した送り主の表から 1 回だけ作る (この表を足す前の research.db のため)。"""
+    if s.meta("gift_room_totals"):
+        return
+    with _sender_lock, s.tx() as c:  # 送り主の表に足すのと重ならないように
+        c.execute("""INSERT OR REPLACE INTO gift_room_totals(room_key, records, last_at)
+                     SELECT room_key, SUM(times), MAX(last_at) FROM gift_senders GROUP BY room_key""")
+        c.execute("INSERT INTO meta(k, v) VALUES ('gift_room_totals', '1') ON CONFLICT(k) DO UPDATE SET v=excluded.v")
 
 
 _event_lock = threading.Lock()

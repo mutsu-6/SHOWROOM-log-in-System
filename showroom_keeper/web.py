@@ -384,10 +384,10 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 self._json({"events": list_events(self._state_dir(), list(self.keeper.cfg.events))})
             elif url.path == "/api/listeners":
-                from .listing import list_listeners
+                from .listing import listeners_json
 
                 room = normalize_room_key(q["room"]) if q.get("room") else None
-                self._json(list_listeners(self._state_dir(), _days(q.get("days")), room))
+                self._send(200, listeners_json(self._state_dir(), _days(q.get("days")), room), "application/json; charset=utf-8")
             elif url.path == "/api/research":
                 from . import research
 
