@@ -329,6 +329,10 @@ def test_feed_does_not_read_whole_tables(traced):
 
 
 def test_heatmaps_do_not_read_whole_tables(traced):
+    import json
+
+    from showroom_keeper import gifter_status as gs
+
     """ヒートマップ: 12 時間の区切りを作る時は、その区切りに開いていたイベントの推移を索引で読み、画面は作った表と月の上位を読む。"""
     d = traced[0]
     i = heat.slot_of(NOW) - 2
@@ -340,7 +344,10 @@ def test_heatmaps_do_not_read_whole_tables(traced):
         s.add_progress(9, [{"room_id": r, "point": r} for r in range(1, 6)], t0 - 600)
         s.add_progress(9, [{"room_id": r, "point": r * 10} for r in range(1, 6)], t0 + 6 * 3600)
         s.conn.execute("INSERT INTO user_month(user_id, month, points) VALUES (101, ?, 5)", (month,))
-        s.conn.execute("INSERT INTO gifter_status(user_id, top_room) VALUES (101, 1)")
+        s.conn.execute("INSERT INTO gifter_status(user_id, top_room, version, data) VALUES (101, 1, ?, ?)", (gs.VERSION, json.dumps(
+            {"state": "安定", "fire": 1000, "hp": 100, "mp": 50, "rooms": [{"room_id": 1, "share": 1.0, "sortie": 1.0, "class": "主砲"}]})))
+        s.conn.execute("INSERT INTO room_info(room_id, league_id) VALUES (1, 9)")
+        s.set_meta(gs.RUN_META, json.dumps({"done": NOW}))
 
     def run(d):
         with Store(d) as s:
@@ -350,6 +357,11 @@ def test_heatmaps_do_not_read_whole_tables(traced):
         assert heat.rooms(d)["groups"]
         heat.rooms(d, span="week")
         assert heat.gifters(d, month)["groups"]
+        # 地力・残弾・リーグ (作っておいた room_power を索引で上から読む)
+        with Store(d) as s:
+            heat.build_power(s, NOW)
+        assert heat.rooms(d, size="power", group="league")["groups"]
+        assert heat.room_power(d, "1")["found"]
     check(traced, run)
 
 

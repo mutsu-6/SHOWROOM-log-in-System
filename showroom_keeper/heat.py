@@ -6,16 +6,25 @@ SHOWROOM には問い合わせない (集めた情報を読むだけ)。
   1 回だけ数えて room_point_12h に残す (全ルームの収集の小さな仕事として、1 回に 1 区切りずつ)。
   四角の大きさはその期間のポイント、色は前の期間 (既定は先週の同じ区切り) からの増え減り。配信ジャンル (アイドル・モデル・芸人など。room_lives.genre) ごとにまとめる (タイプにも切り替えられる)。
 - ギフター: 月ごとのイベントのポイント (user_month) を、最推しのルーム (gifter_status.top_room) ごとにまとめる。色は前の月からの増え減り。
+- 地力と残弾 (`docs/戦術メモ.md`・調査の「戦力クラスの考え方」): ルームの四角の大きさを「地力」(主砲・主力・支えの人が、勝負の時に
+  このルームに出せる量の合計)、色を「残弾」(そのうち今月まだ撃てる割合) にもできる。箱はリーグ (同じイベントに出られる相手) にもできる。
+  ギフターのステータス (gifter_status) を作り終えたあと、サーバーが暇な時に 1 回だけ足し上げて room_power に残す。ページはそれを読むだけ。
 """
 
 from __future__ import annotations
 
+import heapq
+import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .event_analysis import LEAGUES
 from .research_store import Store
+
+log = logging.getLogger(__name__)
 
 JST = timezone(timedelta(hours=9))
 SLOT = 12 * 3600  # 区切りの長さ (秒)
@@ -27,6 +36,12 @@ BACKFILL_DAYS = 28  # 初めて作る時に、さかのぼって作る日数 (�
 ROOM_LIMIT = 300  # ヒートマップに出すルームの数 (今の期間の上位と、前の期間の上位)
 GIFTER_LIMIT = 300  # ヒートマップに出すギフターの数 (今の月の上位と、前の月の上位)
 GROUP_LIMIT = 40  # まとめる箱の数の上限 (残りは「そのほか」)
+POWER_VERSION = 1  # 地力の作り方を変えたら上げる (作り直す)
+CHUNK = 2000  # 1 回に足すギフターの数 (手元で 5 万人を 2.6 秒。1 回を 0.1 秒ほどにする)
+PEOPLE = 60  # ルームごとに残す、出せる量の多い人の数 (ルームのページの中のギフターのマップ)
+SORTIE_UNKNOWN = 0.5  # 出動率が分からない人 (勝負の回が少ないルーム) の出動率 (gifter_status の power と同じ)
+FIGHTERS = ("主砲", "主力", "支え")  # 地力に数えるクラス (付き合いは数えない)
+STATES = ("上り調子", "安定", "温存中", "枯渇", "離脱")
 
 
 def slot_of(t: float) -> int:
@@ -104,6 +119,9 @@ def _grouped(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
         g["size"] = sum(x["size"] for x in g["items"])
         g["now"] = sum(x["now"] for x in g["items"])
         g["before"] = sum(x["before"] for x in g["items"])
+        if "power" in g["items"][0]:
+            g["power"] = sum(x["power"] for x in g["items"])
+            g["left_pt"] = sum(x["left_pt"] for x in g["items"])
     return out
 
 
@@ -113,12 +131,25 @@ def _item(now_pt: int, before_pt: int) -> dict[str, Any]:
             "change": (now_pt - before_pt) / before_pt if before_pt else None}
 
 
-def rooms(state_dir: Path, slot: int | None = None, span: str = "12h", compare: str = "week", group: str = "genre") -> dict[str, Any]:
+def _by_room(s: Store, sql: str, ids: list[int]) -> dict[int, Any]:
+    """room_id ごとの 1 行 (500 ずつ読む)。"""
+    out: dict[int, Any] = {}
+    for k in range(0, len(ids), 500):
+        part = ids[k:k + 500]
+        out.update({r[0]: r for r in s.all(sql.format(",".join("?" * len(part))), part)})
+    return out
+
+
+def rooms(state_dir: Path, slot: int | None = None, span: str = "12h", compare: str = "week", group: str = "genre",
+          size: str = "point") -> dict[str, Any]:
     """ルームのヒートマップ。slot は見る区切り (期間の最後の区切り。既定は作り終えた最新)、span は 12h か week、
     compare は week (先週の同じ期間と比べる) か prev (すぐ前の期間と比べる。week の時は同じ)、
-    group は箱の分け方: genre (配信ジャンル。株のヒートマップの業種のように) か type (ルームのタイプ)。"""
+    group は箱の分け方: genre (配信ジャンル。株のヒートマップの業種のように)・type (ルームのタイプ)・league (リーグ)、
+    size は四角の大きさ: point (その期間のポイント) か power (地力。地力の多い上位 ROOM_LIMIT ルーム)。
+    どのルームにも地力・残弾 (room_power) を付ける (色を残弾にする時に使う)。"""
     span = "week" if span == "week" else "12h"
-    group = "type" if group == "type" else "genre"
+    group = group if group in ("type", "league") else "genre"
+    size = "power" if size == "power" else "point"
     with Store(state_dir) as s:
         latest = s.scalar("SELECT MAX(slot) FROM room_point_12h", (), None)
         if latest is None:
@@ -133,33 +164,56 @@ def rooms(state_dir: Path, slot: int | None = None, span: str = "12h", compare: 
             return {r[0]: r[1] for r in s.all("""SELECT room_id, SUM(point) FROM room_point_12h WHERE slot BETWEEN ? AND ?
                                                  GROUP BY room_id ORDER BY 2 DESC LIMIT ?""", (lo, hi, ROOM_LIMIT))}
 
-        now_top, before_top = top(*cur), top(*base)
-        ids = list(dict.fromkeys([*now_top, *before_top]))
+        if size == "power":  # 地力の多い順 (地力の索引を上から読む)。ポイントは期間ごとに 1 回ずつ足し上げる
+            powered = [r[0] for r in s.all("SELECT room_id FROM room_power INDEXED BY room_power_power ORDER BY power DESC LIMIT ?",
+                                           (ROOM_LIMIT,))]
+            ids = powered
 
-        def points(lo: int, hi: int, known: dict[int, int]) -> dict[int, int]:
-            out = dict(known)
-            for rid in ids:
-                if rid not in out:
-                    out[rid] = s.scalar("SELECT SUM(point) FROM room_point_12h WHERE slot BETWEEN ? AND ? AND room_id=?",
-                                        (lo, hi, rid), 0) or 0
-            return out
+            def total(lo: int, hi: int) -> dict[int, int]:
+                return {r[0]: r[1] for r in s.all("SELECT room_id, SUM(point) FROM room_point_12h WHERE slot BETWEEN ? AND ? GROUP BY room_id",
+                                                  (lo, hi))}
 
-        now_pt, before_pt = points(*cur, now_top), points(*base, before_top)
+            now_pt, before_pt = total(*cur), total(*base)
+        else:
+            now_top, before_top = top(*cur), top(*base)
+            ids = list(dict.fromkeys([*now_top, *before_top]))
+
+            def points(lo: int, hi: int, known: dict[int, int]) -> dict[int, int]:
+                out = dict(known)
+                for rid in ids:
+                    if rid not in out:
+                        out[rid] = s.scalar("SELECT SUM(point) FROM room_point_12h WHERE slot BETWEEN ? AND ? AND room_id=?",
+                                            (lo, hi, rid), 0) or 0
+                return out
+
+            now_pt, before_pt = points(*cur, now_top), points(*base, before_top)
+        power = _by_room(s, "SELECT room_id, power, left_pt, guns, mains FROM room_power WHERE room_id IN ({})", ids)
+        league = _by_room(s, "SELECT room_id, league_id FROM room_info WHERE room_id IN ({})", ids) if group == "league" else {}
         items = []
         for rid in ids:
             r = s.one("""SELECT r.key, r.name, p.type FROM rooms r LEFT JOIN room_profile p USING(room_id)
                          WHERE r.room_id=?""", (rid,))
             if group == "type":
                 name = (r["type"] if r else None) or "タイプ未判定"
+            elif group == "league":
+                lg = league.get(rid)
+                name = LEAGUES.get(lg["league_id"], "リーグ不明") if lg is not None and lg["league_id"] is not None else "リーグ不明"
             else:  # 最後の配信のジャンル (配信中のルームの一覧で、配信ごとに残している)
                 name = s.scalar("""SELECT genre FROM room_lives WHERE room_id=? AND genre IS NOT NULL
                                    ORDER BY started_at DESC LIMIT 1""", (rid,), None) or "ジャンル未判定"
-            items.append({"room_id": rid, "key": r["key"] if r else None, "name": (r["name"] if r else None) or str(rid),
-                          "group": name, **_item(now_pt[rid], before_pt[rid])})
+            pw = power.get(rid)
+            item = {"room_id": rid, "key": r["key"] if r else None, "name": (r["name"] if r else None) or str(rid),
+                    "group": name, **_item(now_pt.get(rid, 0), before_pt.get(rid, 0)),
+                    "power": pw["power"] if pw else 0, "left_pt": pw["left_pt"] if pw else 0,
+                    "guns": pw["guns"] if pw else 0, "mains": pw["mains"] if pw else 0}
+            if size == "power":
+                item["size"] = item["power"]
+            items.append(item)
         items = [x for x in items if x["size"] > 0]
         slots = [r[0] for r in s.all("SELECT DISTINCT slot FROM room_point_12h WHERE slot > ? ORDER BY slot DESC",
                                      (latest - 4 * WEEK_SLOTS,))]
-        return {"slot": slot, "span": span, "compare": "week" if back == WEEK_SLOTS else "prev", "group": group,
+        return {"slot": slot, "span": span, "compare": "week" if back == WEEK_SLOTS else "prev", "group": group, "size": size,
+                "power_at": s.scalar("SELECT MAX(at) FROM room_power", (), None),
                 "from": slot_start(cur[0]), "to": slot_start(cur[1] + 1),
                 "base_from": slot_start(base[0]), "base_to": slot_start(base[1] + 1),
                 "groups": _grouped(items, "group"),
@@ -220,3 +274,151 @@ def gifters(state_dir: Path, month: str | None = None) -> dict[str, Any]:
         for g in groups:
             g["room_key"] = keys.get(g["name"])
         return {"month": month, "prev": prev, "partial": month == this_month, "groups": groups, "months": months}
+
+
+# ------------------------------------------------------------------ 地力と残弾
+def _power_src(s: Store) -> float | None:
+    """ギフターのステータスを作り終えた時刻 (作り終えていなければ None)。"""
+    from . import gifter_status
+
+    try:
+        return json.loads(s.meta(gifter_status.RUN_META) or "{}").get("done")
+    except (TypeError, ValueError):
+        return None
+
+
+def power_due(s: Store) -> bool:
+    """作り直す時か (ギフターのステータスが新しく作り終わった・作り方を変えた)。"""
+    src = _power_src(s)
+    return src is not None and s.meta("heat_power_src") != [POWER_VERSION, src]
+
+
+class _PowerRun:
+    """作り直しの途中 (ルームごとの合計と、出せる量の多い人)。1 回に CHUNK 人ずつ足していく。"""
+
+    def __init__(self, src: float | None) -> None:
+        self.src = src
+        self.after = -1  # ここまでの user_id を足した
+        self.totals: dict[int, list[int]] = {}  # room_id → [地力, 残弾, 人数, 主砲, 主力]
+        self.tops: dict[int, list[int]] = {}  # room_id → 出せる量の多い人 (小さい順のヒープ。下の _pack)
+
+    def add(self, s: Store, limit: int) -> bool:
+        """次の limit 人を足す (user_id の順に、主キーで読む)。全員を足し終えたら True。"""
+        from . import gifter_status
+
+        n = 0
+        for uid, data in s.all("SELECT user_id, data FROM gifter_status WHERE user_id > ? AND version=? ORDER BY user_id LIMIT ?",
+                               (self.after, gifter_status.VERSION, limit)):
+            n += 1
+            self.after = uid
+            d = json.loads(data)
+            state = d.get("state")
+            factor = gifter_status.STATE_FACTOR.get(state, 1.0)
+            fire, hp = d.get("fire") or 0, d.get("hp") or 0
+            ratio = min(1.0, max(0.0, (d.get("mp") or 0) / hp)) if hp else 0.0
+            for r in d.get("rooms") or []:
+                cls = r.get("class")
+                if cls not in FIGHTERS:
+                    continue
+                sortie = r.get("sortie")
+                power = int(fire * (r.get("share") or 0) * (SORTIE_UNKNOWN if sortie is None else sortie) * factor)
+                if power <= 0:
+                    continue
+                rid = int(r["room_id"])
+                t = self.totals.setdefault(rid, [0, 0, 0, 0, 0])
+                t[0] += power
+                t[1] += int(power * ratio)
+                t[2] += 1
+                t[3] += cls == "主砲"
+                t[4] += cls == "主力"
+                h = self.tops.setdefault(rid, [])
+                item = _pack(power, int(uid), ratio, FIGHTERS.index(cls), STATES.index(state) if state in STATES else len(STATES))
+                if len(h) < PEOPLE:
+                    heapq.heappush(h, item)
+                elif item > h[0]:
+                    heapq.heapreplace(h, item)
+        return n < limit
+
+    def save(self, s: Store, now: float) -> int:
+        rows = []
+        for rid, t in self.totals.items():
+            people = [_unpack(x) for x in sorted(self.tops.get(rid, []), reverse=True)]
+            rows.append((rid, now, t[0], t[1], t[2], t[3], t[4], json.dumps(people, separators=(",", ":"))))
+        with s.tx() as c:
+            c.execute("DELETE FROM room_power")
+            c.executemany("INSERT INTO room_power(room_id, at, power, left_pt, people, guns, mains, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                          rows)
+        s.set_meta("heat_power_src", [POWER_VERSION, self.src])
+        log.info("ルームの地力と残弾を作りました (%d ルーム)", len(rows))
+        return len(rows)
+
+
+_runs: dict[str, _PowerRun] = {}  # 作り直しの途中 (state_dir ごと。起動し直したら、初めからやり直す)
+
+
+def build_power(s: Store, now: float | None = None) -> int:
+    """ギフターのステータスから、ルームごとの地力・残弾と、出せる量の多い人を一度に作り直す (戻り値はルームの数。テスト用)。
+
+    1 人のこのルームへの地力 = 火力 (勝負の回の 1 イベントの量の上から 2 番目) × このルームに向ける割合 × このルームの出動率
+    × 状態の係数 (離脱 0・枯渇 0.2。gifter_status と同じ)。残弾をかけないので、月の途中でも大きさは動かない (色の残弾で見る)。
+    ステータスは少しずつ読み、全部をメモリに持たない (ルームごとに出せる量の多い PEOPLE 人だけ、数を 1 つの整数につめて持つ)。
+    """
+    run = _PowerRun(_power_src(s))
+    while not run.add(s, CHUNK):
+        pass
+    return run.save(s, time.time() if now is None else now)
+
+
+def _pack(power: int, uid: int, ratio: float, cls: int, state: int) -> int:
+    """1 人分を 1 つの整数につめる (大きいほど出せる量が多い。たくさんの人を持っても、メモリを使いすぎないように)。"""
+    return (power << 48) | (uid << 16) | (round(ratio * 1000) << 6) | (cls << 3) | state
+
+
+def _unpack(x: int) -> list[Any]:
+    """[user_id, 出せる量, 残弾の割合, クラス, 状態]"""
+    state = x & 7
+    return [(x >> 16) & (2**32 - 1), x >> 48, ((x >> 6) & 1023) / 1000, FIGHTERS[(x >> 3) & 7],
+            STATES[state] if state < len(STATES) else None]
+
+
+def power_step(s: Store, now: float | None = None) -> bool:
+    """作り直す時で、サーバーが暇なら、CHUNK 人ずつ足していき、全員を足し終えたら保存する (収集の 1 回の仕事を長く止めない。
+    ほかの重い集計とは重ならないようにする)。何かしたら True。"""
+    from . import memory, room_parts
+
+    key = str(s.state_dir)
+    if not power_due(s):
+        _runs.pop(key, None)
+        return False
+    if not room_parts.idle(now):
+        return False
+    with memory.heavy(wait=False) as got:
+        if not got:
+            return False
+        src = _power_src(s)
+        run = _runs.get(key)
+        if run is None or run.src != src:  # ステータスが作り直されたら、初めから
+            run = _runs[key] = _PowerRun(src)
+        if run.add(s, CHUNK):
+            run.save(s, time.time() if now is None else now)
+            del _runs[key]
+            memory.release()
+    return True
+
+
+def room_power(state_dir: Path, room: str) -> dict[str, Any]:
+    """ルームのページの、中のギフターのマップ (出せる量の多い人。大きさ = このルームに出せる量、色 = 残弾)。room は room_id か key。"""
+    with Store(state_dir) as s:
+        rid = int(room) if str(room).isdigit() else s.scalar("SELECT room_id FROM rooms WHERE key=?", (room,), None)
+        r = s.one("SELECT * FROM room_power WHERE room_id=?", (rid,)) if rid is not None else None
+        built = s.meta("heat_power_src")
+        if r is None:
+            return {"found": False, "built": built is not None}
+        people = json.loads(r["data"])
+        ids = [p[0] for p in people]
+        names = {x[0]: x[1] for x in s.all(f"SELECT user_id, name FROM users WHERE user_id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
+        rank = s.scalar("SELECT COUNT(*) FROM room_power WHERE power > ?", (r["power"],)) + 1
+        return {"found": True, "at": r["at"], "power": r["power"], "left_pt": r["left_pt"], "people": r["people"], "guns": r["guns"],
+                "mains": r["mains"], "rank": rank, "rooms": s.scalar("SELECT COUNT(*) FROM room_power"),
+                "gifters": [{"user_id": p[0], "name": names.get(p[0]) or "", "power": p[1], "left": p[2], "class": p[3], "state": p[4]}
+                            for p in people]}

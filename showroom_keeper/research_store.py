@@ -198,6 +198,12 @@ CREATE TABLE IF NOT EXISTS room_parts (
 -- events はその区切りに数えたイベントの数。heat.py が区切りの終わったあと 1 回だけ作る
 CREATE TABLE IF NOT EXISTS room_point_12h (
     slot INTEGER, room_id INTEGER, point INTEGER, events INTEGER, PRIMARY KEY (slot, room_id)) WITHOUT ROWID;
+-- ルームの地力と残弾 (ヒートマップの「地力」「残弾」と、ルームのページの中のギフターのマップ)。heat.py が、ギフターのステータスを
+-- 作り終えたあと、サーバーが暇な時に 1 回作り直す。power は主砲・主力・支えの人の「勝負の時にこのルームに出せる量」の合計、
+-- left_pt はそのうち今月まだ撃てる分。data は出せる量の多い人から heat.PEOPLE 人 (JSON)
+CREATE TABLE IF NOT EXISTS room_power (
+    room_id INTEGER PRIMARY KEY, at REAL, power INTEGER, left_pt INTEGER, people INTEGER, guns INTEGER, mains INTEGER, data TEXT);
+CREATE INDEX IF NOT EXISTS room_power_power ON room_power(power);
 -- イベントの最終の順位のうち、上の方 (上から GifterStatus の ROUND_RANKS 位か、特典の順位の 1 つ下まで) と、隣の順位との差・
 -- 勝負になった回か (特典の境目で、差がポイントの 1 割以内か、大会の 2 段階目より後)・目標 (特典の順位) に届いたか。
 -- ギフターのステータス (gifter_status.py) が、終わったイベントを 1 回ずつ作る。event_rounds_done は作り終えたイベント

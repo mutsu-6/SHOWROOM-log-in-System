@@ -2656,7 +2656,8 @@ async function showRooms(sub) {
 
 /* ------------------------------------------------------------ ヒートマップ (ルーム・ギフター) */
 // 四角の大きさ = 今の期間のポイント (落ちた人・ルームは前の期間の値)、色 = 前の期間からの増え減り。箱 = 配信ジャンル (かタイプ) / 最推しのルーム
-const heatState = { rooms: { span: "12h", compare: "week", slot: "", group: "genre", zoom: 1, focus: "" }, gifters: { month: "", zoom: 1, focus: "" } };
+// ルームは、大きさを地力 (勝負の時に出せる量)、色を残弾 (今月まだ撃てる割合)、箱をリーグにもできる
+const heatState = { rooms: { span: "12h", compare: "week", slot: "", group: "genre", size: "point", color: "change", zoom: 1, focus: "" }, gifters: { month: "", zoom: 1, focus: "" } };
 const HEAT_ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];
 const HEAT_NEW = "#2f6fd6";
 function heatColor(c) {
@@ -2667,6 +2668,12 @@ function heatColor(c) {
   return `rgb(${r},${g},${b})`;
 }
 const heatChange = (c) => c == null ? "新しく" : `${c > 0 ? "+" : ""}${Math.round(c * 100)}%`;
+// 残弾の割合 (0〜1) を色の値 (-1〜1) にする: まだ撃てるほど緑 (増えた側)、使い切ったほど赤
+const ammoShade = (r) => r == null ? 0 : r * 2 - 1;
+const ammoText = (r) => r == null ? "残弾 —" : `残弾 ${Math.round(r * 100)}%`;
+// 四角の色と、四角に書く文字 (cell.color・cell.text が無ければ、前の期間からの増え減り)
+const cellShade = (cell, x) => cell.color ? cell.color(x) : x.change;
+const cellText = (cell, x) => cell.text ? cell.text(x) : heatChange(x.change);
 function heatWorst(row, side) {
   const s = row.reduce((a, r) => a + r.a, 0), mx = Math.max(...row.map((r) => r.a)), mn = Math.min(...row.map((r) => r.a));
   return Math.max((side * side * mx) / (s * s), (s * s) / (side * side * mn));
@@ -2706,18 +2713,20 @@ function heatmapHtml(groups, width, height, cell, zoom = 1) {
   for (const g of squarify(groups, 0, 0, width, height)) {
     const head = g.h > labelSize * 3 && g.w > 40 ? labelSize + 5 : 0;
     html += `<div class="hm-group" style="left:${px(g.x)};top:${px(g.y)};width:${px(g.w)};height:${px(g.h)}">`
-      + (head ? `<div class="hm-label" data-hm-focus="${esc(g.it.name)}" style="font-size:${labelSize}px" title="${esc(`${g.it.name}: ${num(g.it.now)} pt (前 ${num(g.it.before)} pt)。押すと、この箱だけを広げます`)}">${esc(g.it.name)} <span class="muted">${heatChange(g.it.before ? (g.it.now - g.it.before) / g.it.before : null)}</span></div>` : "");
+      + (head ? `<div class="hm-label" data-hm-focus="${esc(g.it.name)}" style="font-size:${labelSize}px" title="${esc(`${g.it.name}: ${cell.groupTip ? cell.groupTip(g.it) : `${num(g.it.now)} pt (前 ${num(g.it.before)} pt)`}。押すと、この箱だけを広げます`)}">${esc(g.it.name)} <span class="muted">${cell.groupText ? cell.groupText(g.it) : heatChange(g.it.before ? (g.it.now - g.it.before) / g.it.before : null)}</span></div>` : "");
     for (const c of squarify(g.it.items, 1, head + 1, g.w - 2, g.h - head - 2)) {
       const x = c.it, fs = Math.max(9, Math.min(28, c.w / 7, c.h / 3.2));
       const label = c.w >= 28 && c.h >= 14
-        ? (c.w >= 40 && c.h >= fs * 2.7 ? `<b style="-webkit-line-clamp:${c.h >= fs * 5 ? 3 : c.h >= fs * 3.9 ? 2 : 1}">${esc(cell.name(x))}</b><span>${heatChange(x.change)}</span>` : `<span>${heatChange(x.change)}</span>`) : "";
-      html += `<div class="hm-cell" ${cell.go(x) ? `data-go="${esc(cell.go(x))}"` : ""} style="left:${px(c.x)};top:${px(c.y)};width:${px(c.w)};height:${px(c.h)};font-size:${fs.toFixed(1)}px;background:${heatColor(x.change)}"
-        title="${esc(`${cell.name(x)}\n今 ${num(x.now)} pt ・ 前 ${num(x.before)} pt ・ ${heatChange(x.change)}${cell.extra ? cell.extra(x) : ""}`)}">${label}</div>`;
+        ? (c.w >= 40 && c.h >= fs * 2.7 ? `<b style="-webkit-line-clamp:${c.h >= fs * 5 ? 3 : c.h >= fs * 3.9 ? 2 : 1}">${esc(cell.name(x))}</b><span>${esc(cellText(cell, x))}</span>` : `<span>${esc(cellText(cell, x))}</span>`) : "";
+      html += `<div class="hm-cell" ${cell.go(x) ? `data-go="${esc(cell.go(x))}"` : ""} style="left:${px(c.x)};top:${px(c.y)};width:${px(c.w)};height:${px(c.h)};font-size:${fs.toFixed(1)}px;background:${heatColor(cellShade(cell, x))}"
+        title="${esc(`${cell.name(x)}\n${cell.tip ? cell.tip(x) : `今 ${num(x.now)} pt ・ 前 ${num(x.before)} pt ・ ${heatChange(x.change)}`}${cell.extra ? cell.extra(x) : ""}`)}">${label}</div>`;
     }
     html += "</div>";
   }
   return html;
 }
+const ammoLegend = () => `<div class="hm-legend">使い切った ${[-1, -0.6, -0.2].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")}
+  <i style="background:${heatColor(0)}"></i> ${[0.2, 0.6, 1].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")} まだ撃てる (今月の残弾)</div>`;
 const heatLegend = () => `<div class="hm-legend">減った ${[-1, -0.5, -0.2, -0.05].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")}
   <i style="background:${heatColor(0)}"></i> ${[0.05, 0.2, 0.5, 1].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")} 増えた
   <span style="margin-left:10px"><i style="background:${HEAT_NEW}"></i> 新しく (前の期間は 0)</span></div>`;
@@ -2728,7 +2737,7 @@ async function showHeat(kind, box) {
   let d;
   try {
     d = await api(kind === "rooms"
-      ? `/api/heat?kind=rooms&span=${st.span}&compare=${st.compare}&group=${st.group}&slot=${encodeURIComponent(st.slot)}`
+      ? `/api/heat?kind=rooms&span=${st.span}&compare=${st.compare}&group=${st.group}&size=${st.size}&slot=${encodeURIComponent(st.slot)}`
       : `/api/heat?kind=gifters&month=${encodeURIComponent(st.month)}`);
   } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.arg !== "heat" || page.name !== kind) return;
@@ -2738,11 +2747,22 @@ async function showHeat(kind, box) {
     if (d.slot == null) { box.innerHTML = `<div class="empty">まだ作っていません。全ルームの収集が動いていると、12 時間の区切り (毎日 3:00 と 15:00) が終わって 2 時間ほどで作ります (SHOWROOM には問い合わせません)。</div>`; return; }
     head = `<label>期間 <select data-heat="span">${opt("12h", "12 時間", d.span)}${opt("week", "1 週間 (14 区切り)", d.span)}</select></label>
       ${d.span === "12h" ? `<label>くらべる <select data-heat="compare">${opt("week", "先週の同じ区切り", d.compare)}${opt("prev", "すぐ前の 12 時間", d.compare)}</select></label>` : ""}
-      <label>箱 <select data-heat="group">${opt("genre", "配信ジャンル", d.group)}${opt("type", "ルームのタイプ", d.group)}</select></label>
+      <label>箱 <select data-heat="group">${opt("genre", "配信ジャンル", d.group)}${opt("type", "ルームのタイプ", d.group)}${opt("league", "リーグ", d.group)}</select></label>
+      <label>大きさ <select data-heat="size">${opt("point", "期間のポイント", d.size)}${opt("power", "地力 (勝負の時に出せる量)", d.size)}</select></label>
+      <label>色 <select data-heat="color">${opt("change", "ポイントの増え減り", st.color)}${opt("left", "残弾 (今月まだ撃てる割合)", st.color)}</select></label>
       <label>${d.span === "week" ? "最後の区切り" : "区切り"} <select data-heat="slot">${d.slots.map((x) => opt(x.slot, `${slotText(x.start)}〜`, d.slot)).join("")}</select></label>`;
     note = `${slotText(d.from)} 〜 ${slotText(d.to)} にイベントで増えたポイント (くらべる期間: ${slotText(d.base_from)} 〜 ${slotText(d.base_to)})。
-      区切りは月曜 3:00 から 12 時間ごと (毎日 3:00 と 15:00)。1 時間ごとに残している開催中のイベントのポイントの推移の差で、同時に出ているイベントは足しています。箱は${d.group === "type" ? "ルームのタイプ" : "配信ジャンル (最後の配信のジャンル)"}。今と前の期間の上位 ${num(300)} ルームずつを出します`;
-    cell = { name: (x) => x.name, go: (x) => x.key ? `#room/${encodeURIComponent(x.key)}` : "" };
+      区切りは月曜 3:00 から 12 時間ごと (毎日 3:00 と 15:00)。1 時間ごとに残している開催中のイベントのポイントの推移の差で、同時に出ているイベントは足しています。箱は${d.group === "type" ? "ルームのタイプ" : d.group === "league" ? "リーグ (同じイベントに出られる相手)" : "配信ジャンル (最後の配信のジャンル)"}。${d.size === "power"
+        ? `大きさは地力 (主砲・主力・支えの人が、勝負の時にこのルームに出せる量の合計。地力の多い上位 ${num(300)} ルーム)`
+        : `今と前の期間の上位 ${num(300)} ルームずつを出します`}${d.size === "power" || st.color === "left"
+        ? `。地力と残弾は、ギフターのステータス (パワーギフターだけ) から${d.power_at ? `${ago(d.power_at)}に` : ""}作った分です (1 日 1 回、サーバーが暇な時に作り直します)` : ""}`;
+    const left = (x) => x.power ? x.left_pt / x.power : null;
+    cell = { name: (x) => x.name, go: (x) => x.key ? `#room/${encodeURIComponent(x.key)}` : "",
+      tip: (x) => `今 ${num(x.now)} pt ・ 前 ${num(x.before)} pt ・ ${heatChange(x.change)}${x.power ? `\n地力 ${shortNum(x.power)} pt ・ ${ammoText(left(x))} ・ 主砲 ${num(x.guns)} 人 ・ 主力 ${num(x.mains)} 人` : "\n地力: まだ分かりません"}` };
+    if (st.color === "left") {
+      Object.assign(cell, { color: (x) => ammoShade(left(x)), text: (x) => ammoText(left(x)),
+        groupText: (g) => ammoText(g.power ? g.left_pt / g.power : null), groupTip: (g) => `地力 ${shortNum(g.power || 0)} pt ・ ${ammoText(g.power ? g.left_pt / g.power : null)}` });
+    }
   } else {
     if (!d.month) { box.innerHTML = `<div class="empty">月ごとの集計がまだありません。</div>`; return; }
     head = `<label>月 <select data-heat="month">${d.months.map((m) => opt(m, m, d.month)).join("")}</select></label>`;
@@ -2754,9 +2774,9 @@ async function showHeat(kind, box) {
   box.innerHTML = `<div class="row" style="margin-bottom:8px;gap:12px;flex-wrap:wrap">${head}
       <span class="hm-zoom"><button type="button" class="btn small" data-hz="out" title="小さく">−</button><span data-hz-text></span>
         <button type="button" class="btn small" data-hz="in" title="大きく">＋</button><button type="button" class="btn small" data-hz="reset">元の大きさ</button>
-        <button type="button" class="btn small" data-hz="all" hidden>← 全部の箱</button></span>${heatLegend()}</div>
+        <button type="button" class="btn small" data-hz="all" hidden>← 全部の箱</button></span>${kind === "rooms" && st.color === "left" ? ammoLegend() : heatLegend()}</div>
     <div class="hint" style="margin-top:0">${note}。「＋」・トラックパッドのピンチ (⌘ + ホイール) で拡大すると、小さな四角にも名前が出ます。箱の名前を押すと、その箱だけを広げます</div>
-    ${d.groups.length ? `<div class="hm-wrap"><div class="hm"></div></div>` : `<div class="empty">この期間のポイントはありません</div>`}`;
+    ${d.groups.length ? `<div class="hm-wrap"><div class="hm"></div></div>` : `<div class="empty">${kind === "rooms" && d.size === "power" ? "地力はまだ作っていません。ギフターのステータスを作り終えたあと、サーバーが暇な時に作ります" : "この期間のポイントはありません"}</div>`}`;
   box.querySelectorAll("select[data-heat]").forEach((el) => el.addEventListener("change", () => {
     st[el.dataset.heat] = el.value;
     if (el.dataset.heat === "span") st.slot = "";
@@ -2806,6 +2826,43 @@ async function showHeat(kind, box) {
     pinch = { scale: (pinch ? pinch.scale : 1) * Math.exp(-ev.deltaY * 0.01), x: ev.clientX - r.left, y: ev.clientY - r.top, raf: pinch && pinch.raf };
     if (!pinch.raf) pinch.raf = requestAnimationFrame(() => { const p = pinch; pinch = null; draw(st.zoom * p.scale, p.x, p.y); });
   }, { passive: false });
+}
+
+// ルームのページの、中のギフターのマップ (heat.py が作っておいた分を読むだけ)。大きさ = このルームに出せる量、色 = 今月の残弾
+async function loadRoomPower(rid, key) {
+  const box = $("#rp-power");
+  if (!box) return;
+  let d;
+  try { d = await api(`/api/heat?kind=room_power&room=${encodeURIComponent(rid)}`); } catch (e) { return; }
+  if (page.name !== "room" || page.arg !== key || !$("#rp-power")) return;
+  if (!d.found) {
+    box.innerHTML = d.built ? "" : `<h3>このルームの戦力</h3><div class="empty">まだ作っていません。ギフターのステータスを作り終えたあと、サーバーが暇な時に作ります</div>`;
+    return;
+  }
+  const left = d.power ? d.left_pt / d.power : null;
+  const groups = ["主砲", "主力", "支え"].map((c) => ({ name: c, items: d.gifters.filter((g) => g.class === c).map((g) => ({ ...g, size: g.power })) }))
+    .filter((g) => g.items.length).map((g) => ({ ...g, size: g.items.reduce((a, x) => a + x.size, 0), power: g.items.reduce((a, x) => a + x.power, 0),
+      left_pt: g.items.reduce((a, x) => a + x.power * x.left, 0) }));
+  const cell = { name: (x) => x.name || `ID ${x.user_id}`, go: (x) => `#gifter/${encodeURIComponent(x.user_id)}`,
+    color: (x) => ammoShade(x.left), text: (x) => ammoText(x.left),
+    tip: (x) => `このルームに出せる量 ${shortNum(x.power)} pt ・ ${ammoText(x.left)}\n${x.class}${x.state ? ` ・ 状態: ${x.state}` : ""}`,
+    groupText: (g) => `${num(g.items.length)} 人 ・ ${ammoText(g.power ? g.left_pt / g.power : null)}`,
+    groupTip: (g) => `出せる量 ${shortNum(g.power)} pt ・ ${ammoText(g.power ? g.left_pt / g.power : null)}` };
+  box.innerHTML = `<h3>このルームの戦力 <small class="muted">勝負の時に出せる量と、今月の残弾</small></h3>
+    <div class="tiles">
+      ${tile("地力", `${shortNum(d.power)} <small>pt</small>`, `全 ${num(d.rooms)} ルームで ${num(d.rank)} 位`)}
+      ${tile("今月の残弾", ammoText(left).replace("残弾 ", ""), `${shortNum(d.left_pt)} pt`)}
+      ${tile("主砲・主力", `${num(d.guns)} <small>人</small> ・ ${num(d.mains)} <small>人</small>`, `支えも入れて ${num(d.people)} 人`)}
+    </div>
+    <div class="row" style="margin:8px 0">${ammoLegend()}</div>
+    <div class="hint" style="margin-top:0">大きさ = その人がこのルームに勝負の時に出せる量 (火力 × このルームに向ける割合 × 出動率)、色 = その人の今月の残弾。
+      大きくて緑の人は、終盤にまだ来られる人です。付き合い投げの人は数えません。出せる量の多い ${num(d.gifters.length)} 人まで。${ago(d.at)}に作った分 (1 日 1 回、サーバーが暇な時に作り直します)</div>
+    <div class="hm-wrap"><div class="hm"></div></div>`;
+  const wrap = box.querySelector(".hm-wrap"), map = box.querySelector(".hm");
+  const width = Math.max(300, wrap.clientWidth || 900), height = width < 640 ? 420 : 360;
+  wrap.style.height = map.style.height = `${height}px`;
+  map.style.width = `${width}px`;
+  map.innerHTML = heatmapHtml(groups, width, height, cell);
 }
 
 /* ------------------------------------------------------------ ルームのタイプ・勢い・戦術 */
@@ -3344,7 +3401,7 @@ async function showRoom(key) {
       ${tile("イベントで得たポイント", st.points ? `${shortNum(st.points)} <small>pt</small>` : "—", st.best ? `最高 ${num(st.best)} 位` : "")}
       ${roomProfileTiles(d.profile)}
     </div>${SCOPE_NOTE}
-    <div id="rp-dash"></div><div id="rp-chart"></div><div id="rp-followers"></div>${liveHabitsHtml(d.live_habits)}${congestionHtml(d.congestion, d.live_habits)}${effortHtml(d.effort)}${roomAnalysisHtml(d)}`;
+    <div id="rp-dash"></div><div id="rp-chart"></div><div id="rp-followers"></div><div id="rp-power"></div>${liveHabitsHtml(d.live_habits)}${congestionHtml(d.congestion, d.live_habits)}${effortHtml(d.effort)}${roomAnalysisHtml(d)}`;
   html += `<div class="cols">
     <div><h3>累計ランキング <small class="muted">上位 30 人</small></h3>${dataTable("rp-cum", [
       { label: "順位", num: true, value: (c) => c.rank, html: (c) => c.rank ? `${num(c.rank)}` : "-" },
@@ -3378,6 +3435,7 @@ async function showRoom(key) {
   box.innerHTML = html;
   renderFollowerTrend(d.followers_daily || []);
   loadRoomDash(d.key);
+  loadRoomPower(d.room_id, d.key);
   // イベントごとのポイント (終わったイベント、古い順に 60 件)。1 位は赤
   const done = d.events.filter((e) => e.end && e.state === "ended" && e.point).sort((a, b) => a.end - b.end).slice(-60);
   const chart = $("#rp-chart");
