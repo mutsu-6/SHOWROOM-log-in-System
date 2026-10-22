@@ -634,3 +634,12 @@ def test_profile_momentum_is_own_growth_and_old_values_are_cleared(tmp_path):
         assert p["momentum_detail"] == "同じ人が多く送っている"  # 順位はずっと 2 位 (相手は入れない)
     items = next(t for t in news.build(tmp_path, 7, now=NOW, use_cache=False)["topics"] if t["key"] == "rising_rooms")["items"]
     assert [(x["room_id"], x["momentum"], x["detail"]) for x in items] == [(1, 3, "同じ人が多く送っている")]
+
+
+def test_momentum_order_puts_labeled_rooms_first(tmp_path):
+    with Store(tmp_path) as s:
+        s.conn.executemany("INSERT INTO room_profile(room_id, at, momentum, momentum_label) VALUES (?, ?, ?, ?)",
+                           [(1, NOW, 297.0, None), (2, NOW, 1.5, "上り調子"), (3, NOW, 0.5, "下り気味"), (4, NOW, None, None),
+                            (5, NOW, 1.0, "変わらない")])
+    rooms = explore.room_profiles(tmp_path, order="momentum")["rooms"]
+    assert [r["room_id"] for r in rooms] == [2, 5, 3, 1, 4]  # 「参考」の 297 倍は、言えたルームのあと
