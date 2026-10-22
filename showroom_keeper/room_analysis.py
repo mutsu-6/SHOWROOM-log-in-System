@@ -5,7 +5,8 @@ research.db を読んで作るだけで、SHOWROOM には問い合わせない�
 
 - タイプ: 直近 PROFILE_EVENTS 件の終わったイベントの貢献ランキングから、1 位の人の割合・上位 10 人のポイント・
   貢献した人数などを出し、同じくらいの規模のイベントに出ているルームの中で比べる (規模で数字が大きく変わるため)
-- 勢い: イベントの順位 (参加ルームの中の位置) の、直近 MOMENTUM_DAYS 日とその前の MOMENTUM_DAYS 日の違い
+- 勢い: ルーム自身のイベントのポイント (1 日あたり) と貢献した人の、直近 MOMENTUM_DAYS 日とその前の MOMENTUM_DAYS 日の違い。
+  順位は相手しだいで動くので使わない (順位の位置は「相手の中の位置」として別に出す)
 - 戦術: ポイントの推移を残したイベントで、序盤・中盤・終盤の位置と最終日の伸びから、逃げ・先行・差し・追い込みに分ける。
   決まった走り方が無いルームは「自在」
 
@@ -33,8 +34,10 @@ SIZE_NAMES = ("小さいイベント (50 ルーム未満)", "中くらいのイ�
 MOMENTUM_DAYS = 60
 MOMENTUM_MIN = 2  # 勢いの数字を出すのに、それぞれの期間に要るイベントの数
 MOMENTUM_LABEL_MIN = 5  # 「上り調子」「下り気味」と言うのに、それぞれの期間に要るイベントの数 (2 件ずつでは、偶然の差でも 7 割ほど付く)
-MOMENTUM_STEP = 0.1  # 位置がこれだけ変わったら「上り調子」「下り気味」
-MOMENTUM_MIN_ROOMS = 5  # これより参加ルームの少ないイベントは勢いに使わない (2 ルームなら位置が 0 か 1 しかなく、ぶれが大きい)
+MOMENTUM_STEP = 1.2  # 1 日あたりのポイントが、前の期間のこの倍以上 (この分の 1 以下) なら「上り調子」(「下り気味」)
+PEOPLE_STEP = 1.1  # 貢献した人 (100 位の人のポイント) がこの倍以上なら「人も増えている」
+MOMENTUM_VERSION = 2  # 2: 順位の位置から、ルーム自身のポイントの伸びに変えた (2026-10-22)。出し方を変えたら上げる (作っておいた勢いを作り直す)
+MOMENTUM_MIN_ROOMS = 5  # これより参加ルームの少ないイベントは、相手の中の位置に使わない (2 ルームなら位置が 0 か 1 しかなく、ぶれが大きい)
 STYLE_SNAPSHOTS = 6  # 走り方を出すのに要る、推移を残した回数
 STYLE_START = 0.3  # 推移を、イベントの期間のこの割合までに残し始めていること
 STYLE_EVENTS = 3  # ルームの戦術を出すのに要る、走り方の分かったイベントの数
@@ -189,35 +192,104 @@ def depth_label(m: dict[str, Any] | None, cuts: dict[str, Any] | None) -> str | 
     return "ふつう"
 
 
-# ------------------------------------------------------------------ 勢い
-def momentum(s: Store, room_id: int, now: float) -> dict[str, Any]:
-    """順位の位置 ((順位 - 1) ÷ (参加ルーム数 - 1)。1 位は 0、最下位は 1) の、直近と前の期間の平均の違い。
-    正の数なら上がっている。1 位をいつも 0 にするので、小さいイベントに出ても位置が悪く見えない。
-    """
-    span = MOMENTUM_DAYS * 86400
-    rows = s.all("""SELECT e.end, MIN(1.0, CAST(re.rank - 1 AS REAL) / (e.room_count - 1)) AS place
+# ------------------------------------------------------------------ 勢い (ルーム自身の伸び)
+def _period_rows(s: Store, room_id: int, now: float) -> list[Any]:
+    """直近とその前の MOMENTUM_DAYS 日に終わって、最終の結果を読んだイベント (勢いと、相手の中の位置の両方に使う)。"""
+    return s.all("""SELECT re.event_id, e.start, e.end, re.point, re.rank, e.room_count, re.c_count, re.c_p100
                     FROM room_events re JOIN events e USING(event_id)
-                    WHERE re.room_id=? AND re.rank > 0 AND e.room_count >= ? AND e.end > ? AND e.end <= ?
-                      AND e.rooms_at >= e.end""",
-                 (int(room_id), MOMENTUM_MIN_ROOMS, now - 2 * span, now))
-    recent = [r["place"] for r in rows if r["end"] > now - span]
-    prev = [r["place"] for r in rows if r["end"] <= now - span]
+                    WHERE re.room_id=? AND e.end > ? AND e.end <= ? AND e.rooms_at >= e.end""",
+                 (int(room_id), now - 2 * MOMENTUM_DAYS * 86400, now))
+
+
+def _split(rows: list[Any], now: float) -> tuple[list[Any], list[Any]]:
+    edge = now - MOMENTUM_DAYS * 86400
+    return [r for r in rows if r["end"] > edge], [r for r in rows if r["end"] <= edge]
+
+
+def _pace(r: Any) -> float:
+    """イベントのポイントを、1 日あたりに直した値 (長いイベントほどポイントが大きくなるのを、そろえる)。"""
+    days = max(1.0, ((r["end"] or 0) - (r["start"] or r["end"] or 0)) / 86400)
+    return r["point"] / days
+
+
+def _ratio(a: Any, b: Any) -> float | None:
+    return round(a / b, 2) if a and b else None
+
+
+def momentum(s: Store, room_id: int, now: float, rows: list[Any] | None = None) -> dict[str, Any]:
+    """勢い: ルーム自身の、直近 MOMENTUM_DAYS 日のイベントのポイント (1 日あたり) が、その前の MOMENTUM_DAYS 日の何倍か。
+
+    くらべるのはそのルームの過去だけで、相手のルームは入れない (順位は、どの相手と戦ったかで動くので使わない)。
+    貢献した人の数 (100 人に届くルームは 100 位の人のポイント) の伸びも出し、ポイントが伸びたのが
+    人が増えたからか、同じ人が多く送ったからかを分ける。
+    """
+    rows = _period_rows(s, room_id, now) if rows is None else rows
+    use = [r for r in rows if (r["point"] or 0) > 0]
+    recent, prev = _split(use, now)
+    rp, pp = [_pace(r) for r in recent], [_pace(r) for r in prev]
     out: dict[str, Any] = {"recent_events": len(recent), "prev_events": len(prev), "days": MOMENTUM_DAYS,
-                           "recent_place": sum(recent) / len(recent) if recent else None,
-                           "prev_place": sum(prev) / len(prev) if prev else None, "value": None, "label": None}
-    if len(recent) >= MOMENTUM_MIN and len(prev) >= MOMENTUM_MIN:
-        # 画面には 100 倍して整数で出すので、判定も同じ丸めた値で行う (「+10 なのに変わらない」と見えないように)
-        out["value"] = round((out["prev_place"] - out["recent_place"]) * 100) / 100
-        # 差が、イベントごとのばらつきから来る誤差 (標準誤差) の 2 倍より大きい時だけ、上り・下りと言う
-        noise = math.sqrt(_var(recent) / len(recent) + _var(prev) / len(prev))
-        out["noise"] = round(noise, 3)
-        if len(recent) < MOMENTUM_LABEL_MIN or len(prev) < MOMENTUM_LABEL_MIN:
-            out["label_why"] = f"イベントが {MOMENTUM_LABEL_MIN} 件ずつそろうまでは、数字だけ出します"
-        elif abs(out["value"]) >= MOMENTUM_STEP and abs(out["value"]) > 2 * noise:
-            out["label"] = "上り調子" if out["value"] > 0 else "下り気味"
-        else:
-            out["label"] = "変わらない"
+                           "recent_pace": median(rp), "prev_pace": median(pp), "value": None, "label": None,
+                           "people": None, "depth": None, "detail": None}
+    rc, pc = [r["c_count"] for r in recent if r["c_count"]], [r["c_count"] for r in prev if r["c_count"]]
+    out["recent_people"], out["prev_people"] = median(rc), median(pc)
+    if rc and pc:
+        out["people"] = _ratio(out["recent_people"], out["prev_people"])
+        if out["recent_people"] >= CAPPED and out["prev_people"] >= CAPPED:
+            # どちらも貢献ランキングの上限 (100 人) に届いている: 人数ではくらべられないので、100 位の人のポイントでくらべる
+            out["people"] = None
+            out["depth"] = _ratio(median(r["c_p100"] for r in recent if r["c_count"]),
+                                  median(r["c_p100"] for r in prev if r["c_count"]))
+    if len(recent) < MOMENTUM_MIN or len(prev) < MOMENTUM_MIN:
+        return out
+    out["value"] = _ratio(out["recent_pace"], out["prev_pace"])
+    # 差が、イベントごとのばらつきから来る誤差 (倍率の対数の標準誤差) の 2 倍より大きい時だけ、上り・下りと言う
+    lr, lp = [math.log(x) for x in rp], [math.log(x) for x in pp]
+    diff = sum(lr) / len(lr) - sum(lp) / len(lp)
+    noise = math.sqrt(_var(lr) / len(lr) + _var(lp) / len(lp))
+    out["noise"] = round(noise, 3)
+    if len(recent) < MOMENTUM_LABEL_MIN or len(prev) < MOMENTUM_LABEL_MIN:
+        out["label_why"] = f"イベントが {MOMENTUM_LABEL_MIN} 件ずつそろうまでは、数字だけ出します"
+    elif abs(diff) >= math.log(MOMENTUM_STEP) and abs(diff) > 2 * noise:
+        out["label"] = "上り調子" if diff > 0 else "下り気味"
+    else:
+        out["label"] = "変わらない"
+    grow = out["people"] if out["people"] is not None else out["depth"]
+    if out["label"] == "上り調子" and grow is not None:
+        out["detail"] = "人も増えている" if grow >= PEOPLE_STEP else "同じ人が多く送っている"
+    elif out["label"] == "下り気味" and grow is not None:
+        out["detail"] = "人が減っている" if grow <= 1 / PEOPLE_STEP else "1 人あたりが減っている"
     return out
+
+
+def momentum_people(s: Store, room_id: int, now: float) -> dict[str, Any] | None:
+    """勢いの中身 (ルームのページだけ。その場で作る): 直近の期間に貢献ランキングに出た人のうち、
+    このルームで初めて見た人・前の期間から続けている人・前の期間に出たのに直近は出ていない人の数。
+    """
+    rid = int(room_id)
+    rows = s.all("""SELECT re.event_id, e.end FROM room_events re JOIN events e USING(event_id)
+                    WHERE re.room_id=? AND re.c_count > 0 AND e.end <= ?""", (rid, now))
+    edge, before = now - MOMENTUM_DAYS * 86400, now - 2 * MOMENTUM_DAYS * 86400
+    recent, prev, older = set(), set(), set()
+    for r in rows:
+        bucket = recent if r["end"] > edge else prev if r["end"] > before else older
+        bucket.update(x[0] for x in s.all("SELECT user_id FROM contributions WHERE event_id=? AND room_id=?", (r["event_id"], rid)))
+    if not recent or not prev:
+        return None
+    return {"new": len(recent - prev - older), "back": len((recent & older) - prev), "stayed": len(recent & prev),
+            "left": len(prev - recent), "recent": len(recent), "prev": len(prev)}
+
+
+def place_change(s: Store, room_id: int, now: float, rows: list[Any] | None = None) -> dict[str, Any]:
+    """戦った相手の中の位置 ((順位 - 1) ÷ (参加ルーム数 - 1)。1 位は 0、最下位は 1) の、直近と前の期間の平均。
+    相手しだいで動くので、ルームの勢いには使わない (どんな相手の中で戦ってきたかを見るため)。
+    """
+    rows = _period_rows(s, room_id, now) if rows is None else rows
+    use = [r for r in rows if (r["rank"] or 0) > 0 and (r["room_count"] or 0) >= MOMENTUM_MIN_ROOMS]
+    recent, prev = _split(use, now)
+    place = lambda r: min(1.0, (r["rank"] - 1) / (r["room_count"] - 1))  # noqa: E731
+    return {"recent_events": len(recent), "prev_events": len(prev),
+            "recent_place": sum(map(place, recent)) / len(recent) if recent else None,
+            "prev_place": sum(map(place, prev)) / len(prev) if prev else None}
 
 
 def _var(xs: list[float]) -> float:
@@ -605,7 +677,8 @@ def room_analysis(s: Store, room_id: int, now: float | None = None, rounds: dict
     return {"type": rtype, "type_note": TYPES.get(rtype or ""), "type_why": why, "metrics": m,
             "depth": depth, "depth_note": DEPTH_NOTES.get(depth or ""), "depths": DEPTH_NOTES,
             "size_name": SIZE_NAMES[m["size_class"]] if m else None,
-            "momentum": momentum(s, room_id, now), "style": room_style(s, room_id), "event_styles": styles,
+            "momentum": {**momentum(s, room_id, now), "people_flow": momentum_people(s, room_id, now)},
+            "place": place_change(s, room_id, now), "style": room_style(s, room_id), "event_styles": styles,
             "tactics": tactics(s, room_id), "rounds": rounds if rounds is not None else listener_rounds(s, room_id), "regulars": regulars(s, room_id),
             "new_share": new_share(s, room_id), "followers": followers_growth(s, room_id, now), "daily": daily[::-1],
             "types": TYPES, "styles": STYLES, "caution": CAUTION}
@@ -622,6 +695,12 @@ def step(s: Store, now: float) -> bool:
             c.execute("UPDATE events SET style_at=NULL WHERE style_at IS NOT NULL")
             c.execute("DELETE FROM meta WHERE k IN ('room_profile_at', 'room_profile_run')")
         s.set_meta("style_version", STYLE_VERSION)
+    if s.meta("momentum_version", 1) != MOMENTUM_VERSION:
+        # 前の出し方の勢いを画面に残さない (作り直すまで「判定できない」)
+        with s.tx() as c:
+            c.execute("UPDATE room_profile SET momentum=NULL, momentum_label=NULL")
+            c.execute("DELETE FROM meta WHERE k IN ('room_profile_at', 'room_profile_run')")
+        s.set_meta("momentum_version", MOMENTUM_VERSION)
     # 終わったイベントの走り方 (推移を残したもので、まだ作っていないもの)
     # (終わった時の最終結果を読んでから。読めないままなら STYLE_WAIT 秒で、あるだけで作る)
     e = s.one("""SELECT event_id FROM events WHERE progress_at IS NOT NULL AND end IS NOT NULL AND end < ? AND style_at IS NULL
@@ -653,21 +732,24 @@ def step(s: Store, now: float) -> bool:
     out = []
     for rid in rooms:
         m = metrics(_event_rows(s, rid))
-        mo = momentum(s, rid, now)
+        rows = _period_rows(s, rid, now)
+        mo, pl = momentum(s, rid, now, rows), place_change(s, rid, now, rows)
         st = room_style(s, rid)
         if m is None and mo["label"] is None and st["style"] is None:
             continue
         m = m or {}
         out.append((rid, now, m.get("events"), m.get("size_class"), m.get("top1"), m.get("top3"), m.get("contributors"),
                     int(bool(m.get("capped"))), m.get("rel_top10"), m.get("rel_per_contrib"), m.get("rel_point"),
-                    classify(m or None, cuts), mo["value"], mo["recent_place"], mo["prev_place"], st["style"], st["events"],
+                    classify(m or None, cuts), mo["value"], pl["recent_place"], pl["prev_place"], st["style"], st["events"],
                     json.dumps(st["counts"], ensure_ascii=False), m.get("depth_pt"), m.get("depth_rel"), depth_label(m or None, cuts),
-                    m.get("below_pt"), m.get("below_share"), mo["label"]))
+                    m.get("below_pt"), m.get("below_share"), mo["label"], mo["people"] if mo["people"] is not None else mo["depth"],
+                    mo["detail"]))
     with s.tx() as c:
         c.executemany("""INSERT OR REPLACE INTO room_profile(room_id, at, events, size_class, top1, top3, contributors, capped,
                            rel_top10, rel_per_contrib, rel_point, type, momentum, recent_place, prev_place, style, style_events,
-                           style_counts, depth_pt, depth_rel, depth, below_pt, below_share, momentum_label)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
+                           style_counts, depth_pt, depth_rel, depth, below_pt, below_share, momentum_label, momentum_people,
+                           momentum_detail)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", out)
     if len(rooms) == PROFILE_CHUNK:
         s.set_meta("room_profile_run", {**state, "next": rooms[-1]})
         return True
@@ -713,7 +795,8 @@ def profile_list(s: Store, rtype: str | None = None, style: str | None = None, o
             "depth_counts": depth_counts, "types": TYPES, "styles": STYLES, "depths": DEPTH_NOTES, "caution": CAUTION,
             "rooms": [{k: r[k] for k in ("room_id", "key", "name", "followers", "type", "style", "style_events", "momentum",
                                          "recent_place", "prev_place", "events", "top1", "contributors", "depth",
-                                         "depth_pt", "depth_rel", "below_pt", "below_share", "momentum_label")} for r in rows]}
+                                         "depth_pt", "depth_rel", "below_pt", "below_share", "momentum_label",
+                                         "momentum_people", "momentum_detail")} for r in rows]}
 
 
 # ------------------------------------------------------------------ コメントとギフトの釣り合い (記録しているルームだけ)

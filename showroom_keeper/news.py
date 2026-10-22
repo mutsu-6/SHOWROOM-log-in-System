@@ -10,7 +10,7 @@ SHOWROOM には問い合わせない。research.db と記録したギフトを�
 - last_shots: 終わる直前の一気投げ (終わる直前の細かい推移 event_final の、続く 2 回の間の増え方)
 - new_stars: 今月の貢献が多いのに、前の月の記録が無いギフター
 - top_month: 今月いちばん送っているギフター (イベントの貢献ランキングで見えた分)
-- rising_rooms: 勢いが上り調子のルーム (ルームの分析)
+- rising_rooms: 勢いが上り調子のルーム (ルームの分析。ルーム自身のポイントの伸び)
 """
 
 from __future__ import annotations
@@ -200,9 +200,9 @@ def _top_month(s: Store, names: _Names, now: float) -> list[dict[str, Any]]:
 
 
 def _rising_rooms(s: Store) -> list[dict[str, Any]]:
-    rows = s.all("""SELECT p.room_id, p.momentum, p.recent_place, p.prev_place, p.type, r.key, r.name, r.followers
+    rows = s.all("""SELECT p.room_id, p.momentum, p.momentum_people, p.momentum_detail, p.type, r.key, r.name, r.followers
                     FROM room_profile p LEFT JOIN rooms r USING(room_id)
                     WHERE p.momentum_label='上り調子' ORDER BY p.momentum DESC LIMIT ?""", (TOP,))
     return [{"room_id": r["room_id"], "room_key": r["key"] or "", "room_name": r["name"] or f"ルーム {r['room_id']}",
-             "momentum": r["momentum"], "recent_place": r["recent_place"], "prev_place": r["prev_place"],
+             "momentum": r["momentum"], "people": r["momentum_people"], "detail": r["momentum_detail"],
              "type": r["type"], "followers": r["followers"]} for r in rows]

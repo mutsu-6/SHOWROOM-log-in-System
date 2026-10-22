@@ -102,27 +102,50 @@ def test_room_style_majority(tmp_path):
 
 def test_momentum(tmp_path):
     with Store(tmp_path) as s:
-        # 前の期間は 10 ルーム中 8 位前後、直近は 2 位前後 (5 件ずつ)
-        plan = [(e, 100 - e * 5, (8, 7, 8, 9, 8)[e - 1]) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, (2, 3, 2, 1, 2)[e - 6]) for e in range(6, 11)]
-        for eid, days, rank in plan:
-            _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r if r != rank else 1, []) for r in range(2, 11)}})
+        # 前の期間は 1 日 100 pt 前後・10 人、直近は 200 pt 前後・15 人 (7 日のイベントを 5 件ずつ)。順位はずっと最下位
+        plan = [(e, 100 - e * 5, 700 + e * 10, 10) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, 1400 + e * 10, 15) for e in range(6, 11)]
+        for eid, days, point, people in plan:
+            _event(s, eid, NOW - days * DAY, {1: (point, 10, [point // people] * people), **{r: (99999, r - 1, []) for r in range(2, 11)}})
         m = ra.momentum(s, 1, NOW)
-        assert m["label"] == "上り調子" and m["value"] == 0.67 and m["noise"] < 0.2  # (8-1)/9 - (2-1)/9
+        assert m["label"] == "上り調子" and 1.9 < m["value"] < 2.1 and m["people"] == 1.5 and m["detail"] == "人も増えている"
         assert ra.momentum(s, 1, NOW - 50 * DAY)["label"] is None  # 直近のイベントが足りない
+        pl = ra.place_change(s, 1, NOW)
+        assert pl["recent_place"] == 1 and pl["prev_place"] == 1  # 相手の中の位置は変わらない (勢いとは別)
+        pf = ra.momentum_people(s, 1, NOW)
+        assert pf["stayed"] == 10 and pf["new"] == 5 and pf["left"] == 0
 
 
-def test_momentum_needs_five_events_and_a_clear_difference(tmp_path):
+def test_momentum_does_not_depend_on_opponents(tmp_path):
     with Store(tmp_path) as s:
-        # 2 件ずつ: 数字は出すが、上り調子とは言わない (偶然の差でもよく出るため)
-        for eid, days, rank in ((1, 100, 8), (2, 90, 8), (3, 20, 2), (4, 10, 2)):
-            _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r, []) for r in range(2, 11)}})
+        # ルームのポイントは同じまま、前は強い相手の中で最下位、直近は弱い相手の中で 1 位: 勢いは「変わらない」
+        for eid, days, rank in [(e, 100 - e * 5, 10) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, 1) for e in range(6, 11)]:
+            other = 99999 if rank == 10 else 1
+            _event(s, eid, NOW - days * DAY, {1: (700, rank, []), **{r: (other, r - 1 if rank == 10 else r, []) for r in range(2, 11)}})
         m = ra.momentum(s, 1, NOW)
-        assert m["value"] == 0.67 and m["label"] is None and "5 件" in m["label_why"]
+        assert m["value"] == 1 and m["label"] == "変わらない"
+        assert ra.place_change(s, 1, NOW)["recent_place"] == 0
+
+
+def test_momentum_same_people_spending_more(tmp_path):
+    with Store(tmp_path) as s:
+        for eid, days, point in [(e, 100 - e * 5, 700) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, 2100) for e in range(6, 11)]:
+            _event(s, eid, NOW - days * DAY, {1: (point, 1, [point // 7] * 7), 2: (10, 2, [])})
+        m = ra.momentum(s, 1, NOW)
+        assert m["label"] == "上り調子" and m["value"] == 3 and m["people"] == 1 and m["detail"] == "同じ人が多く送っている"
+
+
+def test_momentum_per_day_and_needs_five_events(tmp_path):
+    with Store(tmp_path) as s:
+        # 2 件ずつ: 数字は出すが、上り調子とは言わない。ポイントは 1 日あたりで見る (14 日で 1400 と 7 日で 700 は同じ)
+        for eid, days, point, length in ((1, 100, 1400, 14), (2, 90, 1400, 14), (3, 20, 700, 7), (4, 10, 700, 7)):
+            _event(s, eid, NOW - days * DAY, {1: (point, 1, []), 2: (10, 2, [])}, start=NOW - (days + length) * DAY)
+        m = ra.momentum(s, 1, NOW)
+        assert m["value"] == 1 and m["label"] is None and "5 件" in m["label_why"]
     with Store(tmp_path / "b") as s:
         # 5 件ずつでも、ばらつきが大きく差がはっきりしない時は「変わらない」
-        plan = [(e, 100 - e * 5, (1, 10, 1, 10, 1)[e - 1]) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, (10, 1, 10, 1, 5)[e - 6]) for e in range(6, 11)]
-        for eid, days, rank in plan:
-            _event(s, eid, NOW - days * DAY, {1: (100, rank, []), **{r: (10, r if r != rank else 1, []) for r in range(2, 11)}})
+        plan = [(e, 100 - e * 5, (100, 5000, 100, 5000, 100)[e - 1]) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, (5000, 100, 5000, 100, 3000)[e - 6]) for e in range(6, 11)]
+        for eid, days, point in plan:
+            _event(s, eid, NOW - days * DAY, {1: (point, 1, []), 2: (10, 2, [])})
         assert ra.momentum(s, 1, NOW)["label"] == "変わらない"
 
 
@@ -270,15 +293,6 @@ def test_room_style_counts_events_without_style(tmp_path):
         assert ra.room_style(s, 1)["style"] == "自在"
 
 
-def test_momentum_is_not_dragged_by_small_events(tmp_path):
-    with Store(tmp_path) as s:
-        # 前は 500 ルームのイベントで 1 位、直近は 5 ルームのイベントで 1 位: 同じ成績なので「変わらない」
-        for eid, days, n in [(e, 100 - e * 5, 500) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, 5) for e in range(6, 11)]:
-            _event(s, eid, NOW - days * DAY, {1: (1000, 1, []), **{r: (10, r, []) for r in range(2, n + 1)}})
-        m = ra.momentum(s, 1, NOW)
-        assert m["value"] == 0 and m["label"] == "変わらない" and m["recent_place"] == 0
-
-
 def test_no_sashi_when_nobody_had_points_early(tmp_path):
     with Store(tmp_path) as s:
         start, end = NOW - 10 * DAY, NOW - 3 * DAY
@@ -309,13 +323,13 @@ def test_new_share_ignores_regulars_seen_in_older_events(tmp_path):
         assert ns["events"] == 2 and abs(ns["value"] - 0.1) < 1e-9
 
 
-def test_momentum_ignores_tiny_events(tmp_path):
+def test_place_change_ignores_tiny_events(tmp_path):
     with Store(tmp_path) as s:
-        # 2 ルームのイベントでは、1 位か最下位しかないので勢いに使わない
+        # 2 ルームのイベントでは、1 位か最下位しかないので相手の中の位置に使わない (勢いには使う)
         for eid, days, rank in ((1, 100, 2), (2, 90, 2), (3, 20, 1), (4, 10, 1)):
             _event(s, eid, NOW - days * DAY, {1: (100, rank, []), 9: (50, 3 - rank, [])})
-        m = ra.momentum(s, 1, NOW)
-        assert m["label"] is None and m["recent_events"] == 0
+        assert ra.place_change(s, 1, NOW)["recent_events"] == 0
+        assert ra.momentum(s, 1, NOW)["recent_events"] == 2
 
 
 def test_depth_from_100th_contributor(tmp_path):
@@ -602,3 +616,21 @@ def test_coverage_congestion_effort_and_followers(tmp_path):
         s.add_room_daily([{"room_id": 1, "followers": 120}], now)
         fm = ra.followers_by_month(s, 1, now)
     assert [(m["month"], m["followers"], m["gain"]) for m in fm] == [("2026-08", 90, None), ("2026-09", 95, 5), ("2026-10", 120, 25)]
+
+
+def test_profile_momentum_is_own_growth_and_old_values_are_cleared(tmp_path):
+    from showroom_keeper import news
+    with Store(tmp_path) as s:
+        # 前の出し方 (順位の位置) で作った勢いが残っている research.db
+        s.conn.execute("INSERT INTO room_profile(room_id, at, momentum, momentum_label) VALUES (9, ?, 0.29, '上り調子')", (NOW,))
+        for eid, days, point in [(e, 100 - e * 5, 700) for e in range(1, 6)] + [(e, 55 - (e - 6) * 10, 2100) for e in range(6, 11)]:
+            _event(s, eid, NOW - days * DAY, {1: (point, 2, [point // 7] * 7), 2: (99999, 1, [])})
+        s.set_meta("room_stats_upto", True)
+        while ra.step(s, NOW):
+            pass
+        assert s.one("SELECT momentum FROM room_profile WHERE room_id=9")[0] is None  # 前の出し方の分は残さない
+        p = s.one("SELECT * FROM room_profile WHERE room_id=1")
+        assert p["momentum"] == 3 and p["momentum_label"] == "上り調子" and p["momentum_people"] == 1
+        assert p["momentum_detail"] == "同じ人が多く送っている"  # 順位はずっと 2 位 (相手は入れない)
+    items = next(t for t in news.build(tmp_path, 7, now=NOW, use_cache=False)["topics"] if t["key"] == "rising_rooms")["items"]
+    assert [(x["room_id"], x["momentum"], x["detail"]) for x in items] == [(1, 3, "同じ人が多く送っている")]
