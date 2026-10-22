@@ -1281,7 +1281,7 @@ def _analyze_base(state_dir: Path, limit: int) -> dict[str, Any]:
     人ごとのまとめ (u) とルームごとのまとめ (rs) は、見るルームごとの集計が読むので、cache の小さな DB に残す
     (research.db には入れない。写しやバックアップを大きくしないため)。
     """
-    rec = _Recorded(state_dir)
+    rec = _Recorded(state_dir, catch_up=False)  # 記録の新しい分は裏で足す (書き込みの順番を待たない)
     cache = Path(state_dir) / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     db_name = f"analysis-base-{time.time_ns()}.db"
@@ -1403,7 +1403,7 @@ def _fan_rooms(s: Store, rooms: _Rooms, rec: _Recorded, fans: list[int], sup: se
 
 def _analyze_view(state_dir: Path, base: dict[str, Any], support: list[str], limit: int) -> dict[str, Any]:
     """見るルームごとの集計: 土台に、見るルームのギフターを当てはめる (索引で読む分だけ。全部は読まない)。"""
-    rec = _Recorded(state_dir)
+    rec = _Recorded(state_dir, catch_up=False)  # 記録の新しい分は裏で足す (書き込みの順番を待たない)
     with Store(state_dir) as s:
         rooms = _Rooms(s, state_dir)
         for key, rid in base["temp_ids"].items():  # 記録にだけ出てくるルームは、土台と同じ番号にする

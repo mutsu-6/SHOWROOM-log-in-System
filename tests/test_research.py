@@ -234,6 +234,20 @@ def test_analysis_reuses_each_gifters_summary_for_a_while(collected, monkeypatch
     assert read[-1] and fresh == again
 
 
+def test_analysis_does_not_wait_to_add_new_gift_records(collected, monkeypatch):
+    """分析は、記録したギフトの新しい分をその場で足さず、裏の仕事 (catchup) に頼む
+    (その場で足すと、収集の書き込みのうしろで順番を待つ。サーバーで 1 回目に開いた画面が 1,100 秒。2026-10-22 に Cursor が測った)。"""
+    from showroom_keeper import catchup, explore
+
+    tmp_path = collected[0]
+    asked = []
+    monkeypatch.setattr(catchup, "WAIT", False)
+    monkeypatch.setattr(catchup, "soon", lambda d: asked.append(d) or False)
+    monkeypatch.setattr(explore, "update_all_gift_senders", lambda *a: pytest.fail("その場で書き足した"))
+    assert research.analyze(tmp_path, ["support"], max_age=0)["candidates"]
+    assert asked
+
+
 def test_recorded_only_rooms_are_counted(tmp_path):
     record_gift(tmp_path, "nowhere", 9, {"t": 2, "u": 70, "ac": "記録だけ", "g": 5, "n": 2, "created_at": NOW - 60})
     r = research.analyze(tmp_path, [])
