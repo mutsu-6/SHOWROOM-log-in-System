@@ -7,6 +7,8 @@
 - きっかけ配信は配信中の一覧の live_type が 4。そのルームを今月と前月で 6 時間未満しか見ていない人だけが対象
   (current_user の is_targeted_discovery_live)。新人の配信は new_days_count_label (New1day〜New30day) が付いている
 - 同じ配信は 1 回しか数えないので、見た配信 (live_id) を覚えておく
+- 新人・きっかけ配信のルームの中にだけ出る限定のミッション (「HW2026 新人ライバー応援ミッション」など) があるので、
+  コメントの残りと報酬の受取は、そのルームの中で読む
 """
 
 from __future__ import annotations
@@ -107,11 +109,25 @@ def views_left(missions: list[dict[str, Any]]) -> int | None:
     return None
 
 
+ROOM_WORDS = {"new": "新人", "kikkake": "きっかけ"}  # そのルームの中にだけ出るミッションの名前に入る言葉
+
+
 def comment_wanted(missions: list[dict[str, Any]]) -> bool:
-    """毎日のコメントのミッション (きっかけ配信のものは除く) が残っているか。1 回送れば全部済む。"""
-    return any("コメント" in str(m.get("title")) and "きっかけ" not in str(m.get("title"))
+    """どのルームでもよい毎日のコメントのミッションが残っているか。1 回送れば全部済む。"""
+    return any("コメント" in str(m.get("title")) and not any(w in str(m.get("title")) for w in ROOM_WORDS.values())
                and (m.get("genre") == "daily" or m.get("is_daily")) and m.get("is_active", 1)
                and int(m.get("current_value") or 0) < int(m.get("target_value") or 1) for m in missions)
+
+
+def comments_left(missions: list[dict[str, Any]], kind: str) -> int:
+    """新人・きっかけ配信のルームでコメントするミッション (「新人ライバーの配信 3 ルームでコメント」など) の残りのルーム数。"""
+    word = ROOM_WORDS.get(kind)
+    left = 0
+    for m in missions:
+        title = str(m.get("title"))
+        if word and word in title and "コメント" in title and m.get("is_active", 1):
+            left = max(left, int(m.get("target_value") or 1) - int(m.get("current_value") or 0))
+    return left
 
 
 def candidates(onlives: dict[str, Any], skip_keys: set[str], seen_lives: set[int],
@@ -219,29 +235,42 @@ class MissionRunner:
             return
         missions = flatten(await self._get_json(s, f"/api/mission?room_id={cands[0]['room_id']}"))
         left = views_left(missions)
+        text = (self.cfg.mission_comment or "").strip()
+        say = text.lower() not in COMMENT_OFF
+        # 新人・きっかけ配信のルームの中にだけ出るミッション (ハロウィンの限定など) は、そのルームで読む
+        need: dict[str, int] = {}
+        for k in ROOM_WORDS:
+            room = next((r for r in cands if r["kind"] == k), None)
+            if room is not None and say:
+                need[k] = comments_left(flatten(await self._get_json(s, f"/api/mission?room_id={room['room_id']}")), k)
         budget = self.cfg.mission_rooms + 2 * EXTRA_ROOMS - st["views"]  # 数えられない時に、試し直しで見続けないように
         want = self.cfg.mission_rooms - st["views"] if left is None else left
         want = max(0, min(want, self.cfg.mission_rooms, budget))
         tries = want + EXTRA_ROOMS
         last_room = cands[0]
+        viewed: dict[str, dict[str, Any]] = {}  # ルームの種類ごとに、見た最後のルーム (報酬はその中で受け取る)
         for room in cands:
             if want <= 0 or tries <= 0 or datetime.fromtimestamp(self._clock(), JST) >= end - timedelta(minutes=2):
                 break
             tries -= 1
             if not await self.view(s, room):
                 continue
-            last_room = room
+            last_room = viewed[room["kind"]] = room
             st["live_ids"].append(room["live_id"])
             st["views"] += 1
             if room["kind"] != "normal":
                 st[room["kind"]] += 1
             want -= 1
+            if need.get(room["kind"], 0) > 0 and await self.comment(s, room, text):
+                need[room["kind"]] -= 1
             self._save()
             await self._sleep(ROOM_GAP)
-        text = (self.cfg.mission_comment or "").strip()
-        if text.lower() not in COMMENT_OFF and comment_wanted(missions) and st["views"]:
+        if say and st["views"] and comment_wanted(flatten(await self._get_json(s, f"/api/mission?room_id={last_room['room_id']}"))):
             await self.comment(s, last_room, text)
-        got = await self.receive(s, last_room["room_id"])
+        got: dict[str, int] = {}
+        for room in {r["room_id"]: r for r in [last_room, *viewed.values()]}.values():
+            for name, num in (await self.receive(s, room["room_id"])).items():
+                got[name] = got.get(name, 0) + num
         missions = flatten(await self._get_json(s, f"/api/mission?room_id={last_room['room_id']}"))
         left = views_left(missions)
         st["done"] = not left
@@ -273,17 +302,18 @@ class MissionRunner:
             await self._sleep(step)
             waited += step
 
-    async def comment(self, s: Session, room: dict[str, Any], text: str) -> None:
+    async def comment(self, s: Session, room: dict[str, Any], text: str) -> bool:
         try:
             answer = json.loads(await asyncio.to_thread(
                 s.post, "/api/live/post_live_comment", {"live_id": room["live_id"], "comment": text, "is_delay": 0}))
         except (OSError, ValueError, RuntimeError) as e:
             log.warning("視聴ミッションのコメントを送れませんでした: %s", e)
-            return
-        if answer.get("ok"):
-            self.state["comments"] += 1
-        else:
+            return False
+        if not answer.get("ok"):
             log.warning("視聴ミッションのコメントを送れませんでした: %s", str(answer)[:100])
+            return False
+        self.state["comments"] += 1
+        return True
 
     async def receive(self, s: Session, room_id: int) -> dict[str, int]:
         """受け取れる報酬をすべて受け取る。{報酬の名前: 数}。"""

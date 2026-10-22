@@ -75,7 +75,17 @@ class FakeSession:
         sv = self.server
         sv.calls.append(("GET", path))
         if path.startswith("/api/mission"):
-            return json.dumps(_daily(sv.level, sv.value, sv.comment, sv.remain))
+            rid = int(path.split("=")[1])
+            data = _daily(sv.level, sv.value, sv.comment, sv.remain)
+            if rid in sv.new_rooms:  # 新人のルームの中にだけ出る限定のミッション
+                data["genre_list"].append({"genre": "limited", "name": "HW2026 新人ライバー応援ミッション", "all_days_mission": [
+                    {"mission_id": 10, "title": "新人ライバーの配信3ルームでコメントしよう", "current_value": sv.new_comments,
+                     "target_value": 3, "is_daily": 1, "is_active": 1, "remain_reward": 0},
+                    {"mission_id": 11, "title": "新人ライバーの配信を1回視聴しよう", "current_value": 1, "target_value": 1,
+                     "is_daily": 1, "is_active": 1, "remain_reward": sv.new_remain, "reward_name": "G", "reward_num": 2}]})
+            if rid == 1:
+                data["genre_list"][1]["all_days_mission"][0]["current_value"] = sv.kik_comments
+            return json.dumps(data)
         if path.startswith("/api/live/current_user"):
             rid = int(path.split("=")[1])
             return json.dumps({"is_login": sv.login, "is_targeted_discovery_live": rid != 1 or sv.targeted})
@@ -94,17 +104,23 @@ class FakeSession:
         sv = self.server
         sv.calls.append(("POST", path, form))
         if path == "/api/live/post_live_comment":
+            rid = form["live_id"] - 1000
             sv.comment = 1
+            sv.new_comments += rid in sv.new_rooms
+            sv.kik_comments += rid == 1
             return json.dumps({"ok": 1})
         if path == "/api/mission/receive":
             if form["mission_id"] == 1:
                 sv.remain = 0
+            if form["mission_id"] == 11:
+                sv.new_remain = 0
             return json.dumps({"mission": {}})
         raise AssertionError(path)
 
 
 def _runner(tmp_path, now, **cfg):
-    sv = SimpleNamespace(level=1, value=0, comment=0, remain=0, login=True, targeted=False, polls={}, calls=[], now=now)
+    sv = SimpleNamespace(level=1, value=0, comment=0, remain=0, login=True, targeted=False, polls={}, calls=[], now=now,
+                         new_rooms={2}, new_comments=0, new_remain=1, kik_comments=0)
     base = dict(state_file=tmp_path / "storage_state.json", rooms=["watched"], no_visit_rooms=[], mission_rooms=20,
                 mission_comment="1", mission_times="12:00,21:00", mission_view_seconds=60.0)
     base.update(cfg)
@@ -139,6 +155,28 @@ async def test_run_views_until_the_20_steps_are_done_comments_once_and_receives(
     calls = len(sv.calls)
     await r.step(mission.parse_times("12:00,21:00"))  # 同じ区切りでは 2 回しない
     assert len(sv.calls) == calls
+
+
+async def test_comments_in_new_and_kikkake_rooms_and_receives_their_limited_rewards(tmp_path):
+    r, sv = _runner(tmp_path, jst(2026, 10, 22, 21, 5).timestamp())
+    sv.targeted = True
+    sv.new_rooms = {2, 7, 8, 9}
+    lives = _onlives()
+
+    async def more():
+        for live in lives["onlives"][0]["lives"]:
+            if live["room_id"] in sv.new_rooms:
+                live["new_days_count_label"] = "New3day"
+        return lives
+
+    r._fetch_onlives = more
+    await r.step(mission.parse_times("21:00"))
+    posts = [c for c in sv.calls if c[0] == "POST"]
+    commented = [p[2]["live_id"] - 1000 for p in posts if p[1] == "/api/live/post_live_comment"]
+    assert sorted(commented) == [1, *sorted(set(commented) & {2, 7, 8, 9})]
+    assert len(set(commented) & {2, 7, 8, 9}) == 3  # 新人のルームのコメントは 3 ルームで足りる
+    assert ("POST", "/api/mission/receive", {"mission_id": 11}) in posts  # 新人のルームの中で受け取る
+    assert r.state["kikkake"] == 1 and r.state["new"] == 3
 
 
 async def test_waits_for_the_start_time_and_skips_comment_when_off(tmp_path):
