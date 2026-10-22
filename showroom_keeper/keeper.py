@@ -18,6 +18,7 @@ from .api import BASE_URL, ShowroomAPI, public_get
 from .config import Config, apply_settings, settings_path
 from .comments import CommentDispatcher, queue_dir
 from .entrance import AllRoomsEntrance, RoomEntrance
+from .mission import MissionRunner
 from .status import LOGIN_KEY, write_live_stat
 from .watcher import RoomWatcher
 
@@ -634,6 +635,9 @@ class Keeper:
                 entrance = RoomEntrance(enter_rooms, self.cfg.status_poll_interval, api.room_status, ctx.cookies,
                                         state_dir=Path(self.cfg.state_file).parent)
                 background.append(asyncio.create_task(entrance.run(), name="entrance"))
+            if self.cfg.mission_auto:
+                missions = MissionRunner(self.cfg, ctx.cookies, api.onlives_raw)
+                background.append(asyncio.create_task(missions.run(), name="mission"))
             tasks += background
             saver = asyncio.create_task(self._periodic_save(ctx, api, watchers))
             wake_wait = asyncio.create_task(self._wake.wait())
