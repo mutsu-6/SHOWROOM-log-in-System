@@ -50,6 +50,9 @@ async ([roomId, text, since]) => {
 
 AVATAR_CHECK_EVERY = 600  # 配信中に、観客席 (ステージ) に自分のアバターがいるかを確かめる間隔 (秒)
 AVATAR_RECHECK = 90  # いなかった時に入り直してから、もう一度確かめるまでの秒数
+# 配信中に観客席にいる間は、定期リロードを延ばす (読み込み直すと席を外れ、100 人でいっぱいの時は 26 分戻れなかった。
+# 2026-10-22)。メモリの増え方を抑えるため、延ばすのは定期リロードの間隔のこの倍まで
+SEATED_RELOAD_MAX = 6
 
 # 観客席に自分がいるか。current_user は配信ページが開いた時に呼ぶものと同じで、呼ぶと観客席に並ぶ (入り直しになる)。
 # stage_user_list は観客席の一覧 (上位 100 人まで)
@@ -153,6 +156,7 @@ class RoomWatcher:
         self.waiting_memory = False  # メモリが足りないので、ページを開かずに待っている
         self._avatar_at: float | None = None
         self.avatar: dict[str, Any] | None = None  # 最後に確かめた、観客席の自分 (管理画面用)
+        self._reload_held = False  # 観客席にいるので定期リロードを延ばしている (ログを 1 回だけ出す)
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ 公開 API
@@ -344,6 +348,7 @@ class RoomWatcher:
         await self.page.reload(wait_until="commit", timeout=60000)
         self.last_reload_at = self._clock()
         self.reload_count += 1
+        self._reload_held = False
         self._reset_health()
 
     def _sync_activity_live(self) -> None:
@@ -446,8 +451,12 @@ class RoomWatcher:
         now = self._clock()
         period = self.cfg.periodic_reload_minutes * 60
         if period > 0 and self.last_reload_at is not None and now - self.last_reload_at >= period:
-            await self._reload("定期リロード")
-            return
+            if not (self._seated() and now - self.last_reload_at < period * SEATED_RELOAD_MAX):
+                await self._reload("定期リロード")
+                return
+            if not self._reload_held:
+                self.log.info("観客席にいるので、定期リロードを延ばします (席を外れないように)")
+                self._reload_held = True
         if not (self.status and self.status.is_live):
             # 配信前でもページは開いたままにし、ログイン済みのルームに居続ける
             await self.page.evaluate("() => document.readyState")
@@ -498,6 +507,12 @@ class RoomWatcher:
                 if isinstance(probe, dict) else "動画要素なし"
             )
             await self._reload(f"再生停止を検出: {state}, 累計視聴 {self.watched_seconds / 60:.1f} 分")
+
+    def _seated(self) -> bool:
+        """今の配信で、最近確かめた時に観客席にいたか。"""
+        a = self.avatar or {}
+        return bool(self.status and self.status.is_live and a.get("on_stage") and a.get("live_id") == self.status.live_id
+                    and time.time() - float(a.get("at") or 0) <= AVATAR_CHECK_EVERY * 2)
 
     async def _check_avatar(self) -> None:
         """配信中に AVATAR_CHECK_EVERY ごとに、観客席 (ステージ) に自分のアバターがいるかを確かめる。
