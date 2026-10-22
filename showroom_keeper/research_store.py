@@ -187,7 +187,8 @@ CREATE TABLE IF NOT EXISTS room_event_style (
     event_id INTEGER, room_id INTEGER, style TEXT, early REAL, mid REAL, late REAL, final REAL, last_day_share REAL,
     climb REAL, lead_share REAL, PRIMARY KEY (event_id, room_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS room_event_style_room ON room_event_style(room_id);
--- ルームのタイプ・勢い・戦術 (room_analysis が 1 日 1 回作り直す。ルームの一覧の絞り込みに使う)
+-- ルームのタイプ・勢い・戦術 (room_analysis が 1 日 1 回作り直す。ルームの一覧の絞り込みに使う)。
+-- momentum は 1 日あたりのポイントの直近 ÷ 前の期間、recent_place・prev_place は戦った相手の中の位置 (勢いには使わない)
 CREATE TABLE IF NOT EXISTS room_profile (
     room_id INTEGER PRIMARY KEY, at REAL, events INTEGER, size_class INTEGER, top1 REAL, top3 REAL, contributors REAL,
     capped INTEGER, rel_top10 REAL, rel_per_contrib REAL, rel_point REAL, type TEXT,
@@ -320,7 +321,8 @@ class Store:
                                    ("room_events", "c_p100 INTEGER"), ("room_profile", "depth_pt REAL"),
                                    ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT"),
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
-                                   ("room_profile", "momentum_label TEXT"), ("events", "thinned_at REAL"),
+                                   ("room_profile", "momentum_label TEXT"), ("room_profile", "momentum_people REAL"),
+                                   ("room_profile", "momentum_detail TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
                                    ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"), ("room_lives", "genre TEXT"),
                                    ("user_rooms", "room_key TEXT"), ("event_series", "parents TEXT"),
