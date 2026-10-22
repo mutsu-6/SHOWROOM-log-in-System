@@ -136,6 +136,10 @@ class ShowroomAPI:
         data = await self._get_public("/api/live/onlives")
         return parse_onlives(data)
 
+    async def onlives_raw(self) -> Any:
+        """配信中の一覧を、SHOWROOM の応答のまま (配信の種類 live_type・新人の印なども見る時)。"""
+        return await self._get_public("/api/live/onlives")
+
     async def live_room_id(self, skip: set[int] | frozenset[int] = frozenset()) -> int | None:
         """ログイン状態の確認に使うため、配信中のルームを 1 つ探す (skip のルームは使わない)。見つからなければ None。"""
         try:

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
@@ -59,6 +60,17 @@ class Session:
 
     def get(self, path: str) -> str:
         with self._opener.open(BASE_URL + path, timeout=REQUEST_TIMEOUT) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    def post(self, path: str, form: dict[str, Any]) -> str:
+        """配信ページと同じく、CSRF トークンを付けたフォームで送る (トークンは毎回取る)。"""
+        token = json.loads(self.get("/api/csrf_token")).get("csrf_token")
+        if not token:
+            raise RuntimeError("CSRF トークンを取得できませんでした")
+        body = urllib.parse.urlencode({**form, "csrf_token": token}).encode()
+        req = urllib.request.Request(BASE_URL + path, data=body, method="POST",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+        with self._opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
             return resp.read().decode("utf-8", "replace")
 
 

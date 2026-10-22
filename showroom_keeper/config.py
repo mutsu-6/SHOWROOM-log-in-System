@@ -78,6 +78,14 @@ class Config:
     # SHOWROOM の全ルームで、配信が始まったら一度だけ入室する (配信中の一覧を status_poll_interval ごとに 1 回取る。
     # 1 日に数千回入室するので、アカウントが制限されるおそれがある)。入室するルーム (enter_rooms) も含む
     enter_all: bool = False
+    # 視聴ミッションを自動でする (昼 3:00〜14:59・夜 15:00〜2:59 に 1 回ずつ)。ブラウザのページは開かず、入室と
+    # polling を mission_view_seconds 秒続けて「視聴」にする (30 秒以上で 1 回。2026-10-22 にサーバーで確かめた)。
+    # きっかけ配信・新人の配信を先に見る。報酬はすべて受け取る。ログイン状態はブラウザから借りるので、視聴か入室をしている時だけ動く
+    mission_auto: bool = True
+    mission_rooms: int = 20  # 1 回 (昼か夜) に見るルームの数 (「配信を視聴しよう (1/20)」が済めばそこで終える)
+    mission_comment: str = "1"  # コメントのミッションが残っている時だけ、昼と夜に 1 回送る文 (off なら送らない)
+    mission_times: str = "12:00,21:00"  # 始める時刻 (日本時間)。昼と夜の区切りの中で、この時刻を過ぎたら始める
+    mission_view_seconds: float = 60.0
     # ログインした状態で訪問しないルーム (入室しない・ギフトの記録やログイン確認にもログインを使わない)。
     # 視聴するルーム (rooms) にも入れた時は、視聴を優先する
     no_visit_rooms: list[str] = field(default_factory=list)
@@ -237,6 +245,8 @@ class Config:
                 raise ValueError(f"{name} は正の数である必要があります")
         if self.stall_threshold < 1:
             raise ValueError("stall_threshold は 1 以上である必要があります")
+        if self.mission_view_seconds < 30:
+            raise ValueError("mission_view_seconds は 30 以上である必要があります (30 秒以上で 1 回の視聴)")
 
 
 ENV_PREFIX = "SHOWROOM_"
