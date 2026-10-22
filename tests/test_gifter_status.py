@@ -94,3 +94,13 @@ def test_gifter_page_carries_the_status(tmp_path):
     out = research.gifter_detail(d, 7, [])
     assert out["status"]["found"] and out["status"]["fire"] == 60_000
     assert research.gifter_detail(d, 9, [])["status"] is not None
+
+
+def test_status_carries_the_mind_chart(tmp_path):
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as s:
+        st = gs.read(s, 7)
+    mind = st["psyche"]
+    assert mind["phase"] and len(mind["money"]) == 24 and mind["outlook"]["room_id"] == 1
+    assert mind["outlook"]["room_name"] == "ルーム1"
