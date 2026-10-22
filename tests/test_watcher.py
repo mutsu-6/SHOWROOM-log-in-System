@@ -506,3 +506,27 @@ async def test_avatar_on_stage_is_checked_and_reentered(tmp_path):
     clock.t += 30
     await w.step()
     assert page.reloads == 1
+
+
+async def test_periodic_reload_waits_while_seated(env):
+    """配信中に観客席にいる間は、定期リロードを延ばす (席を外れないように)。延ばすのは間隔の SEATED_RELOAD_MAX 倍まで。"""
+    import time
+
+    from showroom_keeper import watcher as wmod
+
+    w, live, pages, clock = env
+    await w.step()
+    pages[0].video_times = [float(i) for i in range(100)]
+    w.avatar = {"at": time.time(), "login": True, "on_stage": True, "live_id": None}
+    w._avatar_at = clock.t = 601
+    await w.step()
+    assert pages[0].reloads == 0
+    w.avatar["on_stage"] = False  # 席を外れたら、いつもどおり読み込み直す
+    clock.t = 631
+    await w.step()
+    assert pages[0].reloads == 1
+    w.avatar = {"at": time.time(), "login": True, "on_stage": True, "live_id": None}
+    clock.t = 631 + 600 * wmod.SEATED_RELOAD_MAX
+    w._avatar_at = clock.t
+    await w.step()
+    assert pages[0].reloads == 2
