@@ -325,6 +325,15 @@ section[data-page].active { display: block; }
 svg.radar text { font-size: 11px; fill: var(--muted); }
 svg.radar .ring { fill: none; stroke: var(--line); }
 svg.radar .shape { fill: color-mix(in srgb, var(--accent) 22%, transparent); stroke: var(--accent); stroke-width: 2; }
+svg.mind { display: block; width: 100%; min-width: 560px; height: auto; }
+svg.mind text { font-size: 10px; fill: var(--muted); }
+svg.mind .base { stroke: var(--line); }
+svg.mind .bar { fill: var(--accent); }
+svg.mind .bar.off { fill: var(--panel2); }
+svg.mind .lv { fill: color-mix(in srgb, var(--ok) 70%, transparent); }
+svg.mind .mark { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 3 3; }
+svg.mind rect.hit { fill: transparent; }
+svg.mind rect.hit:hover { fill: color-mix(in srgb, var(--text) 6%, transparent); }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: block; color: var(--text); min-width: 0; }
 a.tile:hover { text-decoration: none; border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
@@ -1870,6 +1879,70 @@ function gifterStatus(st, uid) {
   }
   return h;
 }
+/* ------------------------------------------------------------ 心のカルテ (psyche.py。docs/分析の見方.md の「心のカルテ」) */
+const PHASE_NOTE = { "熱中": "直近で量が上がっている", "安定": "大きな変化が見えない", "冷却中": "直近で量が下がり続けている",
+  "休止": "急に止めて静か (ファンレベルも無い)", "休止 (お金の事情か潜伏)": "急に止めて静かだが、ファンレベルは残っている (お金の事情か、貯めている)",
+  "潜伏の疑い": "静かだが、前にも休んでからまとめて出したことがある", "燃え尽きのあと": "大勝負で出し切ったあと静か", "復帰": "休んでいたあと戻ってきた",
+  "離脱": "3 か月、どこにも出さず、ファンレベルも無い" };
+const MIND_NOTE = {
+  "財布が細った": "推しへの気持ちは同じだが、使えるお金が減った (全体が少しずつ下がり、関心と推しの割合は保たれる)",
+  "推しが移った": "気持ちが別のルームに移った (推しのルームが下がり、別のルームが上がる)",
+  "熱が冷めた": "推し活全体への熱が下がった (お金も関心も、どのルームでも下がる)", "熱が冷めた (急)": "お金も関心も、同じころに急に下がった",
+  "下がり続けている": "少しずつ下がっている (関心が分からないので、財布か熱かは見分けられない)",
+  "冷めかけ": "来ているが、心は離れ始めた (このルームのお金だけ半分以下)", "深くハマる": "少しずつ推しが生活の中心になっている",
+  "急にハマった": "あるきっかけで一気に推し始めた", "急にハマった疑い": "急に増えた (続くかはまだ分からない)",
+  "喧嘩して離れた": "1 つのルームだけで、前ぶれなく急に止め、お金がほかのルームに移った (推しやその周りと何かあったかもしれない)",
+  "急な出費": "生活の事情で一時的に出せなかった (全部のルームで同時に下がり、1〜3 か月で戻った)", "急な出費の疑い": "全部のルームで同時に下がった。関心は残る。戻るかはまだ分からない",
+  "お金が止まった": "全部のルームで急に止まり、戻っていない", "燃え尽き": "大勝負で予算を超えて出した直後から、出さなくなった",
+  "貯めて一気": "静かにしていたあと、休んだ分をまとめて出した (離れたフリをして、大事な回で全力投球)",
+  "楽しくないのに出す": "出す量は増えているのに、関心は下がっている (やめようと思ってもやめられない)" };
+const CONF_TAG = { "高": "live", "中": "warn", "低": "" };
+function mindChart(m) {
+  const W = 960, H = 150, L = 34, top = 8, barH = 78, lvTop = 100, lvH = 30, n = m.months.length, cw = (W - L - 4) / n;
+  const mx = Math.max(1, ...m.money), lmx = Math.max(1, ...m.fan.map((v) => v || 0));
+  const marks = new Set(m.timeline.map((t) => t.month));
+  let s = `<svg class="mind" viewBox="0 0 ${W} ${H}" style="max-width:${W}px" role="img" aria-label="月ごとのお金と関心">
+    <text x="0" y="${top + 8}">お金</text><text x="0" y="${lvTop + 10}">関心</text>
+    <line class="base" x1="${L}" x2="${W - 4}" y1="${top + barH}" y2="${top + barH}"/><line class="base" x1="${L}" x2="${W - 4}" y1="${lvTop + lvH}" y2="${lvTop + lvH}"/>`;
+  m.months.forEach((mo, i) => {
+    const x = L + i * cw, v = m.money[i] || 0, h = Math.max(v ? 2 : 0, barH * v / mx), lv = m.fan[i];
+    if (marks.has(mo)) s += `<line class="mark" x1="${x + cw / 2}" x2="${x + cw / 2}" y1="${top}" y2="${lvTop + lvH}"/>`;
+    s += `<rect class="bar" x="${x + 1}" y="${top + barH - h}" width="${Math.max(1, cw - 2)}" height="${h}" rx="2"/>`;
+    if (lv) { const lh = Math.max(2, lvH * lv / lmx); s += `<rect class="lv" x="${x + 1}" y="${lvTop + lvH - lh}" width="${Math.max(1, cw - 2)}" height="${lh}" rx="2"/>`; }
+    else if (lv == null) s += `<rect class="bar off" x="${x + 1}" y="${lvTop + lvH - 2}" width="${Math.max(1, cw - 2)}" height="2"/>`;
+    if (i % 3 === 0) s += `<text x="${x + cw / 2}" y="${H - 2}" text-anchor="middle">${esc(mo.slice(2).replace("-", "/"))}</text>`;
+    const tips = m.timeline.filter((t) => t.month === mo).map((t) => t.type).join("・");
+    s += `<rect class="hit" x="${x}" y="0" width="${cw}" height="${lvTop + lvH}"><title>${esc(mo.replace("-", "/"))}: ${num(v)} pt ・ ファンレベル ${lv == null ? "分からない" : lv ? `Lv ${lv}` : "無し"}${tips ? ` ・ ${esc(tips)}` : ""}</title></rect>`;
+  });
+  return s + "</svg>";
+}
+function gifterPsyche(st, uid) {
+  let h = `<h3>心のカルテ <small class="muted">お金 (送った量) と関心 (ファンレベル) の線のずれ方から、心の変化を読んだもの。どれも仮説で、本当の理由はデータからは分かりません</small></h3>`;
+  const m = st.psyche;
+  if (!m) return h + `<div class="hint" style="margin-top:0">まだありません。ステータスを作る 1 日 1 回の計算で、次に作り直す時に出ます (送った月が 3 か月より少ない人は出しません)。</div>`;
+  const tr = m.traits, o = m.outlook;
+  const roomOf = (name) => name ? esc(name) : "—";
+  h += `<div class="tiles">
+    ${tile("今の時期", esc(m.phase), esc(m.phase_why))}
+    ${tile("のめり込みの強さ", `<span class="sbar"><i style="width:${tr.addiction}%"></i></span>${num(tr.addiction)} <small>/ 100</small>`, tr.signs.length ? esc(tr.signs.map((x) => x.sign).join("・")) : "しるしは見えない")}
+    ${tile("貯め型", tr.saver ? `${num(tr.saver)} <small>回</small>` : "—", tr.saver >= 2 ? "型として持っている (休んでから、まとめて出す)" : tr.saver ? "1 回 (まだ型とは言えない)" : "休んでからまとめて出した過去は無い")}
+    ${tile("次の大事なイベントに出てくる見込み", esc(o.appear), `${roomOf(o.room_name)} で ${shortNum(o.low)}〜${shortNum(o.high)} pt${o.timing ? ` ・ ${esc(o.timing)}` : ""}`)}
+  </div>`;
+  if (m.notes.length) h += `<div class="note-box"><b>相手の名簿として見る時:</b> ${m.notes.map(esc).join(" / ")}</div>`;
+  h += `<div class="hint" style="margin:6px 0 2px">月ごとのお金 (上) と関心 (下・アクティブファンのいちばん高いレベル。灰色の線は記録が無い月)。点線は、下の年表の変化があった月。ふだんの月の量 ${shortNum(m.usual)} pt</div><div style="overflow-x:auto">${mindChart(m)}</div>`;
+  if (m.timeline.length) {
+    h += dataTable("gp-mind", [
+      { label: "月", value: (r) => r.month, html: (r) => esc(r.month.replace("-", "/")) },
+      { label: "変化", value: (r) => r.type, html: (r) => `<b title="${esc(MIND_NOTE[r.type] || "")}">${esc(r.type)}</b>${r.room_name ? `<div class="uid">${esc(r.room_name)}${r.to_name ? ` → ${esc(r.to_name)}` : ""}</div>` : ""}`, cls: "name" },
+      { label: "確からしさ", value: (r) => r.conf, html: (r) => `<span class="tag ${CONF_TAG[r.conf] || ""}">${esc(r.conf)}</span>` },
+      { label: "根拠", sort: false, value: (r) => r.evidence.join(" / "), html: (r) => `<span class="uid">${r.evidence.map(esc).join("<br>")}</span>` },
+    ], m.timeline, { sort: 0, desc: true, phone: [0, 1, 2], csvName: `ギフター_${uid}_心のカルテ`,
+      note: "確からしさ: 根拠の線 (お金・関心・行き先) が 2 本そろうと高、1 本なら中。上位 100 人の壁ぎわの人や、送った月が少ない人は 1 つ下げます。ルームがイベントに出ていない月は、変化と数えません" });
+  } else h += `<div class="hint">直近 24 か月に、大きな心の変化は見つかりませんでした。</div>`;
+  if (tr.signs.length) h += `<div class="hint"><b>のめり込みのしるし:</b> ${tr.signs.map((x) => esc(x.note)).join(" / ")}</div>`;
+  if (m.warnings.length) h += `<div class="hint"><b>気をつける点:</b> ${m.warnings.map(esc).join(" / ")}</div>`;
+  return h;
+}
 const power = { grade: "all", data: null };
 async function showPowerRanking(box) {
   if (!power.data) box.innerHTML = loadingHtml("戦力ランキングを読み込んでいます…");
@@ -2533,7 +2606,7 @@ async function showGifter(uid) {
   if (rec) tiles.push(tile("記録したギフト", `${shortNum(rec.total.points)} <small>pt</small>`, `有料 ${shortNum(rec.total.paid_points)} ・ ${num(rec.total.times)} 回 ・ 最後 ${ago(rec.last_at)}`));
   html += `<div class="tiles">${tiles.join("")}</div>`;
   if (s && (s.total_points || s.event_count)) html += SCOPE_NOTE;
-  if (d.found && d.status) html += gifterStatus(d.status, uid);
+  if (d.found && d.status) html += gifterStatus(d.status, uid) + (d.status.found ? gifterPsyche(d.status, uid) : "");
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
   if (d.found && d.states) html += gifterStates(d.states);

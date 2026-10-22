@@ -34,7 +34,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from . import memory
+from . import memory, psyche
 from .gifter_analysis import _add, last_month, month_cuts
 from .status import JST
 
@@ -130,8 +130,10 @@ def _ratio(a: float, b: float) -> float | None:
     return round(a / b, 3) if b else None
 
 
-def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None) -> dict[str, Any] | None:
-    """1 人のステータス (表に入れる形)。貢献ランキングに出ていなければ None。edges はルームの決め手の量を使い回す入れ物。"""
+def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
+            cache: dict[Any, Any] | None = None) -> dict[str, Any] | None:
+    """1 人のステータス (表に入れる形)。貢献ランキングに出ていなければ None。edges はルームの決め手の量、
+    cache は心のカルテのルームごとの行を、同じ回の人どうしで使い回す入れ物。"""
     uid = int(uid)
     month = last_month(now)  # 集め終わったいちばん新しい月
     cur = _add(month, 1)
@@ -146,8 +148,9 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None) -
                     WHERE c.user_id=? AND c.point > 0""", (uid,))
     if not rows:
         return None
+    first24 = _add(month, -(psyche.MONTHS - 1))
     totals = {r["month"]: r["points"] for r in s.all("SELECT month, points FROM user_month WHERE user_id=? AND month>=?",
-                                                       (uid, first12))}
+                                                       (uid, min(first12, first24)))}
     months = [totals.get(_add(month, -k), 0) for k in range(MONTHS - 1, -1, -1)]  # 古い順、month まで
     active = [v for v in months if v]
     budget = int(median(active)) if active else 0
@@ -244,7 +247,11 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None) -
     main = max(room_sum, key=lambda k: room_sum[k]) if room_sum else None
     main_max = max((x["point"] for x in by_room24.get(main, [])), default=0) if main is not None else 0
     fans = {}
-    for f in s.all("SELECT room_id, ym, level FROM active_fans WHERE user_id=? AND ym >= ?", (uid, first12.replace("-", ""))):
+    fan_rows = s.all("SELECT room_id, ym, level FROM active_fans WHERE user_id=? AND ym >= ?",
+                     (uid, min(first12, first24).replace("-", "")))
+    for f in fan_rows:
+        if f["ym"] < first12.replace("-", ""):
+            continue
         a = fans.setdefault(f["room_id"], {"level": 0, "months": 0})
         a["level"], a["months"] = max(a["level"], f["level"] or 0), a["months"] + 1
     rooms = []
@@ -278,13 +285,18 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None) -
                       "wins": sum(1 for x in by_room24.get(rid, []) if x["reached"] and (x["rank"] or 999) <= 3),
                       "power": power, "edge": edge, "class": cls})
     top = rooms[0] if rooms else None
+    try:  # 心のカルテが失敗しても、ステータスは作る
+        mind = psyche.judge(psyche.gather(s, month, rows, totals, fan_rows, fire, career, cache))
+    except Exception:  # noqa: BLE001
+        log.exception("心のカルテを作れませんでした (ユーザー %s)", uid)
+        mind = None
     return {"user_id": uid, "at": now, "month": month,
             "hp": budget, "mp": left, "spent": spent, "fire": fire, "fire_basis": fire_basis, "max_out": max_out,
             "stamina": stamina, "recovery": recovery, "intel": intel, "intel_rounds": len(b_judged), "hit": hit, "hit_rounds": len(shots),
             "momentum": momentum, "new_high": new_high, "fatigue": fatigue, "achievements": achievements, "tops": tops,
             "exp": exp, "level": level, "career": round(career, 1), "first_seen": first_seen, "spread": spread, "main_rooms": main_rooms,
             "contest": contest, "state": state, "marks": marks, "fan": fan, "overall": overall, "ready": ready,
-            "factor": round(factor * skill, 3), "scale": scale(fire), "rooms": rooms,
+            "factor": round(factor * skill, 3), "scale": scale(fire), "rooms": rooms, "psyche": mind,
             "_top_room": top["room_id"] if top else None, "_top_share": top["share"] if top else None}
 
 
@@ -359,8 +371,9 @@ def step(s: Any, now: float | None = None, users: int = STEP_USERS) -> bool:
         return True
     ids = [r[0] for r in s.all("SELECT user_id FROM gifter_status_queue ORDER BY user_id LIMIT ?", (users,))]
     edges: dict[int, int] = {}
+    cache: dict[Any, Any] = {}
     for uid in ids:
-        st = compute(s, uid, now, edges)
+        st = compute(s, uid, now, edges, cache)
         if st is not None:
             save(s, st)
     with s.tx() as c:
@@ -434,9 +447,15 @@ def read(s: Any, uid: int) -> dict[str, Any] | None:
         return {**info, "found": False}
     d = json.loads(r["data"])
     rank = s.scalar("SELECT COUNT(*) FROM gifter_status WHERE overall > ?", (r["overall"],)) + 1
-    names = _room_names(s, [x["room_id"] for x in d["rooms"]])
+    mind = d.get("psyche") or {}
+    extra = [t.get(k) for t in mind.get("timeline", []) for k in ("room_id", "to_room")] + [(mind.get("outlook") or {}).get("room_id")]
+    names = _room_names(s, [x["room_id"] for x in d["rooms"]] + [i for i in extra if i is not None])
     for x in d["rooms"]:
         x["key"], x["name"] = names.get(x["room_id"], (None, str(x["room_id"])))
+    for t in mind.get("timeline", []) + ([mind["outlook"]] if mind.get("outlook") else []):
+        for k, out in (("room_id", "room_name"), ("to_room", "to_name")):
+            if t.get(k) is not None:
+                t[out] = names.get(t[k], (None, str(t[k])))[1]
     return {**info, "found": True, **d, "scores": {k: score(cuts, k, d.get(k)) for k in SCORED}, "grade": grade(cuts, d["overall"]),
             "rank": rank, "people": cuts.get("people")}
 
