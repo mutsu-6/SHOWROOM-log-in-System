@@ -780,7 +780,9 @@ def profile_list(s: Store, rtype: str | None = None, style: str | None = None, o
     if depth:
         where.append("p.depth=?")
         args.append(depth)
-    by = {"momentum": "p.momentum IS NULL, p.momentum DESC", "place": "p.recent_place IS NULL, p.recent_place",
+    # 勢いの順は、上り調子・変わらない・下り気味と言えたルーム (イベントが 5 件ずつそろった) を先に出す。
+    # 「参考」のルームは件数が少なく、前の期間がたまたま小さいと 100 倍などになり、上に並んでしまうため (Cursor が測った。2026-10-22)
+    by = {"momentum": "p.momentum IS NULL, p.momentum_label IS NULL, p.momentum DESC", "place": "p.recent_place IS NULL, p.recent_place",
           "depth": "p.depth_rel IS NULL, p.depth_rel DESC", "below": "p.below_share IS NULL, p.below_share DESC"}.get(order)
     if by is None:
         raise ValueError("order は momentum・place・depth・below のどれかです")
