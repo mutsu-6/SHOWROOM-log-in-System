@@ -1,3 +1,4 @@
+import json
 import time
 
 from showroom_keeper import gifter_analysis, gifter_status as gs, research
@@ -22,7 +23,6 @@ def _event(s, eid, days_ago, rooms, reward=None):
 
 def _db(tmp_path):
     gifter_analysis._cuts.clear()
-    gs._cuts_cache.clear()
     with Store(tmp_path) as s:
         s.set_meta("user_month_upto", True)  # 月の量を、貢献ランキングを入れるたびに足す
         s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in range(1, 5)], "live", NOW)
@@ -104,3 +104,104 @@ def test_status_carries_the_mind_chart(tmp_path):
     mind = st["psyche"]
     assert mind["phase"] and len(mind["money"]) == 24 and mind["outlook"]["room_id"] == 1
     assert mind["outlook"]["room_name"] == "ルーム1"
+
+
+# ---- 再設計の決定案 ① (2026-10-23)
+def test_running_event_counts_toward_spent_but_not_firepower(tmp_path):
+    """開催中のイベントの途中の値は、残弾・疲労には入るが、火力などの比べる回には入らない (Codex の再現 #120)。"""
+    d = _db(tmp_path)
+    with Store(d) as s:
+        s.upsert_events([{"event_id": 90, "name": "開催中", "start": NOW - 3 * DAY, "end": NOW + 2 * DAY}])
+        s.set_event_rooms(90, [{"room_id": 1, "point": 10_000, "rank": 1}], NOW)
+        s.set_contributions(90, 1, [{"user_id": 7, "name": "u7", "point": 5_000, "rank": 1}], NOW, final=False)
+        gs.build_rounds(s, NOW)
+        st = gs.compute(s, 7, NOW)
+    assert st["fire"] == 60_000 and st["max_out"] == 60_000 and st["fire_rounds"] == 5  # 5,000 は火力の回に入らない
+    assert st["formula"] == gs.FORMULA
+    assert st["rooms"][0]["cap"] == 60_000
+
+
+def test_state_is_unknown_when_fan_lists_are_not_complete(tmp_path):
+    """3 か月出していない人は、ファンの名簿が全員分で居ないと分かる時だけ「離脱」。分からなければ「不明」。"""
+    d = _db(tmp_path)
+    later = NOW + 200 * DAY  # 最後のイベントから 240 日あと (どこにも出していない)
+    with Store(d) as s:
+        gs.build_rounds(s, later)
+        assert gs.compute(s, 7, later)["state"] == "不明"  # ファンの名簿を読んでいない
+        months = [gifter_analysis._add(gifter_analysis.last_month(later), -k) for k in range(3)]
+        for m in months:  # ルーム1 の名簿を、全員分 (7 は居ない) で、月が終わってから読んだ
+            s.set_active_fans(1, m.replace("-", ""), 0, 1, [{"user_id": 555, "level": 3}], later)
+        st = gs.compute(s, 7, later, cache={})
+    assert st["state"] in ("不明", "離脱")
+    # ルーム2・3 (7 が送ったのはルーム1 だけだが、名簿を読む対象は送ったルーム) がすべて全員分なら離脱
+    assert st["state"] == "離脱"
+
+
+def test_ranking_ties_share_a_rank_and_grade_filter_reads_the_whole_table(tmp_path):
+    with Store(tmp_path) as s:
+        for uid, ov in ((1, 900), (2, 500), (3, 500), (4, 100)) + tuple((100 + k, 10 + k) for k in range(200)):
+            s.conn.execute("INSERT INTO gifter_status(user_id, overall, version, data, at) VALUES (?, ?, ?, '{}', ?)",
+                           (uid, ov, gs.VERSION, NOW))
+        xs = sorted(r[0] for r in s.all("SELECT overall FROM gifter_status"))
+        s.set_meta(gs.CUTS_META, json.dumps({"at": NOW, "people": len(xs),
+                                             "cuts": {"overall": [xs[min(len(xs) - 1, int(len(xs) * q / 100))] for q in range(1, 100)]}}))
+        top = gs.ranking(s, 3)["rows"]
+        assert [r["rank"] for r in top] == [1, 2, 2]  # 同点は同じ順位 (詳しいページと同じ)
+        d_rows = gs.ranking(s, 500, "D")["rows"]
+        assert d_rows and all(r["grade"] == "D" for r in d_rows)
+        # D は上位 500 人の外にもいる。全体の中から絞るので、上位 3 人に絞っても D の人が出る
+        assert gs.ranking(s, 3, "D")["rows"]
+        assert d_rows[0]["rank"] == s.scalar("SELECT COUNT(*) FROM gifter_status WHERE overall > ?", (d_rows[0]["overall"],)) + 1
+        for g in "SABCD":
+            assert all(r["grade"] == g for r in gs.ranking(s, 500, g)["rows"])
+
+
+def test_rebuild_switches_everyone_at_once(tmp_path):
+    """作り直しの途中は、前の回の値・順位のまま。回し終えた時に、全員・順位・ランクの区切りが一度に入れ替わる (#127)。"""
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as s:
+        before = {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")}
+        s.conn.execute("UPDATE gifter_status SET overall = overall + 1, data = json_set(data, '$.formula', 1)")
+        old = {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")}
+        later = NOW + gs.EVERY + 60
+        assert gs.step(s, later, users=1)  # 次の回を始める
+        assert gs.step(s, later, users=1)  # 1 人だけ作る
+        assert {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")} == old  # 一覧はまだ前の回のまま
+        assert s.scalar("SELECT COUNT(*) FROM gifter_status_next") == 1
+        for _ in range(50):
+            if not gs.step(s, later):
+                break
+        assert {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")} == before
+        assert s.scalar("SELECT COUNT(*) FROM gifter_status_next") == 0
+        assert all(json.loads(r[0])["formula"] == gs.FORMULA for r in s.all("SELECT data FROM gifter_status"))
+
+
+def test_run_started_before_the_switch_starts_over(tmp_path):
+    """入れ替えの仕組みより前に始めた途中の回 (途中の人を一覧に直接書いていた) は、はじめからやり直す。"""
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as s:
+        s.set_meta(gs.RUN_META, json.dumps({"started": NOW - 3600, "version": gs.VERSION, "people": 3}))
+        s.conn.execute("INSERT INTO gifter_status_queue VALUES (8)")
+        n = s.scalar("SELECT COUNT(*) FROM gifter_status")
+        assert gs.step(s, NOW)
+        run = json.loads(s.meta(gs.RUN_META))
+        assert run["staged"] and run["started"] == NOW and s.scalar("SELECT COUNT(*) FROM gifter_status_queue") == run["people"]
+        assert s.scalar("SELECT COUNT(*) FROM gifter_status") == n  # やり直している間も、前の一覧は出したまま
+
+
+def test_reads_stay_on_one_round_while_another_connection_switches(tmp_path):
+    """読んでいる途中に別の接続が回し終えて入れ替えても、値・順位・ランクの区切りは同じ回のものを読む (#127)。"""
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as a, Store(d) as b:
+        with gs._snapshot(a):
+            before = gs.ranking(a)["rows"]
+            cuts = gs._cuts(a)
+            b.conn.execute(f"INSERT INTO gifter_status_next({gs.COLS}) SELECT {gs.COLS} FROM gifter_status")  # 次の回を作り終えた
+            b.conn.execute("UPDATE gifter_status_next SET overall = overall * 10")
+            gs.finish(b, {"started": NOW, "version": gs.VERSION}, NOW + 1)
+            assert gs.ranking(a)["rows"] == before and gs._cuts(a) == cuts  # 前の回のまま
+        after = gs.ranking(a)["rows"]
+    assert [r["overall"] for r in after] == [r["overall"] * 10 for r in before]

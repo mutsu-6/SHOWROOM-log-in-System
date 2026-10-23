@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS active_fans (
 CREATE INDEX IF NOT EXISTS active_fans_user ON active_fans(user_id);
 CREATE TABLE IF NOT EXISTS room_fans (
     room_id INTEGER, ym TEXT, fan_power INTEGER, total INTEGER, at REAL, PRIMARY KEY (room_id, ym)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS room_fans_ym ON room_fans(ym, at);  -- 月が終わってから読み直すルームを選ぶ (sweep._next_fans_closed)
 -- ユーザーが持っているルーム (プロフィールでルームを公開している配信者。room_id が NULL ならルームなし・非公開)
 CREATE TABLE IF NOT EXISTS user_rooms (user_id INTEGER PRIMARY KEY, room_id INTEGER, checked_at REAL);
 CREATE INDEX IF NOT EXISTS user_rooms_room ON user_rooms(room_id);
@@ -222,6 +223,10 @@ CREATE TABLE IF NOT EXISTS gifter_status (
     state TEXT, top_room INTEGER, top_share REAL, data TEXT);
 CREATE INDEX IF NOT EXISTS gifter_status_overall ON gifter_status(overall);
 CREATE TABLE IF NOT EXISTS gifter_status_queue (user_id INTEGER PRIMARY KEY);
+-- 作り直しの途中の人 (gifter_status と同じ形)。回し終えた時に gifter_status と入れ替える (順位が前の回と混ざらないように)
+CREATE TABLE IF NOT EXISTS gifter_status_next (
+    user_id INTEGER PRIMARY KEY, version INTEGER, at REAL, overall REAL, firepower INTEGER, budget INTEGER, left_pt INTEGER,
+    state TEXT, top_room INTEGER, top_share REAL, data TEXT);
 -- 大会 (段階ごとに別のイベントになっている大きな大会) のまとまり。木の形: 大会 → 道すじ (route。本選権#1・SR枠 など) → 段階。
 -- series_id は大会の最初の段階のイベント番号 (大会でないと調べたイベントは NULL)。parents は前の段階のイベント番号 (「,」区切り。
 -- 道すじが合流する段階は複数)。brand は名前の【】の印から取った大会の名前。how は auto (自動) か manual (手で直した)。series.py が作る
@@ -324,7 +329,7 @@ class Store:
                                    ("room_profile", "momentum_label TEXT"), ("room_profile", "momentum_people REAL"),
                                    ("room_profile", "momentum_detail TEXT"), ("events", "thinned_at REAL"),
                                    ("room_event_style", "swaps INTEGER"), ("room_event_style", "early_gap REAL"),
-                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"), ("room_lives", "genre TEXT"),
+                                   ("room_event_style", "rival_slow REAL"), ("rooms", "fans_at REAL"), ("room_fans", "closed_at REAL"), ("room_fans", "shaky INTEGER"), ("rooms", "fans_back TEXT"), ("rooms", "profile_at REAL"), ("room_lives", "genre TEXT"),
                                    ("user_rooms", "room_key TEXT"), ("event_series", "parents TEXT"),
                                    ("event_series", "route TEXT"), ("event_series", "brand TEXT"),
                                    ("gift_senders", "points INTEGER DEFAULT 0"), ("gift_senders", "free_points INTEGER DEFAULT 0"),
@@ -783,16 +788,18 @@ class Store:
         return removed
 
     def set_active_fans(self, room_id: int, ym: str, fan_power: Any, total: Any, users: list[dict[str, Any]], now: float,
-                        current: bool = True) -> None:
-        """ルームの、その月のアクティブファン (ファンレベル) を置き換える。current=False は前の月を読み足した分 (読み直す時期は変えない)。"""
+                        current: bool = True, shaky: bool = False) -> None:
+        """ルームの、その月のアクティブファン (ファンレベル) を置き換える。current=False は前の月を読み足した分 (読み直す時期は変えない)。
+        shaky は、読んでいる間に名簿が動いた (全員分とは見ない)。"""
         rid = int(room_id)
         with self.tx() as c:
             c.execute("DELETE FROM active_fans WHERE room_id=? AND ym=?", (rid, ym))
             c.executemany("""INSERT OR REPLACE INTO active_fans(room_id, ym, user_id, level, title_id, at) VALUES (?, ?, ?, ?, ?, ?)""",
                           [(rid, ym, int(u["user_id"]), u.get("level"), u.get("title_id"), now) for u in users if u.get("user_id")])
-            c.execute("""INSERT INTO room_fans(room_id, ym, fan_power, total, at) VALUES (?, ?, ?, ?, ?)
-                         ON CONFLICT(room_id, ym) DO UPDATE SET fan_power=excluded.fan_power, total=excluded.total, at=excluded.at""",
-                      (rid, ym, fan_power, total, now))
+            c.execute("""INSERT INTO room_fans(room_id, ym, fan_power, total, at, shaky) VALUES (?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(room_id, ym) DO UPDATE SET fan_power=excluded.fan_power, total=excluded.total, at=excluded.at,
+                         shaky=excluded.shaky""",
+                      (rid, ym, fan_power, total, now, 1 if shaky else None))
             if current:
                 c.execute("UPDATE rooms SET fans_at=? WHERE room_id=?", (now, rid))
             self._names(c, [{"user_id": int(u["user_id"]), "name": u.get("user_name")} for u in users if u.get("user_id")], now)
