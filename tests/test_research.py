@@ -1165,6 +1165,50 @@ def test_fans_total_changing_between_pages_is_not_complete(tmp_path):
     assert not psyche.fans_complete("202610", total, datetime(2026, 11, 2, tzinfo=JST).timestamp(), got)
 
 
+def test_fans_list_that_moved_while_reading_is_not_complete(tmp_path):
+    """総数が 100 → 150 と変わった名簿は、読めた人数が総数に届いても全員分とは見ない (ページの境目で抜けた人がいるかもしれない)。"""
+    now = datetime(2026, 10, 3, 12, tzinfo=JST).timestamp()
+    pages = [{"total_user_count": 100, "users": [{"user_id": u, "level": 5} for u in range(1, 51)]},
+             {"total_user_count": 150, "users": [{"user_id": u, "level": 5} for u in range(101, 151)]},
+             {"total_user_count": 150, "users": [{"user_id": u, "level": 5} for u in range(151, 201)]}]
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: pages.pop(0), throttle=quiet_throttle()),
+                       scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "a", "name": "A", "followers": 10, "live_at": now}], "live", now)
+    assert sw._next_fans(now)
+    with Store(tmp_path) as s:
+        r = s.one("SELECT total, shaky, (SELECT COUNT(*) FROM active_fans WHERE room_id=1) AS got FROM room_fans WHERE room_id=1")
+    assert (r["got"], r["total"], r["shaky"]) == (150, 150, 1)
+    from showroom_keeper import psyche
+    assert not psyche.fans_complete("202610", r["total"], datetime(2026, 11, 2, tzinfo=JST).timestamp(), r["got"], r["shaky"])
+
+
+def test_fans_reread_that_fails_keeps_the_mid_month_list_unknown(tmp_path):
+    """月のあとの読み直しが読めなかったら、名簿も読んだ時刻もそのまま (分からないまま)。試したことだけ残し、もう選ばない。"""
+    now = datetime(2026, 10, 2, 12, tzinfo=JST).timestamp()
+    asked = []
+
+    def get(path):
+        asked.append(path)
+        raise http_error(404)
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "a", "name": "A", "followers": 10, "live_at": now}], "live", now)
+        s.set_active_fans(1, "202609", 5, 1, [{"user_id": 5, "level": 8}], now - 8 * 86400)
+        s.set_active_fans(2, "202609", 0, 0, [], now - 8 * 86400)  # 月の途中で 0 人だったルームも読み直す
+        s.upsert_rooms([{"room_id": 2, "key": "b", "name": "B", "followers": 1, "live_at": now}], "live", now)
+    assert sw._next_fans_closed(now) and sw._next_fans_closed(now)
+    sw._fans_closed.clear()
+    assert not sw._next_fans_closed(now) and len(asked) == 2
+    with Store(tmp_path) as s:
+        r = s.one("SELECT total, at, closed_at FROM room_fans WHERE room_id=1 AND ym='202609'")
+        assert r["at"] == now - 8 * 86400 and r["closed_at"] == now
+        assert s.scalar("SELECT COUNT(*) FROM active_fans WHERE room_id=1 AND ym='202609'") == 1
+    from showroom_keeper import psyche
+    assert not psyche.fans_complete("202609", r["total"], r["at"], 1)
+
+
 def test_room_profile_is_read_weekly_and_each_month(tmp_path):
     now = datetime(2026, 10, 18, 12, tzinfo=JST).timestamp()
     prof = {"show_rank_subdivided": "B-5", "prev_show_rank_subdivided": "B-4", "league_id": 30, "next_league_id": 20,

@@ -23,7 +23,6 @@ def _event(s, eid, days_ago, rooms, reward=None):
 
 def _db(tmp_path):
     gifter_analysis._cuts.clear()
-    gs._cuts_cache.clear()
     with Store(tmp_path) as s:
         s.set_meta("user_month_upto", True)  # 月の量を、貢献ランキングを入れるたびに足す
         s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in range(1, 5)], "live", NOW)
@@ -146,7 +145,6 @@ def test_ranking_ties_share_a_rank_and_grade_filter_reads_the_whole_table(tmp_pa
         xs = sorted(r[0] for r in s.all("SELECT overall FROM gifter_status"))
         s.set_meta(gs.CUTS_META, json.dumps({"at": NOW, "people": len(xs),
                                              "cuts": {"overall": [xs[min(len(xs) - 1, int(len(xs) * q / 100))] for q in range(1, 100)]}}))
-        gs._cuts_cache.clear()
         top = gs.ranking(s, 3)["rows"]
         assert [r["rank"] for r in top] == [1, 2, 2]  # 同点は同じ順位 (詳しいページと同じ)
         d_rows = gs.ranking(s, 500, "D")["rows"]
@@ -191,3 +189,19 @@ def test_run_started_before_the_switch_starts_over(tmp_path):
         run = json.loads(s.meta(gs.RUN_META))
         assert run["staged"] and run["started"] == NOW and s.scalar("SELECT COUNT(*) FROM gifter_status_queue") == run["people"]
         assert s.scalar("SELECT COUNT(*) FROM gifter_status") == n  # やり直している間も、前の一覧は出したまま
+
+
+def test_reads_stay_on_one_round_while_another_connection_switches(tmp_path):
+    """読んでいる途中に別の接続が回し終えて入れ替えても、値・順位・ランクの区切りは同じ回のものを読む (#127)。"""
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as a, Store(d) as b:
+        with gs._snapshot(a):
+            before = gs.ranking(a)["rows"]
+            cuts = gs._cuts(a)
+            b.conn.execute(f"INSERT INTO gifter_status_next({gs.COLS}) SELECT {gs.COLS} FROM gifter_status")  # 次の回を作り終えた
+            b.conn.execute("UPDATE gifter_status_next SET overall = overall * 10")
+            gs.finish(b, {"started": NOW, "version": gs.VERSION}, NOW + 1)
+            assert gs.ranking(a)["rows"] == before and gs._cuts(a) == cuts  # 前の回のまま
+        after = gs.ranking(a)["rows"]
+    assert [r["overall"] for r in after] == [r["overall"] * 10 for r in before]

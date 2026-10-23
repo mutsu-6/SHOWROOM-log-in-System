@@ -91,12 +91,12 @@ def _known(xs: list[Any]) -> list[Any]:
     return [x for x in xs if x is not None]
 
 
-def fans_complete(ym: str, total: Any, at: Any, got: int) -> bool:
+def fans_complete(ym: str, total: Any, at: Any, got: int, shaky: Any = None) -> bool:
     """そのルームのその月 (ym = "202610") のファンの名簿で、居ない人を「レベル 0」と言えるか。
     名簿が全員分 (読めた人数が SHOWROOM の言う総数以上) で、月が終わってから読んだものだけ (月の終わりの数日前に読んだ名簿でも、
     そのあとファンになった人は居ない。Codex の確認 #127。月の途中で読んだ月は、sweep._next_fans_closed が月が終わってから読み直す)。
     そうでない名簿 (上位 1,000 人・さかのぼった月は 200 人までしか読まない・月の途中で読んだ) に居ない人は、分からない。"""
-    if total is None or at is None or got < int(total):
+    if total is None or at is None or shaky or got < int(total):  # shaky: 読んでいる間に名簿が動いた
         return False
     y, m = int(ym[:4]), int(ym[4:])
     end = datetime(y + m // 12, m % 12 + 1, 1, tzinfo=JST).timestamp()
@@ -157,11 +157,11 @@ def gather(s: Any, month: str, rows: list[Any], totals: dict[str, int], fan_rows
         key = ("fans", rid)
         if key not in cache:
             cache[key] = {f"{r[0][:4]}-{r[0][4:]}" for r in s.all(
-                """SELECT r.ym, r.total, r.at, (SELECT COUNT(*) FROM active_fans a WHERE a.room_id=r.room_id AND a.ym=r.ym)
+                """SELECT r.ym, r.total, r.at, (SELECT COUNT(*) FROM active_fans a WHERE a.room_id=r.room_id AND a.ym=r.ym), r.shaky
                    FROM room_fans r WHERE r.room_id=? AND r.ym >= ?""", (rid, first.replace("-", "")))
-                if fans_complete(r[0], r[1], r[2], r[3])}
+                if fans_complete(r[0], r[1], r[2], r[3], r[4])}
         mine = fan_by.get(rid, {})
-        # 名簿に居ればそのレベル。居なくても、名簿が全員分で、月の終わりごろに読んだものなら 0。そうでなければ分からない (None)
+        # 名簿に居ればそのレベル。居なくても、名簿が全員分で、月が終わってから読んだものなら 0。そうでなければ分からない (None)
         fans[rid] = [mine[m] if m in mine else (0 if m in cache[key] else None) for m in months]
     since = datetime.strptime(first + "-01", "%Y-%m-%d").replace(tzinfo=JST).timestamp()
     for rid in top:

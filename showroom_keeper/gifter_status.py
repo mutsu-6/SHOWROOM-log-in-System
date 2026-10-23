@@ -29,10 +29,11 @@ import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, Iterator
 
 from . import memory, psyche
 from .gifter_analysis import _add, last_month, month_cuts
@@ -432,25 +433,29 @@ def finish(s: Any, run: dict[str, Any], now: float) -> None:
         c.execute("DELETE FROM gifter_status_next")
         s.set_meta(CUTS_META, json.dumps({"at": now, "people": len(vals["overall"]), "cuts": cuts}))
         s.set_meta(RUN_META, json.dumps({**run, "done": now}))
-    _cuts_cache.clear()
     log.info("ギフターのステータスを作り終えました (%d 人、%.0f 秒)", len(vals["overall"]), now - run["started"])
 
 
 # ------------------------------------------------------------------ ページで読む
-_cuts_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+@contextmanager
+def _snapshot(s: Any) -> Iterator[None]:
+    """読むだけの 1 回の取り出し。値・順位・ランクの区切りを、同じ回の表から読む (途中で回し終えて入れ替わっても混ざらない。
+    区切りもキャッシュせず、この中で読む。Codex の確認 #127)。"""
+    if s.conn.in_transaction:
+        yield
+        return
+    s.conn.execute("BEGIN")
+    try:
+        yield
+    finally:
+        s.conn.execute("COMMIT")
 
 
 def _cuts(s: Any) -> dict[str, Any]:
-    key = str(s.state_dir)
-    hit = _cuts_cache.get(key)
-    if hit and time.time() - hit[0] < 600:
-        return hit[1]
     try:
-        out = json.loads(s.meta(CUTS_META) or "{}")
+        return json.loads(s.meta(CUTS_META) or "{}")
     except (TypeError, ValueError):
-        out = {}
-    _cuts_cache[key] = (time.time(), out)
-    return out
+        return {}
 
 
 def score(cuts: dict[str, Any], k: str, v: Any) -> int | None:
@@ -469,6 +474,11 @@ def grade(cuts: dict[str, Any], overall: Any) -> str | None:
 
 def read(s: Any, uid: int) -> dict[str, Any] | None:
     """ギフターのページに出すステータス (作っていなければ、何を待っているか)。"""
+    with _snapshot(s):
+        return _read(s, uid)
+
+
+def _read(s: Any, uid: int) -> dict[str, Any] | None:
     run, cuts = _run(s), _cuts(s)
     info = {"run": {"started": run.get("started"), "done": run.get("done"), "people": cuts.get("people") or run.get("people"),
                     "queued": s.scalar("SELECT COUNT(*) FROM gifter_status_queue")}}
@@ -523,6 +533,11 @@ def _grade_of_score(sc: int) -> str:
 def ranking(s: Any, limit: int = 500, grade_of: str | None = None) -> dict[str, Any]:
     """SHOWROOM 全体の戦力ランキング (総合力の多い順。総合力の索引を上から読む)。順位は同点なら同じ順位 (詳しいページと同じ)。
     grade_of を付けると、そのランクの人を、ランクの境目の総合力で絞ってから上から読む (上位 limit 人の中から絞るのではない)。"""
+    with _snapshot(s):
+        return _ranking(s, limit, grade_of)
+
+
+def _ranking(s: Any, limit: int, grade_of: str | None) -> dict[str, Any]:
     cuts = _cuts(s)
     where, args = "g.overall IS NOT NULL", []
     if grade_of:
@@ -556,6 +571,11 @@ def ranking(s: Any, limit: int = 500, grade_of: str | None = None) -> dict[str, 
 
 def lookup(s: Any, ids: list[int]) -> dict[int, dict[str, Any]]:
     """一覧に出す、人ごとの総合力・ランク・火力 (作ってある人だけ)。"""
+    with _snapshot(s):
+        return _lookup(s, ids)
+
+
+def _lookup(s: Any, ids: list[int]) -> dict[int, dict[str, Any]]:
     cuts, out = _cuts(s), {}
     ids = [int(i) for i in ids]
     for k in range(0, len(ids), 500):

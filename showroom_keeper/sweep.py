@@ -594,14 +594,14 @@ class Sweeper:
             return False
         self.doing = f"アクティブファン ({r['name'] or r['key'] or r['room_id']})"
         ym = datetime.fromtimestamp(now, JST).strftime("%Y%m")
-        fan_power, total, users, _ = self._read_fans(r["room_id"], ym, FANS_PAGES)
-        self.store.set_active_fans(r["room_id"], ym, fan_power, total, users, now)
+        fan_power, total, users, _, shaky = self._read_fans(r["room_id"], ym, FANS_PAGES)
+        self.store.set_active_fans(r["room_id"], ym, fan_power, total, users, now, shaky=shaky)
         return True
 
-    def _read_fans(self, room_id: int, ym: str, pages: int) -> tuple[Any, Any, list[dict[str, Any]], bool]:
-        """ルームのその月のアクティブファンを pages ページまで読む。戻り値は (fan_power, 総数, 読めた人, 月が無かった)。
-        ページの間で SHOWROOM の言う総数が変わったら、いちばん大きい総数を返す (読んでいる間に名簿が動くと、
-        ページの境目で抜ける人がいるため。読めた人数が総数に届かないので、全員分とは見ない。psyche.fans_complete)。"""
+    def _read_fans(self, room_id: int, ym: str, pages: int) -> tuple[Any, Any, list[dict[str, Any]], bool, bool]:
+        """ルームのその月のアクティブファンを pages ページまで読む。戻り値は (fan_power, 総数, 読めた人, 月が無かった, 揺れた)。
+        揺れた = ページの間で SHOWROOM の言う総数が変わった・途中のページから読めなくなった。読んでいる間に名簿が動くと、
+        ページの境目で抜ける人がいるので、読めた人数が総数に届いていても全員分とは見ない (psyche.fans_complete。Codex の確認 #127)。"""
         users: list[dict[str, Any]] = []
         data: dict[str, Any] = {}
         totals: list[int] = []
@@ -611,7 +611,7 @@ class Sweeper:
             except Exception as err:  # noqa: BLE001
                 if not is_missing(err):
                     raise
-                return data.get("fan_power"), max(totals) if totals else None, users, True
+                return data.get("fan_power"), max(totals) if totals else None, users, True, bool(users)
             got = [u for u in data.get("users") or [] if isinstance(u, dict)]
             users += got
             if data.get("total_user_count") is not None:
@@ -619,7 +619,7 @@ class Sweeper:
             if len(got) < FANS_PAGE or len(users) >= int(data.get("total_user_count") or 0):
                 break
         total = max(totals) if totals else data.get("total_user_count")
-        return data.get("fan_power"), total, users, False
+        return data.get("fan_power"), total, users, False, len(set(totals)) > 1
 
     def _next_fans_closed(self, now: float) -> bool:
         """月の途中で読んだ前の月のアクティブファンを、月が終わってから 1 回だけ読み直す。
@@ -629,15 +629,15 @@ class Sweeper:
         prev = f"{d.year - 1:04d}12" if d.month == 1 else f"{d.year:04d}{d.month - 1:02d}"
         start = d.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()  # 前の月の終わり
         r = self._take(self._fans_closed, """SELECT f.room_id, r.name, r.key FROM room_fans f INDEXED BY room_fans_ym
-               JOIN rooms r USING(room_id) WHERE f.ym=? AND f.at < ? AND f.total > 0""", (prev, start))
+               JOIN rooms r USING(room_id) WHERE f.ym=? AND f.at < ? AND f.closed_at IS NULL""", (prev, start))
         if r is None:
             return False
         self.doing = f"前の月のアクティブファンの読み直し ({r['name'] or r['key'] or r['room_id']})"
-        fan_power, total, users, missing = self._read_fans(r["room_id"], prev, FANS_PAGES)
-        if missing:  # 読めない月は、読み直したことにして (もう選ばない)、名簿はそのまま
-            self.store.conn.execute("UPDATE room_fans SET at=? WHERE room_id=? AND ym=?", (now, r["room_id"], prev))
+        fan_power, total, users, missing, shaky = self._read_fans(r["room_id"], prev, FANS_PAGES)
+        if missing:  # 読めない月は、試したことだけ残して (もう選ばない)、名簿と読んだ時刻はそのまま (月の途中の名簿のまま = 分からない)
+            self.store.conn.execute("UPDATE room_fans SET closed_at=? WHERE room_id=? AND ym=?", (now, r["room_id"], prev))
             return True
-        self.store.set_active_fans(r["room_id"], prev, fan_power, total, users, now, current=False)
+        self.store.set_active_fans(r["room_id"], prev, fan_power, total, users, now, current=False, shaky=shaky)
         return True
 
     def _next_event_page(self, now: float) -> bool:
@@ -743,9 +743,9 @@ class Sweeper:
             self.store.conn.execute("UPDATE rooms SET fans_back='done' WHERE room_id=?", (r["room_id"],))
             return True
         self.doing = f"前の月のアクティブファン ({r['name'] or r['key'] or r['room_id']}・{ym[:4]}/{ym[4:]})"
-        fan_power, total, users, missing = self._read_fans(r["room_id"], ym, FANS_PAST_PAGES)
+        fan_power, total, users, missing, shaky = self._read_fans(r["room_id"], ym, FANS_PAST_PAGES)
         if not missing:
-            self.store.set_active_fans(r["room_id"], ym, fan_power, total, users, now, current=False)
+            self.store.set_active_fans(r["room_id"], ym, fan_power, total, users, now, current=False, shaky=shaky)
         # 読んだ月から新しい方へ FANS_EMPTY_STOP か月が、どれも 0 人なら、それより前にはルームが無かったとみる
         recent = [x[0] for x in self.store.all("SELECT total FROM room_fans WHERE room_id=? AND ym>=? ORDER BY ym LIMIT ?",
                                                 (r["room_id"], ym, FANS_EMPTY_STOP))]
