@@ -446,6 +446,8 @@ def test_gifter_status_does_not_read_whole_tables(traced):
         with Store(d) as s:
             gifter_status.read(s, 201)
             gifter_status.ranking(s)
+            for g in ("S", "B", "D"):  # ランクで絞る時は、境目の総合力で索引を読む
+                gifter_status.ranking(s, 500, g)
             gifter_status.lookup(s, [201, 101])
     check(traced, read)
 

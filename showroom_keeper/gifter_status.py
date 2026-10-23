@@ -40,7 +40,9 @@ from .status import JST
 
 log = logging.getLogger(__name__)
 
-VERSION = 1  # 作る中身を変えたら上げる (前に作った分を作り直す)
+VERSION = 1  # 作る中身を変えたら上げる (前に作った分を消して作り直す。上げると、作り直し終えるまで一覧が空になる)
+FORMULA = 2  # 式の版。上げても前の分は消さず、毎日の作り直しで 1 人ずつ差し替える (画面に「作り直し待ち」と出す)。
+# 2 (2026-10-23): ファンの名簿が全員分でない時は離脱・枯渇にしない (不明)、火力などは終わった回だけでくらべる
 EVERY = 86400  # 作り直す間隔 (秒)
 TICK = 60  # 暇かどうかを見て、少しずつ作る間隔 (秒)
 STEP_USERS = 200  # 1 回に作る人数
@@ -60,7 +62,8 @@ TSUKIAI = 0.2  # 最推しのルームの 1 イベントの最大の、これよ
 ROOMS = 5  # ルームとの関係を出すルームの数
 LEVELS = (1, 3, 10, 30, 100, 300)  # 経験値 (勝負の回の数) のレベルの段。これだけ以上で 1 つ上がる
 GRADES = ((0.01, "S"), (0.05, "A"), (0.20, "B"), (0.50, "C"))  # 総合力の上から何割までがどのランクか (それより下は D)
-STATE_FACTOR = {"枯渇": 0.2, "離脱": 0.0, "上り調子": 1.1}  # 総合力に掛ける (ほかは 1.0)
+# 総合力に掛ける (ほかは 1.0)。不明 = ファンの名簿が全員分でないなどで、離脱か枯渇か温存中かを決められない (仮に間の値)
+STATE_FACTOR = {"枯渇": 0.2, "離脱": 0.0, "上り調子": 1.1, "不明": 0.5}
 FATIGUE_FACTOR = 0.6  # 疲労している時に総合力に掛ける
 # 火力の大きさの目安 (1 手 300 万 = 10 万 SG × 10 連。`docs/戦術メモ.md` の 2)
 SCALE = ((3_000_000, "300 万級"), (1_000_000, "100 万級"), (300_000, "30 万級"), (100_000, "10 万級"))
@@ -140,8 +143,9 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     first12 = _add(month, -(MONTHS - 1))
     since12, since24 = _month_start(first12), _month_start(_add(month, -(LONG_MONTHS - 1)))
     rows = s.all("""SELECT c.event_id, c.room_id, c.point, c.rank, e.end, r.battle, r.reached, d.event_id IS NOT NULL AS judged,
-                           es.stage_no
+                           es.stage_no, re.final
                     FROM contributions c JOIN events e USING(event_id)
+                    LEFT JOIN room_events re ON re.event_id=c.event_id AND re.room_id=c.room_id
                     LEFT JOIN event_rounds r ON r.event_id=c.event_id AND r.room_id=c.room_id
                     LEFT JOIN event_rounds_done d ON d.event_id=c.event_id
                     LEFT JOIN event_series es ON es.event_id=c.event_id AND es.series_id IS NOT NULL
@@ -158,14 +162,18 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     left = max(0, budget - spent)
     r12 = [r for r in rows if (r["end"] or 0) >= since12]
     r24 = [r for r in rows if (r["end"] or 0) >= since24]
-    battle12 = [r for r in r12 if r["battle"]]
+    # 火力・最大出力・持久力・ルームの上限 (cap) は、終わった回だけでくらべる (終わって SETTLE たち、終わったあとの貢献ランキングを
+    # 取り終えた回)。開催中の途中の値が入ると、小さい値で火力が下がるため。残弾・疲労・送り先の割合は、開催中の分も入れたまま
+    d12 = [r for r in r12 if r["final"] and (r["end"] or 0) <= now - SETTLE]
+    battle12 = [r for r in d12 if r["battle"]]
     fire_basis = "battle" if len(battle12) >= 2 else "all"
-    fire = _second([r["point"] for r in (battle12 if fire_basis == "battle" else r12)])
-    max_out = max((r["point"] for r in r12), default=0)
+    fire_pool = battle12 if fire_basis == "battle" else d12
+    fire = _second([r["point"] for r in fire_pool])
+    max_out = max((r["point"] for r in d12), default=0)
 
     # 持久力: 1 か月に、火力の半分以上を出したイベントの数 (送った月の中ほど)
     per_month: dict[str, int] = {}
-    for r in r12:
+    for r in d12:
         if fire and r["point"] >= SORTIE * fire:
             m = _month_of(r["end"])
             per_month[m] = per_month.get(m, 0) + 1
@@ -185,14 +193,14 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     b_judged = [r for r in battle12 if r["judged"]]
     intel = (round(1 - sum(r["point"] for r in b_judged if not r["reached"]) / sum(r["point"] for r in b_judged), 3)
              if len(b_judged) >= MIN_ROUNDS and sum(r["point"] for r in b_judged) else None)
-    shots = [r for r in r12 if r["judged"] and fire and r["point"] >= SORTIE * fire]
+    shots = [r for r in d12 if r["judged"] and fire and r["point"] >= SORTIE * fire]
     hit = round(sum(1 for r in shots if r["reached"]) / len(shots), 3) if len(shots) >= MIN_ROUNDS else None
 
     # 勢い・疲労
     recent, before = sum(months[-3:]), sum(months[-6:-3])
     peak3 = max((sum(months[i:i + 3]) for i in range(len(months) - 2)), default=0)
     momentum = _ratio(recent, before)
-    new_high = bool(r12) and max((r["point"] for r in r12 if r["end"] >= _month_start(_add(month, -2))), default=0) >= max_out > 0
+    new_high = bool(d12) and max((r["point"] for r in d12 if r["end"] >= _month_start(_add(month, -2))), default=0) >= max_out > 0
     tired_pt = sum(r["point"] for r in rows if (r["end"] or 0) >= now - FATIGUE_DAYS * 86400)
     fatigue = _ratio(tired_pt, budget)
 
@@ -212,20 +220,34 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     room_sum = {rid: sum(x["point"] for x in xs) for rid, xs in by_room.items()}
     total12 = sum(room_sum.values())
     spread = round(1 / sum((v / total12) ** 2 for v in room_sum.values()), 2) if total12 else None
-    main_rooms = sum(1 for xs in by_room.values() if fire and max(x["point"] for x in xs) >= SORTIE * fire)
+    done_by_room: dict[int, list[Any]] = {}
+    for r in d12:
+        done_by_room.setdefault(r["room_id"], []).append(r)
+    main_rooms = sum(1 for xs in done_by_room.values() if fire and max(x["point"] for x in xs) >= SORTIE * fire)
     stage_pt = [r["point"] for r in r12 if (r["stage_no"] or 0) > 1]
     plain_pt = [r["point"] for r in r12 if not (r["stage_no"] or 0) > 1]
     contest = round(median(stage_pt) / median(plain_pt), 2) if len(stage_pt) >= 2 and len(plain_pt) >= 2 else None
+
+    fan_rows = s.all("SELECT room_id, ym, level FROM active_fans WHERE user_id=? AND ym >= ?",
+                     (uid, min(first12, first24).replace("-", "")))
+    # 心のカルテの列 (ファンの名簿に居ないのが「0」と分かるかも、ここで分かる)
+    try:
+        lines = psyche.gather(s, month, rows, totals, fan_rows, fire, career, cache)
+    except Exception:  # noqa: BLE001
+        log.exception("心のカルテの列を作れませんでした (ユーザー %s)", uid)
+        lines = None
+    # 最後の 3 か月、どのルームのファンの名簿にも居ないと分かっているか。名簿が全員分でない・読んでいない月があれば分からない
+    fan_gone = lines is not None and psyche.fan_gone(lines["fans"], len(lines["months"]))
 
     # 状態異常
     fan = s.one("SELECT 1 FROM active_fans WHERE user_id=? AND ym >= ? LIMIT 1", (uid, _add(month, -2).replace("-", ""))) is not None
     last3 = any((r["end"] or 0) >= _month_start(_add(month, -2)) for r in rows) or spent > 0
     if not last3 and not fan:
-        state = "離脱"
+        state = "離脱" if fan_gone else "不明"
     elif before and recent >= RISING * before or (not before and recent):
         state = "上り調子"
     elif peak3 and recent <= LOW * peak3:
-        state = "温存中" if fan else "枯渇"
+        state = "温存中" if fan else ("枯渇" if fan_gone else "不明")
     else:
         state = "安定"
     marks = [state]
@@ -247,8 +269,6 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     main = max(room_sum, key=lambda k: room_sum[k]) if room_sum else None
     main_max = max((x["point"] for x in by_room24.get(main, [])), default=0) if main is not None else 0
     fans = {}
-    fan_rows = s.all("SELECT room_id, ym, level FROM active_fans WHERE user_id=? AND ym >= ?",
-                     (uid, min(first12, first24).replace("-", "")))
     for f in fan_rows:
         if f["ym"] < first12.replace("-", ""):
             continue
@@ -257,7 +277,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     rooms = []
     for rid in sorted(room_sum, key=lambda k: -room_sum[k])[:ROOMS]:
         xs = by_room[rid]
-        cap = _second([x["point"] for x in xs])
+        cap = _second([x["point"] for x in done_by_room.get(rid, [])])
         mine = {x["event_id"]: x["point"] for x in by_room24.get(rid, [])}
         fights = [r[0] for r in s.all("SELECT event_id FROM event_rounds WHERE room_id=? AND end >= ? AND battle=1", (rid, since12))]
         sortie = (round(sum(1 for e in fights if cap and mine.get(e, 0) >= SORTIE * cap) / len(fights), 3)
@@ -286,7 +306,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
                       "power": power, "edge": edge, "class": cls})
     top = rooms[0] if rooms else None
     try:  # 心のカルテが失敗しても、ステータスは作る
-        mind = psyche.judge(psyche.gather(s, month, rows, totals, fan_rows, fire, career, cache))
+        mind = psyche.judge(lines) if lines is not None else None
     except Exception:  # noqa: BLE001
         log.exception("心のカルテを作れませんでした (ユーザー %s)", uid)
         mind = None
@@ -295,7 +315,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
             "stamina": stamina, "recovery": recovery, "intel": intel, "intel_rounds": len(b_judged), "hit": hit, "hit_rounds": len(shots),
             "momentum": momentum, "new_high": new_high, "fatigue": fatigue, "achievements": achievements, "tops": tops,
             "exp": exp, "level": level, "career": round(career, 1), "first_seen": first_seen, "spread": spread, "main_rooms": main_rooms,
-            "contest": contest, "state": state, "marks": marks, "fan": fan, "overall": overall, "ready": ready,
+            "contest": contest, "state": state, "formula": FORMULA, "fire_rounds": len(fire_pool), "marks": marks, "fan": fan, "overall": overall, "ready": ready,
             "factor": round(factor * skill, 3), "scale": scale(fire), "rooms": rooms, "psyche": mind,
             "_top_room": top["room_id"] if top else None, "_top_share": top["share"] if top else None}
 
@@ -428,13 +448,7 @@ def score(cuts: dict[str, Any], k: str, v: Any) -> int | None:
 
 def grade(cuts: dict[str, Any], overall: Any) -> str | None:
     sc = score(cuts, "overall", overall)
-    if sc is None:
-        return None
-    top = (100 - sc) / 100  # 上から何割
-    for frac, g in GRADES:
-        if top < frac:
-            return g
-    return "D"
+    return None if sc is None else _grade_of_score(sc)  # 上から何割かでランク
 
 
 def read(s: Any, uid: int) -> dict[str, Any] | None:
@@ -468,20 +482,60 @@ def _room_names(s: Any, ids: list[int]) -> dict[int, tuple[str | None, str]]:
             for r in s.all(f"SELECT room_id, key, name FROM rooms WHERE room_id IN ({','.join('?' * len(ids))})", ids)}
 
 
+def grade_bounds(cuts: dict[str, Any], g: str) -> tuple[float | None, float | None] | None:
+    """ランク g になる総合力の範囲 (下限以上・上限未満。None は端なし)。区切りがまだ無ければ None。
+    score() は「区切りのいくつを超えたか」なので、同じランクの人は区切りの値の間にまとまる。"""
+    xs = (cuts.get("cuts") or {}).get("overall") or []
+    if not xs:
+        return None
+    ks = [k for k in range(1, len(xs) + 2) if _grade_of_score(k) == g]  # score() の値 (1〜len+1) のうち、ランク g になるもの
+    if not ks:
+        return None
+    lo = xs[min(ks) - 2] if min(ks) >= 2 else None
+    hi = xs[max(ks) - 1] if max(ks) - 1 < len(xs) else None
+    return lo, hi
+
+
+def _grade_of_score(sc: int) -> str:
+    top = (100 - sc) / 100
+    for frac, g in GRADES:
+        if top < frac:
+            return g
+    return "D"
+
+
 def ranking(s: Any, limit: int = 500, grade_of: str | None = None) -> dict[str, Any]:
-    """SHOWROOM 全体の戦力ランキング (総合力の多い順。総合力の索引を上から読む)。"""
+    """SHOWROOM 全体の戦力ランキング (総合力の多い順。総合力の索引を上から読む)。順位は同点なら同じ順位 (詳しいページと同じ)。
+    grade_of を付けると、そのランクの人を、ランクの境目の総合力で絞ってから上から読む (上位 limit 人の中から絞るのではない)。"""
     cuts = _cuts(s)
-    rows = [dict(r) for r in s.all("""SELECT g.user_id, g.overall, g.firepower, g.budget, g.left_pt, g.state, g.top_room, g.top_share,
-                                             u.name FROM gifter_status g INDEXED BY gifter_status_overall
-                                      LEFT JOIN users u USING(user_id) WHERE g.overall IS NOT NULL
-                                      ORDER BY g.overall DESC LIMIT ?""", (int(limit),))]
+    where, args = "g.overall IS NOT NULL", []
+    if grade_of:
+        b = grade_bounds(cuts, grade_of)
+        if b is None:
+            return {"rows": [], "people": cuts.get("people"), "run": _run(s), "at": cuts.get("at"), "grade": grade_of}
+        if b[0] is not None:
+            where, args = where + " AND g.overall >= ?", args + [b[0]]
+        if b[1] is not None:
+            where, args = where + " AND g.overall < ?", args + [b[1]]
+    rows = [dict(r) for r in s.all(f"""SELECT g.user_id, g.overall, g.firepower, g.budget, g.left_pt, g.state, g.top_room, g.top_share,
+                                              u.name FROM gifter_status g INDEXED BY gifter_status_overall
+                                       LEFT JOIN users u USING(user_id) WHERE {where}
+                                       ORDER BY g.overall DESC LIMIT ?""", (*args, int(limit)))]
     names = _room_names(s, [r["top_room"] for r in rows])
+    # 読んだ行は総合力の並びで切れ目なく続くので、最初の行より多い人の数から数えれば、全体での順位になる
+    base = s.scalar("SELECT COUNT(*) FROM gifter_status WHERE overall > ?", (rows[0]["overall"],)) if rows else 0
+    first = 0
     for i, r in enumerate(rows):
-        r["rank"], r["grade"], r["scale"] = i + 1, grade(cuts, r["overall"]), scale(r["firepower"] or 0)
+        if i and r["overall"] != rows[i - 1]["overall"]:
+            first = i
+        r["rank"], r["grade"], r["scale"] = base + first + 1, grade(cuts, r["overall"]), scale(r["firepower"] or 0)
         r["top_key"], r["top_name"] = names.get(r["top_room"], (None, None))
     if grade_of:
-        rows = [r for r in rows if r["grade"] == grade_of]
-    return {"rows": rows, "people": cuts.get("people"), "run": _run(s), "at": cuts.get("at")}
+        rows = [r for r in rows if r["grade"] == grade_of]  # 念のため (境目の値ちょうどの扱いは score() と同じ)
+    out = {"rows": rows, "people": cuts.get("people"), "run": _run(s), "at": cuts.get("at")}
+    if grade_of:
+        out["grade"] = grade_of
+    return out
 
 
 def lookup(s: Any, ids: list[int]) -> dict[int, dict[str, Any]]:

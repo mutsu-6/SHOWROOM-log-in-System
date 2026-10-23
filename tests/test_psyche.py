@@ -121,3 +121,35 @@ def test_paying_more_while_caring_less():
     fan = [8] * 12 + [max(1, 8 - k) for k in range(12)]
     out = psyche.judge(_lines({1: money}, fans={1: fan}))
     assert "楽しくないのに出す" in _types(out) and "楽しくないのに出す" in {x["sign"] for x in out["traits"]["signs"]}
+
+
+# ---- ファンの名簿の外を「0」にしない (再設計の決定案 W。2026-10-23)
+def test_fan_list_counts_as_zero_only_when_complete_and_read_late():
+    from datetime import datetime
+
+    end = datetime(2026, 10, 1, tzinfo=psyche.JST).timestamp()  # 2026-09 の終わり
+    assert psyche.fans_complete("202609", 120, end + 3600, 120)  # 全員分を、月が終わってから読んだ
+    assert psyche.fans_complete("202609", 120, end - 3 * 86400, 120)  # 月の終わりの 7 日の中
+    assert not psyche.fans_complete("202609", 120, end - 20 * 86400, 120)  # 月の途中で読んだ
+    assert not psyche.fans_complete("202609", 1500, end + 3600, 1000)  # 上位 1,000 人しか読めていない
+    assert not psyche.fans_complete("202609", None, end + 3600, 50)  # 総数が分からない
+    assert not psyche.fans_complete("202612", 10, datetime(2027, 1, 1, tzinfo=psyche.JST).timestamp() - 10 * 86400, 10)
+
+
+def test_fan_line_keeps_unknown_months():
+    fans = {1: [5, 0, None, None], 2: [None, 0, 0, None]}
+    assert psyche.fan_line_of(fans, 4) == [5, 0, None, None]  # 見えたらその値・全部 0 と分かれば 0・分からないルームがあれば None
+    assert not psyche.fan_gone(fans, 4, 2) and psyche.fan_gone({1: [3, 0, 0]}, 3, 2)
+
+
+def _quiet_last3(last):
+    rooms = {1: [10_000] * (N - 3) + [0, 0, 0]}
+    return psyche.judge(_lines(rooms, fans={1: [5] * (N - 3) + last}))
+
+
+def test_unknown_fans_do_not_make_someone_gone():
+    """3 か月どこにも出さない人でも、ファンの名簿が全員分でない月があれば「離脱」にしない (Codex の再現 #120)。"""
+    assert _quiet_last3([0, 0, 0])["phase"] == "離脱"
+    out = _quiet_last3([None, None, None])
+    assert out["phase"] == "分からない" and out["outlook"]["appear"] == "分からない" and out["outlook"]["low"] == 0
+    assert _quiet_last3([5, 5, 5])["phase"] == "休止 (お金の事情か潜伏)"

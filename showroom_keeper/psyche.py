@@ -40,6 +40,7 @@ SAVED = 0.6  # 爆発した月の量が、(休んだ月数 + 1) × ふだん の
 CHASE = 1.3  # 接戦で負けた次のイベントで、勝った次のこれだけ倍以上出せば「負けの取り返し」
 WALL_RANK = 70  # 貢献ランキングの順位の中ほどがこれより下なら、上位 100 人の壁ぎわ
 SHIFT = 0.3  # 推しの割合がこれだけ以上動いたら「行き先が変わった」
+FANS_LATE = 7 * 86400  # 月の終わりのこれだけの中で読んだファンの名簿は、その月の名簿とみる (sweep.FANS_EVERY と同じ)
 
 
 # ------------------------------------------------------------------ 小さな道具
@@ -91,6 +92,39 @@ def _known(xs: list[Any]) -> list[Any]:
     return [x for x in xs if x is not None]
 
 
+def fans_complete(ym: str, total: Any, at: Any, got: int) -> bool:
+    """そのルームのその月 (ym = "202610") のファンの名簿で、居ない人を「レベル 0」と言えるか。
+    名簿が全員分 (読めた人数が SHOWROOM の言う総数以上) で、月の終わりの FANS_LATE 秒の中か、月が終わってから読んだものだけ。
+    そうでない名簿 (上位 1,000 人・前の月は 200 人までしか読まない・月の途中で読んだ) に居ない人は、分からない。"""
+    if total is None or at is None or got < int(total):
+        return False
+    y, m = int(ym[:4]), int(ym[4:])
+    end = datetime(y + m // 12, m % 12 + 1, 1, tzinfo=JST).timestamp()
+    return float(at) >= end - FANS_LATE
+
+
+def fan_line_of(fans: dict[int, list[int | None]], n: int) -> list[int | None]:
+    """関心の線: 月ごとの、どのルームのでもいちばん高いファンレベル。レベルが見えたらその値。
+    見えず、分からないルームが 1 つでもある月は None (0 にしない)。全部のルームで 0 と分かった月だけ 0。"""
+    out: list[int | None] = []
+    for i in range(n):
+        vals = [f[i] for f in fans.values()]
+        known = [v for v in vals if v is not None]
+        if known and max(known) > 0:
+            out.append(max(known))
+        elif known and len(known) == len(vals):
+            out.append(0)
+        else:
+            out.append(None)
+    return out
+
+
+def fan_gone(fans: dict[int, list[int | None]], n: int, last: int = 3) -> bool:
+    """最後の last か月、どのルームのファンの名簿にも居ないと分かっているか (分からない月があれば False)。"""
+    line = fan_line_of(fans, n)[-last:]
+    return bool(line) and all(v == 0 for v in line)
+
+
 # ------------------------------------------------------------------ 表から列を作る
 def gather(s: Any, month: str, rows: list[Any], totals: dict[str, int], fan_rows: list[Any], fire: int, career: float,
            cache: dict[Any, Any] | None = None) -> dict[str, Any]:
@@ -122,10 +156,13 @@ def gather(s: Any, month: str, rows: list[Any], totals: dict[str, int], fan_rows
     for rid in fan_rooms:
         key = ("fans", rid)
         if key not in cache:
-            cache[key] = {f"{r[0][:4]}-{r[0][4:]}" for r in s.all("SELECT ym FROM room_fans WHERE room_id=? AND ym >= ?",
-                                                                   (rid, first.replace("-", "")))}
+            cache[key] = {f"{r[0][:4]}-{r[0][4:]}" for r in s.all(
+                """SELECT r.ym, r.total, r.at, (SELECT COUNT(*) FROM active_fans a WHERE a.room_id=r.room_id AND a.ym=r.ym)
+                   FROM room_fans r WHERE r.room_id=? AND r.ym >= ?""", (rid, first.replace("-", "")))
+                if fans_complete(r[0], r[1], r[2], r[3])}
         mine = fan_by.get(rid, {})
-        fans[rid] = [mine.get(m, 0) if m in cache[key] or m in mine else None for m in months]
+        # 名簿に居ればそのレベル。居なくても、名簿が全員分で、月の終わりごろに読んだものなら 0。そうでなければ分からない (None)
+        fans[rid] = [mine[m] if m in mine else (0 if m in cache[key] else None) for m in months]
     since = datetime.strptime(first + "-01", "%Y-%m-%d").replace(tzinfo=JST).timestamp()
     for rid in top:
         key = ("events", rid)
@@ -168,11 +205,8 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     for i in range(n):
         off = mains and not total[i] and not any(act.get(r, [True] * n)[i] for r in mains)
         norm.append(None if off else total[i] / (season[i] or 1) / usual)
-    # 関心の線: どのルームのでも、いちばん高いファンレベル (どのルームも分からない月は None)
-    fan_line: list[float | None] = []
-    for i in range(n):
-        known = [f[i] for f in fans.values() if f[i] is not None]
-        fan_line.append(max(known) if known else None)
+    # 関心の線: どのルームのでも、いちばん高いファンレベル (見えず、分からないルームがある月は None)
+    fan_line: list[float | None] = list(fan_line_of(fans, n))
     fan_base = median([v for v in fan_line if v]) if any(fan_line) else 0
 
     def fan_kept(a: int, b: int, rid: int | None = None) -> bool | None:
@@ -403,8 +437,10 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     gap_then_back = (total[-1] or (n >= 2 and total[-2])) and n >= 5 and any(
         all(v == 0 for v in total[k:k + 2]) for k in range(n - 5, n - 2))
     fan_now = any(_known(fan_line[-3:]))
-    if not any(last3) and not fan_now:
+    if not any(last3) and not fan_now and fan_gone(fans, n):
         phase, why = "離脱", "3 か月、どこにも出さず、ファンレベルも無い"
+    elif not any(last3) and not fan_now:
+        phase, why = "分からない", "3 か月、どこにも出していない。ファンの名簿が全員分でない (または読んでいない) 月があり、離れたかは分からない"
     elif quiet_now and bursts:
         phase, why = "潜伏の疑い", f"{quiet_now} か月静かだが、前にも休んでからまとめて出したことが {len(bursts)} 回ある"
     elif quiet_now and any(t["type"] == "燃え尽き" and t["i"] >= n - quiet_now - 1 for t in timeline):
@@ -441,11 +477,11 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     low = int(median(recent_ev)) if recent_ev else 0
     high = max(fire, low)
     stored = int(quiet_now * usual) if quiet_now else 0
-    appear = {"離脱": "ほぼ無い", "休止": "低い", "燃え尽きのあと": "低い", "冷却中": "中くらい", "休止 (お金の事情か潜伏)": "中くらい"}.get(phase, "高い")
+    appear = {"離脱": "ほぼ無い", "分からない": "分からない", "休止": "低い", "燃え尽きのあと": "低い", "冷却中": "中くらい", "休止 (お金の事情か潜伏)": "中くらい"}.get(phase, "高い")
     if phase == "潜伏の疑い":
         high = max(high, stored + usual)
         low = 0
-    elif phase in ("休止", "離脱", "燃え尽きのあと"):
+    elif phase in ("休止", "離脱", "燃え尽きのあと", "分からない"):
         low = 0
     elif phase == "冷却中":
         high = max(low, int(high * 0.7))

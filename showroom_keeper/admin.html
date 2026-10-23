@@ -1793,13 +1793,14 @@ const WALL_NOTE = "見えた回 = 貢献ランキング (各ルームの上位 1
 const ptYen = (v) => v ? `${shortNum(v)} <small>pt</small>` : "—";
 const yenOf = (v) => v ? `およそ ${shortNum(Math.round(v / 3))} 円` : "";
 // [キー, 名前, 値の出し方, 説明]
+const STATUS_FORMULA = 2;  // gifter_status.FORMULA と同じ (式を変えた版)
 const STATUS_GROUPS = [
   ["財布", "どれだけ撃てるか", [
     ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど"],
-    ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月の予算 − 今月ここまで (${shortNum(st.spent)} pt。終わったイベントの分。開催中のイベントはまだ入らない)`],
-    ["fire", "火力", (st) => `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}</span>`, (st) => `${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く)。${yenOf(st.fire)}`],
-    ["max_out", "最大出力", (st) => ptYen(st.max_out), "直近 12 か月の、1 イベント × 1 ルームの最大 (無理をした時の天井)"],
-    ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、火力の半分以上を出したイベントの数 (送った月の中ほど)"],
+    ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月の予算 − 今月の分 (${shortNum(st.spent)} pt。終わる予定の月が今月のイベントの、今までに見えた貢献。開催中のイベントの途中の値も入る)。0 より下は 0`],
+    ["fire", "火力", (st) => st.fire_rounds === 0 ? '<span class="uid">比べるデータなし</span>' : `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}${st.fire_rounds === 1 ? " ・ 1 件だけの参考値" : ""}</span>`, (st) => `終わった回 (終わって 2 日たち、終わったあとの貢献ランキングを取り終えた回) のうち、${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く。1 回だけならその値)${st.fire_rounds != null ? ` ・ くらべた回 ${num(st.fire_rounds)}` : ""}`],
+    ["max_out", "最大出力", (st) => ptYen(st.max_out), "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。開催中の途中の値は入れない"],
+    ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、火力の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
     ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (予算の 3 割以下) のあと、予算に戻るまでの月数。短いほど上"],
   ]],
   ["腕", "どう撃つか", [
@@ -1808,7 +1809,7 @@ const STATUS_GROUPS = [
   ]],
   ["心", "撃つ気があるか", [
     ["momentum", "勢い", (st) => st.momentum == null ? "—" : `${st.momentum.toFixed(2)} <small>倍</small>${st.new_high ? ' <span class="tag live">上限を更新</span>' : ""}`, "直近 3 か月の量 ÷ その前の 3 か月"],
-    ["fatigue", "疲労", (st) => st.fatigue == null ? "—" : `${st.fatigue.toFixed(2)}`, "直近 30 日に出した量 ÷ 月の予算。1 を超えると疲労 (少ないほど上)"],
+    ["fatigue", "疲労", (st) => st.fatigue == null ? "—" : `${st.fatigue.toFixed(2)}`, "終わる予定の日が 30 日前より後のイベントの貢献 (先月に終わった分・開催中の分・来月以降に終わる予定の分も入る) ÷ 月の予算。予算が 0 なら分からない。1 を超えると疲労 (少ないほど上)"],
   ]],
   ["経歴", "どれだけ戦ってきたか", [
     ["achievements", "実績", (st) => `${num(st.achievements)} <small>回</small>`, (st) => `直近 2 年で、ルームが目標に届いた回に、そのルームの貢献の 3 位までだった回数 (うち 1 位 ${num(st.tops)} 回)`],
@@ -1833,7 +1834,8 @@ function radarSvg(scores) {
     <polygon class="shape" points="${shape}"/>${labels}</svg>`;
 }
 const MARK_NOTE = { "上り調子": "直近 3 か月が、その前の 3 か月の 1.5 倍以上", "安定": "大きな増え減りがない", "温存中": "直近 3 か月が多かった 3 か月の 3 割以下なのに、アクティブファンに残っている (見えない戦力)",
-  "枯渇": "直近 3 か月が少なくなり、アクティブファンからも消えた (今は弾が無い)", "離脱": "3 か月どこの貢献ランキングにもアクティブファンにも出ていない",
+  "枯渇": "直近 3 か月が少なくなり、アクティブファンからも消えた (今は弾が無い)", "離脱": "3 か月どこの貢献ランキングにもアクティブファンにも出ていない (ファンの名簿が全員分で、居ないと分かっている)",
+  "不明": "直近 3 か月が少ないか出ておらず、アクティブファンに見えないが、ファンの名簿が全員分でない (上位しか読まない・月の途中で読んだ・読んでいない) ので、離れたか・弾が無いか・温存かは分からない",
   "疲労": "直近 30 日に、月の予算より多く出した", "新顔": "初めて見えてから 3 か月以内" };
 const markTag = (m) => `<span class="tag ${["枯渇", "離脱", "疲労"].includes(m) ? "warn" : ["上り調子", "温存中"].includes(m) ? "live" : ""}" title="${esc(MARK_NOTE[m] || "")}">${esc(m)}</span>`;
 const CLASS_NOTE = { "主砲": "ルームでの戦力が、このルームの決め手の量 (隣の順位と分かれた差の中ほど) 以上。一人で順位を動かせる",
@@ -1850,9 +1852,9 @@ function gifterStatus(st, uid) {
       ${tile("総合力", `<span class="st-grade ${esc(st.grade || "")}">${esc(st.grade || "—")}</span> ${shortNum(st.overall)} <small>pt</small>`, `全体 ${num(st.rank)} 位${st.people ? ` / ${num(st.people)} 人` : ""} ・ 評価 ${sc.overall ?? "—"}`)}
       ${tile("今撃てる量", ptYen(st.ready), `火力と残弾の小さい方。状態と腕で ×${st.factor}`)}
       ${tile("火力", ptYen(st.fire), `${esc(st.scale)} ・ ${yenOf(st.fire)}`)}
-      ${tile("状態", st.marks.map(markTag).join(" "), st.fan ? "直近 3 か月のアクティブファンにいる" : "直近 3 か月のアクティブファンにいない")}
+      ${tile("状態", st.marks.map(markTag).join(" "), st.fan ? "直近 3 か月のアクティブファンにいる" : st.state === "不明" ? "直近 3 か月のアクティブファンに見えない (名簿が全員分でないので、居ないとは言えない)" : "直近 3 か月のアクティブファンにいない")}
     </div><div class="hint" style="margin-top:0">総合力 = 次の勝負で、一人で動かせる量の見込み (火力と残弾の小さい方 × 状態 × 腕)。ランクは、パワーギフターの中で上から 1% が S・5% が A・20% が B・50% が C、それより下が D。
-      評価 (1〜100) は、パワーギフターの中で上から何番目くらいか。${esc(st.month.replace("-", "/"))} までの集め終わった月と、今月ここまでの分から。${esc(runNote(st.run))}。どの線も仮の値です</div></div>
+      評価 (1〜100) は、パワーギフターの中で上から何番目くらいか。${esc(st.month.replace("-", "/"))} までの集め終わった月と、今月ここまでの分から。${esc(runNote(st.run))}。どの線も仮の値です${(st.formula || 1) < STATUS_FORMULA ? "。<b>この人の値は前の式のまま (作り直し待ち)。順位・ランクは、全員を作り直し終えた時にそろいます</b>" : ""}</div></div>
     <div>${radarSvg(sc)}</div></div>`;
   const rows = [];
   for (const [g, gl, items] of STATUS_GROUPS) for (const [k, l, val, note] of items) rows.push({ g, gl, k, l, val: val(st), raw: st[k], sc: sc[k], note: typeof note === "function" ? note(st) : note });
@@ -1883,7 +1885,7 @@ function gifterStatus(st, uid) {
 const PHASE_NOTE = { "熱中": "直近で量が上がっている", "安定": "大きな変化が見えない", "冷却中": "直近で量が下がり続けている",
   "休止": "急に止めて静か (ファンレベルも無い)", "休止 (お金の事情か潜伏)": "急に止めて静かだが、ファンレベルは残っている (お金の事情か、貯めている)",
   "潜伏の疑い": "静かだが、前にも休んでからまとめて出したことがある", "燃え尽きのあと": "大勝負で出し切ったあと静か", "復帰": "休んでいたあと戻ってきた",
-  "離脱": "3 か月、どこにも出さず、ファンレベルも無い" };
+  "離脱": "3 か月、どこにも出さず、ファンレベルも無い", "分からない": "3 か月、どこにも出していない。ファンの名簿が全員分でない月があり、離れたかは分からない" };
 const MIND_NOTE = {
   "財布が細った": "推しへの気持ちは同じだが、使えるお金が減った (全体が少しずつ下がり、関心と推しの割合は保たれる)",
   "推しが移った": "気持ちが別のルームに移った (推しのルームが下がり、別のルームが上がる)",
@@ -1943,10 +1945,10 @@ function gifterPsyche(st, uid) {
   if (m.warnings.length) h += `<div class="hint"><b>気をつける点:</b> ${m.warnings.map(esc).join(" / ")}</div>`;
   return h;
 }
-const power = { grade: "all", data: null };
+const power = { grade: "all", data: null, byGrade: {} };  // byGrade: ランクで絞った分 (サーバーがランクの境目で絞って返す)
 async function showPowerRanking(box) {
   if (!power.data) box.innerHTML = loadingHtml("戦力ランキングを読み込んでいます…");
-  try { power.data = await api("/api/research/power?limit=500"); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  try { power.data = await api("/api/research/power?limit=500"); power.byGrade = {}; } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "gifters") return;
   drawPowerRanking(box);
 }
@@ -1956,7 +1958,8 @@ function drawPowerRanking(box) {
     box.innerHTML = `<div class="empty">まだありません。ギフターのステータスは、1 日 1 回、サーバーが空いている時に作ります${d.run && d.run.started && !d.run.done ? " (今作っています)" : ""}。</div>`;
     return;
   }
-  const rows = power.grade === "all" ? d.rows : d.rows.filter((r) => r.grade === power.grade);
+  const gd = power.grade === "all" ? null : power.byGrade[power.grade];
+  const rows = power.grade === "all" ? d.rows : gd ? gd.rows : [];
   box.innerHTML = `<div class="summary">${stat(num(d.people || d.rows.length), "パワーギフター (人)")}${["S", "A", "B"].map((g) => stat(num(d.rows.filter((r) => r.grade === g).length), `上位 ${num(d.rows.length)} 人のうち ${g}`)).join("")}</div>
     <div class="hint">SHOWROOM 全体で、次の勝負で一人で動かせる量の見込み (総合力) の多い順。パワーギフター = 直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。${d.at ? `${tm(d.at, true)} に作り終えた分` : ""}。どの線も仮の値です</div>
     <div class="row" style="margin:8px 0"><div class="filters grow">${[["all", "すべて"], ["S", "S"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"]].map(([g, l]) => `<button type="button" class="fchip ${power.grade === g ? "active" : ""}" data-pg="${g}">${l}</button>`).join("")}</div></div>`
@@ -1970,11 +1973,20 @@ function drawPowerRanking(box) {
       { label: "状態", value: (r) => r.state, html: (r) => markTag(r.state) },
       { label: "主なルーム", value: (r) => r.top_name || "", html: (r) => r.top_key ? `${roomLink(r.top_key, r.top_name)}<div class="uid">忠誠心 ${pctText(r.top_share)}</div>` : "-" },
     ], rows, { sort: 0, desc: false, phone: [1, 2, 3], csvName: "戦力ランキング", rowAttr: (r) => `class="clickable" data-go="#gifter/${esc(r.user_id)}"`,
-      note: "上位 500 人まで。くわしくは、名前を押すと出るギフターのページの「ステータス」" });
+      note: `${power.grade === "all" ? "上位 500 人まで" : gd ? `ランク ${power.grade} の人の上から 500 人まで (全体の中から絞っています)` : "読み込んでいます…"}。順位は全体での順位で、総合力が同じなら同じ順位。くわしくは、名前を押すと出るギフターのページの「ステータス」` });
 }
 $("#gf-body").addEventListener("click", (ev) => {
   const g = ev.target.closest("[data-pg]");
-  if (g && power.data) { power.grade = g.dataset.pg; delete DT["power-rank"]; drawPowerRanking($("#gf-body")); }
+  if (g && power.data) {
+    const pg = g.dataset.pg;
+    power.grade = pg; delete DT["power-rank"]; drawPowerRanking($("#gf-body"));
+    if (pg !== "all" && !power.byGrade[pg]) {
+      api(`/api/research/power?limit=500&grade=${pg}`).then((d) => {
+        power.byGrade[pg] = d;
+        if (page.name === "gifters" && power.grade === pg) { delete DT["power-rank"]; drawPowerRanking($("#gf-body")); }
+      }).catch(() => { /* 読めなければ、次に押した時に読み直す */ });
+    }
+  }
 });
 function gifterStates(st) {
   const ym = (m) => m.replace("-", "/");
@@ -3071,7 +3083,7 @@ function roomAnalysisHtml(d) {
   const lu = d.lure;
   if (lu) {
     const rt = (x) => x == null ? "—" : `${x.toFixed(1)} <small>倍</small>`;
-    html += `<h3>誘い投げ <small class="muted">記録した直近 ${num(lu.days)} 日。コアな常連 ${num(lu.core)} 人 (有料ギフトの多い人と、ファンレベルの高い人) の 1000 円以下の有料ギフト ${num(lu.lures)} 回</small></h3><div class="tiles">
+    html += `<h3>誘い投げ <small class="muted">記録した直近 ${num(lu.days)} 日。コアな常連 ${num(lu.core)} 人 (有料ギフトの多い人と、ファンレベルの高い人) の 1 回 1,000 pt 以下の有料ギフト ${num(lu.lures)} 回</small></h3><div class="tiles">
       ${tile("送る人の増え方", rt(lu.people_ratio), `誘い投げの後の ${lu.window / 60} 分に、ほかの人でギフト (無料も) を送った人 ${num(lu.people_after)} 人 ÷ 前の ${lu.window / 60} 分の ${num(lu.people_before)} 人。同じ配信の中でくらべる`, lu.people_ratio >= 1.5 ? "ok" : "")}
       ${tile("有料ポイントの増え方", rt(lu.points_ratio), lu.points_ratio == null ? "前の 3 分に、ほかの人の有料ギフトが無い回ばかりで、くらべられません" : "誘い投げの前後 3 分の、ほかの人の有料ギフトのポイントの比")}
       ${tile("コメントの増え方", rt(lu.comments_ratio), lu.has_comments ? "誘い投げの前後 3 分の、コメントの数の比" : "1 分ごとのコメントの数は、2026-10-18 から残し始めました")}
