@@ -10,6 +10,7 @@ class FakePage:
         self.closed = False
         self.gotos, self.reloads = [], 0
         self.video_times = []
+        self.live_info = None  # 配信の印 (bcsvr_key) の問い合わせの答え
 
     async def goto(self, url, **kw):
         self.gotos.append(url)
@@ -20,6 +21,8 @@ class FakePage:
     async def evaluate(self, js, arg=None):
         if "current_user" in js and "comment_log" not in js:  # 自分のユーザー ID (視聴中に先に取得する)
             return {"user_id": 1}
+        if "live_info" in js:
+            return self.live_info
         t = self.video_times.pop(0) if self.video_times else None
         return None if t is None else {"time": t, "paused": False, "ready": 4}
 
@@ -334,6 +337,8 @@ async def test_viewer_count_is_fetched_and_saved(tmp_path):
     async def evaluate(js, arg=None):
         if "current_user" in js and "comment_log" not in js:
             return {"user_id": 1}
+        if "live_info" in js:  # 配信の印 (ここでは分からないまま)
+            return None
         return next(responses)
 
     page.evaluate = evaluate
@@ -405,6 +410,41 @@ async def test_websocket_gifts_are_recorded(tmp_path):
     got = load_recorded(tmp_path, "k")
     assert len(got) == 1 and got[0]["num"] == 3 and got[0]["live_id"] == 99
     assert w.activity.count(10) == 2  # 推定アクティブ人数には両方入る
+
+
+async def test_gifts_of_other_lives_and_offline_pages_are_not_recorded(tmp_path):
+    import json as _json
+
+    from showroom_keeper.gifts import load_recorded
+
+    cfg = Config(rooms=["k"], state_file=tmp_path / "s.json")
+    live = {"v": True}
+
+    async def fetch(key):
+        return RoomStatus(key, 1, "Room", live["v"], live_id=99 if live["v"] else None)
+
+    page = FakePage()
+    page.live_info = {"live_status": 2, "live_id": 99, "bcsvr_key": "own:1"}
+
+    async def new_page():
+        return page
+
+    w = RoomWatcher("k", cfg, fetch, new_page)
+    await w.step()
+    await w._ensure_bcsvr_key(page)
+    gift = {"t": 2, "u": 7, "ac": "A", "g": 1, "n": 3, "created_at": 5}
+    w._on_frame("MSG\tother:2\t" + _json.dumps(gift))  # ページに届いた、ほかの配信のギフト
+    w._on_frame("MSG\town:1\t" + _json.dumps({**gift, "n": 4}))
+    got = load_recorded(tmp_path, "k")
+    assert [g["num"] for g in got] == [4] and got[0]["live_id"] == 99
+    assert w.activity.count(10) == 1  # 推定アクティブ人数も、このルームの分だけ
+
+    live["v"] = False  # 配信が終わっても、ページは開いたまま
+    w.last_status_at = None
+    await w.step()
+    w._on_frame("MSG\town:1\t" + _json.dumps({**gift, "n": 5}))
+    w._on_frame("MSG\tother:2\t" + _json.dumps({**gift, "n": 6}))
+    assert [g["num"] for g in load_recorded(tmp_path, "k")] == [4]
 
 
 async def test_status_errors_do_not_close_a_working_page(env):

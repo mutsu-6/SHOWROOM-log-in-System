@@ -15,8 +15,9 @@ ACTIVITY_TYPES = {1, 2, 18}
 WINDOW = 600  # 数える期間 (秒)
 
 
-def parse_message(payload: str | bytes) -> dict | None:
-    """`MSG\t<key>\t<json>` 形式のメッセージを辞書にする。"""
+def parse_frame(payload: str | bytes) -> tuple[str, dict] | None:
+    """`MSG\t<key>\t<json>` 形式のメッセージを (配信の印 key, 辞書) にする。
+    key はどの配信の知らせかを表す (ページはほかの配信の知らせも受け取ることがある)。"""
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8", errors="replace")
     if not isinstance(payload, str) or not payload.startswith("MSG\t"):
@@ -28,7 +29,13 @@ def parse_message(payload: str | bytes) -> dict | None:
         data = json.loads(parts[2])
     except ValueError:
         return None
-    return data if isinstance(data, dict) else None
+    return (parts[1], data) if isinstance(data, dict) else None
+
+
+def parse_message(payload: str | bytes) -> dict | None:
+    """`MSG\t<key>\t<json>` 形式のメッセージを辞書にする。"""
+    frame = parse_frame(payload)
+    return frame[1] if frame else None
 
 
 def parse_event(payload: str | bytes) -> tuple[int, int] | None:
