@@ -124,16 +124,17 @@ def test_paying_more_while_caring_less():
 
 
 # ---- ファンの名簿の外を「0」にしない (再設計の決定案 W。2026-10-23)
-def test_fan_list_counts_as_zero_only_when_complete_and_read_late():
+def test_fan_list_counts_as_zero_only_when_complete_and_read_after_the_month():
     from datetime import datetime
 
     end = datetime(2026, 10, 1, tzinfo=psyche.JST).timestamp()  # 2026-09 の終わり
     assert psyche.fans_complete("202609", 120, end + 3600, 120)  # 全員分を、月が終わってから読んだ
-    assert psyche.fans_complete("202609", 120, end - 3 * 86400, 120)  # 月の終わりの 7 日の中
+    assert not psyche.fans_complete("202609", 120, end - 1, 120)  # 月の終わりの直前でも、そのあとファンになる人がいる
     assert not psyche.fans_complete("202609", 120, end - 20 * 86400, 120)  # 月の途中で読んだ
     assert not psyche.fans_complete("202609", 1500, end + 3600, 1000)  # 上位 1,000 人しか読めていない
     assert not psyche.fans_complete("202609", None, end + 3600, 50)  # 総数が分からない
-    assert not psyche.fans_complete("202612", 10, datetime(2027, 1, 1, tzinfo=psyche.JST).timestamp() - 10 * 86400, 10)
+    assert not psyche.fans_complete("202612", 10, datetime(2027, 1, 1, tzinfo=psyche.JST).timestamp() - 1, 10)
+    assert psyche.fans_complete("202612", 10, datetime(2027, 1, 1, tzinfo=psyche.JST).timestamp(), 10)  # 年をまたぐ
 
 
 def test_fan_line_keeps_unknown_months():

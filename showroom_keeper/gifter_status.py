@@ -40,8 +40,10 @@ from .status import JST
 
 log = logging.getLogger(__name__)
 
-VERSION = 1  # 作る中身を変えたら上げる (前に作った分を消して作り直す。上げると、作り直し終えるまで一覧が空になる)
-FORMULA = 2  # 式の版。上げても前の分は消さず、毎日の作り直しで 1 人ずつ差し替える (画面に「作り直し待ち」と出す)。
+VERSION = 1  # 作る中身を変えたら上げる (読む形が変わる時。作り直し終えるまで、前の版の人は出ない)
+FORMULA = 2  # 式の版。上げても前の分は消さず、毎日の作り直しが全員分終わった時に、全員そろって入れ替わる
+# 作り直しの途中の人は gifter_status_next に書き、回し終えた時に一覧・順位・ランクの区切りを一度に入れ替える
+# (途中で入れ替えると、新しい式の人と前の式の人で順位が混ざる。再設計の決定案 W・Codex の確認 #127)。
 # 2 (2026-10-23): ファンの名簿が全員分でない時は離脱・枯渇にしない (不明)、火力などは終わった回だけでくらべる
 EVERY = 86400  # 作り直す間隔 (秒)
 TICK = 60  # 暇かどうかを見て、少しずつ作る間隔 (秒)
@@ -62,7 +64,8 @@ TSUKIAI = 0.2  # 最推しのルームの 1 イベントの最大の、これよ
 ROOMS = 5  # ルームとの関係を出すルームの数
 LEVELS = (1, 3, 10, 30, 100, 300)  # 経験値 (勝負の回の数) のレベルの段。これだけ以上で 1 つ上がる
 GRADES = ((0.01, "S"), (0.05, "A"), (0.20, "B"), (0.50, "C"))  # 総合力の上から何割までがどのランクか (それより下は D)
-# 総合力に掛ける (ほかは 1.0)。不明 = ファンの名簿が全員分でないなどで、離脱か枯渇か温存中かを決められない (仮に間の値)
+# 総合力に掛ける (ほかは 1.0)。不明 = ファンの名簿が全員分でないなどで、離脱か枯渇か温存中かを決められない。
+# 不明の 0.5 は確かめていない仮の値 (参加する見込みではない。当たり方は本番の外で確かめる。決定案の 12・Codex の確認 #127)
 STATE_FACTOR = {"枯渇": 0.2, "離脱": 0.0, "上り調子": 1.1, "不明": 0.5}
 FATIGUE_FACTOR = 0.6  # 疲労している時に総合力に掛ける
 # 火力の大きさの目安 (1 手 300 万 = 10 万 SG × 10 連。`docs/戦術メモ.md` の 2)
@@ -343,9 +346,13 @@ def scale(fire: int) -> str:
     return "10 万未満"
 
 
+COLS = "user_id, version, at, overall, firepower, budget, left_pt, state, top_room, top_share, data"
+
+
 def save(s: Any, st: dict[str, Any]) -> None:
+    """作り直しの途中の表に書く (ページに出るのは、回し終えて入れ替えてから)。"""
     with s.tx() as c:
-        c.execute("""INSERT OR REPLACE INTO gifter_status(user_id, version, at, overall, firepower, budget, left_pt, state, top_room,
+        c.execute("""INSERT OR REPLACE INTO gifter_status_next(user_id, version, at, overall, firepower, budget, left_pt, state, top_room,
                                                           top_share, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (st["user_id"], VERSION, st["at"], st["overall"], st["fire"], st["hp"], st["mp"], st["state"], st["_top_room"],
                    st["_top_share"], json.dumps({k: v for k, v in st.items() if not k.startswith("_")}, ensure_ascii=False)))
@@ -378,6 +385,9 @@ def step(s: Any, now: float | None = None, users: int = STEP_USERS) -> bool:
         return True
     run = _run(s)
     queued = s.scalar("SELECT COUNT(*) FROM gifter_status_queue")
+    if run.get("started") and not run.get("done") and not run.get("staged"):
+        queued = 0  # 入れ替えの仕組みより前に始めた回は、途中の人を前の表に書いているので、はじめからやり直す
+        run = {}
     if not queued:
         if run.get("started") and not run.get("done"):
             finish(s, run, now)
@@ -386,8 +396,10 @@ def step(s: Any, now: float | None = None, users: int = STEP_USERS) -> bool:
             return False
         ids = population(s, now)
         with s.tx() as c:
+            c.execute("DELETE FROM gifter_status_queue")
+            c.execute("DELETE FROM gifter_status_next")
             c.executemany("INSERT OR IGNORE INTO gifter_status_queue VALUES (?)", [(u,) for u in ids])
-        s.set_meta(RUN_META, json.dumps({"started": now, "version": VERSION, "people": len(ids)}))
+            s.set_meta(RUN_META, json.dumps({"started": now, "version": VERSION, "people": len(ids), "staged": True}))
         return True
     ids = [r[0] for r in s.all("SELECT user_id FROM gifter_status_queue ORDER BY user_id LIMIT ?", (users,))]
     edges: dict[int, int] = {}
@@ -402,11 +414,10 @@ def step(s: Any, now: float | None = None, users: int = STEP_USERS) -> bool:
 
 
 def finish(s: Any, run: dict[str, Any], now: float) -> None:
-    """回し終えた: 今回作らなかった人 (パワーギフターでなくなった人) を消し、項目ごとの評価の区切り (1〜100) を作る。"""
-    with s.tx() as c:
-        c.execute("DELETE FROM gifter_status WHERE at < ? OR version != ?", (run["started"], VERSION))
+    """回し終えた: 項目ごとの評価の区切り (1〜100) を作り、一覧を今回作った人だけに入れ替える
+    (今回作らなかった人 = パワーギフターでなくなった人は消える)。人・順位・区切りは 1 回の書き込みで一度に変わる。"""
     vals: dict[str, array.array] = {k: array.array("d") for k in SCORED}
-    for (data,) in s.conn.execute("SELECT data FROM gifter_status"):
+    for (data,) in s.conn.execute("SELECT data FROM gifter_status_next WHERE version=?", (VERSION,)):
         d = json.loads(data)
         for k in SCORED:
             if d.get(k) is not None:
@@ -415,8 +426,13 @@ def finish(s: Any, run: dict[str, Any], now: float) -> None:
     for k, v in vals.items():
         xs = sorted(v)
         cuts[k] = [xs[min(len(xs) - 1, int(len(xs) * q / 100))] for q in range(1, 100)] if xs else []
-    s.set_meta(CUTS_META, json.dumps({"at": now, "people": len(vals["overall"]), "cuts": cuts}))
-    s.set_meta(RUN_META, json.dumps({**run, "done": now}))
+    with s.tx() as c:
+        c.execute("DELETE FROM gifter_status")
+        c.execute(f"INSERT INTO gifter_status({COLS}) SELECT {COLS} FROM gifter_status_next WHERE version=?", (VERSION,))
+        c.execute("DELETE FROM gifter_status_next")
+        s.set_meta(CUTS_META, json.dumps({"at": now, "people": len(vals["overall"]), "cuts": cuts}))
+        s.set_meta(RUN_META, json.dumps({**run, "done": now}))
+    _cuts_cache.clear()
     log.info("ギフターのステータスを作り終えました (%d 人、%.0f 秒)", len(vals["overall"]), now - run["started"])
 
 

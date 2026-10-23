@@ -21,7 +21,7 @@ DAY = 86400
 # ルームの一覧で絞り込み・並べ替えのために全部読むので入れない
 BIG = {"contributions", "event_progress", "user_room", "cumulative_history", "room_events", "user_month", "cumulative",
        "user_names", "users", "archive_contributions", "room_daily", "room_event_style", "active_fans", "user_rooms", "room_lives",
-       "gift_senders", "gift_events", "event_rounds", "gifter_status", "room_point_12h"}
+       "gift_senders", "gift_events", "event_rounds", "gifter_status", "gifter_status_next", "room_point_12h"}
 # わざと全部読むもの: (読み方の一部, SQL の一部, 理由)
 ALLOWED = [
     ("SCAN room_daily", "DELETE FROM room_daily WHERE day <", "古い日の分を消す。1 日 1 回だけ"),
@@ -31,8 +31,8 @@ ALLOWED = [
     ("SCAN gift_senders", "INSERT OR REPLACE INTO gift_room_totals",
      "ルームごとの件数の表を、前に足した送り主の表から作る。入れ替えた時に 1 回だけ"),
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
-    ("SCAN gifter_status", "SELECT data FROM gifter_status", "ステータスの評価の区切りを作る。1 日 1 回、回し終えた時だけ (パワーギフターの分だけ)"),
-    ("SCAN gifter_status", "DELETE FROM gifter_status WHERE at <", "パワーギフターでなくなった人を消す。1 日 1 回、回し終えた時だけ"),
+    ("SCAN gifter_status_next", "SELECT data FROM gifter_status_next", "ステータスの評価の区切りを作る。1 日 1 回、回し終えた時だけ (パワーギフターの分だけ)"),
+    ("SCAN gifter_status_next", "SELECT user_id, version", "作り直した全員を一覧に入れ替える。1 日 1 回、回し終えた時だけ"),
 ]
 
 
@@ -188,6 +188,7 @@ def test_sweep_jobs_do_not_read_whole_tables(traced):
         sw._next_event_page(NOW)
         sw._next_fans_history(NOW)
         sw._next_room_profile(NOW)
+        sw._next_fans_closed(NOW)
         c.close()
     check(traced, run)
 

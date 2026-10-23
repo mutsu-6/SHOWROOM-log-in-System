@@ -554,7 +554,8 @@ def _stub_jobs(sw, cost, done, rankings=True):
             return True
         return run
     for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_fans", "_next_event_history",
-                 "_next_owner", "_next_event_page", "_next_notices", "_next_fans_history", "_next_room_profile", "_next_scan"):
+                 "_next_owner", "_next_event_page", "_next_notices", "_next_fans_history", "_next_room_profile", "_next_scan",
+                 "_next_fans_closed"):
         setattr(sw, name, job(name))
     with Store(sw.state_dir) as s:
         s.set_meta("live_at", NOW)
@@ -1120,6 +1121,48 @@ def test_fans_history_reads_past_months_backwards(tmp_path):
         assert s.one("SELECT fans_back FROM rooms WHERE room_id=1")[0] == "done"
         assert s.scalar("SELECT COUNT(*) FROM active_fans WHERE room_id=1") == 4  # 10・9・8・7 月
         assert s.one("SELECT fans_at FROM rooms WHERE room_id=1")[0] == now - 100  # 前の月を読んでも、読み直す時期は変えない
+
+
+def test_fans_read_mid_month_are_read_again_after_the_month(tmp_path):
+    """月の途中で読んだ前の月の名簿は、月が終わってから 1 回だけ全員分を読み直す (その月の名簿に居ない人を 0 と言うため)。"""
+    now = datetime(2026, 10, 3, 12, tzinfo=JST).timestamp()
+    asked = []
+
+    def get(path):
+        asked.append(path)
+        return {"fan_power": 7, "total_user_count": 2, "users": [{"user_id": 5, "level": 9}, {"user_id": 6, "level": 1}]}
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "a", "name": "A", "followers": 10, "live_at": now}], "live", now)
+        s.set_active_fans(1, "202609", 5, 1, [{"user_id": 5, "level": 8}], now - 20 * 86400)  # 9/13 に読んだ
+    assert sw._next_fans_closed(now)
+    assert asked == ["/api/active_fan/users?room_id=1&ym=202609&offset=0&limit=50"]
+    sw._fans_closed.clear()
+    assert not sw._next_fans_closed(now)  # 読み直したので、もう読まない
+    with Store(tmp_path) as s:
+        r = s.one("SELECT total, at FROM room_fans WHERE room_id=1 AND ym='202609'")
+        assert r["total"] == 2 and r["at"] == now
+        assert s.scalar("SELECT COUNT(*) FROM active_fans WHERE room_id=1 AND ym='202609'") == 2
+        assert s.one("SELECT fans_at FROM rooms WHERE room_id=1")[0] == now - 20 * 86400  # 今の月を読む時期は変えない
+
+
+def test_fans_total_changing_between_pages_is_not_complete(tmp_path):
+    """読んでいる間に総数が変わったら (ページの境目で抜ける人がいる)、いちばん大きい総数を残し、全員分とは見ない。"""
+    now = datetime(2026, 10, 3, 12, tzinfo=JST).timestamp()
+    pages = [{"total_user_count": 150, "users": [{"user_id": u, "level": 5} for u in range(1, 51)]},
+             {"total_user_count": 100, "users": [{"user_id": u, "level": 5} for u in range(101, 151)]}]
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=lambda p: pages.pop(0), throttle=quiet_throttle()),
+                       scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "a", "name": "A", "followers": 10, "live_at": now}], "live", now)
+    assert sw._next_fans(now)
+    with Store(tmp_path) as s:
+        got = s.scalar("SELECT COUNT(*) FROM active_fans WHERE room_id=1 AND ym='202610'")
+        total = s.one("SELECT total FROM room_fans WHERE room_id=1 AND ym='202610'")[0]
+    assert (got, total) == (100, 150)
+    from showroom_keeper import psyche
+    assert not psyche.fans_complete("202610", total, datetime(2026, 11, 2, tzinfo=JST).timestamp(), got)
 
 
 def test_room_profile_is_read_weekly_and_each_month(tmp_path):

@@ -40,7 +40,6 @@ SAVED = 0.6  # 爆発した月の量が、(休んだ月数 + 1) × ふだん の
 CHASE = 1.3  # 接戦で負けた次のイベントで、勝った次のこれだけ倍以上出せば「負けの取り返し」
 WALL_RANK = 70  # 貢献ランキングの順位の中ほどがこれより下なら、上位 100 人の壁ぎわ
 SHIFT = 0.3  # 推しの割合がこれだけ以上動いたら「行き先が変わった」
-FANS_LATE = 7 * 86400  # 月の終わりのこれだけの中で読んだファンの名簿は、その月の名簿とみる (sweep.FANS_EVERY と同じ)
 
 
 # ------------------------------------------------------------------ 小さな道具
@@ -94,13 +93,14 @@ def _known(xs: list[Any]) -> list[Any]:
 
 def fans_complete(ym: str, total: Any, at: Any, got: int) -> bool:
     """そのルームのその月 (ym = "202610") のファンの名簿で、居ない人を「レベル 0」と言えるか。
-    名簿が全員分 (読めた人数が SHOWROOM の言う総数以上) で、月の終わりの FANS_LATE 秒の中か、月が終わってから読んだものだけ。
-    そうでない名簿 (上位 1,000 人・前の月は 200 人までしか読まない・月の途中で読んだ) に居ない人は、分からない。"""
+    名簿が全員分 (読めた人数が SHOWROOM の言う総数以上) で、月が終わってから読んだものだけ (月の終わりの数日前に読んだ名簿でも、
+    そのあとファンになった人は居ない。Codex の確認 #127。月の途中で読んだ月は、sweep._next_fans_closed が月が終わってから読み直す)。
+    そうでない名簿 (上位 1,000 人・さかのぼった月は 200 人までしか読まない・月の途中で読んだ) に居ない人は、分からない。"""
     if total is None or at is None or got < int(total):
         return False
     y, m = int(ym[:4]), int(ym[4:])
     end = datetime(y + m // 12, m % 12 + 1, 1, tzinfo=JST).timestamp()
-    return float(at) >= end - FANS_LATE
+    return float(at) >= end
 
 
 def fan_line_of(fans: dict[int, list[int | None]], n: int) -> list[int | None]:

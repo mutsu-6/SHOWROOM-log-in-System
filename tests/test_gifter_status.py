@@ -156,3 +156,38 @@ def test_ranking_ties_share_a_rank_and_grade_filter_reads_the_whole_table(tmp_pa
         assert d_rows[0]["rank"] == s.scalar("SELECT COUNT(*) FROM gifter_status WHERE overall > ?", (d_rows[0]["overall"],)) + 1
         for g in "SABCD":
             assert all(r["grade"] == g for r in gs.ranking(s, 500, g)["rows"])
+
+
+def test_rebuild_switches_everyone_at_once(tmp_path):
+    """作り直しの途中は、前の回の値・順位のまま。回し終えた時に、全員・順位・ランクの区切りが一度に入れ替わる (#127)。"""
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as s:
+        before = {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")}
+        s.conn.execute("UPDATE gifter_status SET overall = overall + 1, data = json_set(data, '$.formula', 1)")
+        old = {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")}
+        later = NOW + gs.EVERY + 60
+        assert gs.step(s, later, users=1)  # 次の回を始める
+        assert gs.step(s, later, users=1)  # 1 人だけ作る
+        assert {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")} == old  # 一覧はまだ前の回のまま
+        assert s.scalar("SELECT COUNT(*) FROM gifter_status_next") == 1
+        for _ in range(50):
+            if not gs.step(s, later):
+                break
+        assert {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")} == before
+        assert s.scalar("SELECT COUNT(*) FROM gifter_status_next") == 0
+        assert all(json.loads(r[0])["formula"] == gs.FORMULA for r in s.all("SELECT data FROM gifter_status"))
+
+
+def test_run_started_before_the_switch_starts_over(tmp_path):
+    """入れ替えの仕組みより前に始めた途中の回 (途中の人を一覧に直接書いていた) は、はじめからやり直す。"""
+    d = _db(tmp_path)
+    _run_all(d)
+    with Store(d) as s:
+        s.set_meta(gs.RUN_META, json.dumps({"started": NOW - 3600, "version": gs.VERSION, "people": 3}))
+        s.conn.execute("INSERT INTO gifter_status_queue VALUES (8)")
+        n = s.scalar("SELECT COUNT(*) FROM gifter_status")
+        assert gs.step(s, NOW)
+        run = json.loads(s.meta(gs.RUN_META))
+        assert run["staged"] and run["started"] == NOW and s.scalar("SELECT COUNT(*) FROM gifter_status_queue") == run["people"]
+        assert s.scalar("SELECT COUNT(*) FROM gifter_status") == n  # やり直している間も、前の一覧は出したまま
