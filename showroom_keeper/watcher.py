@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from . import comment_counts, live_events
 from .api import RoomStatus
-from .activity import ActivityTracker, parse_message
+from .activity import ActivityTracker, parse_frame
 from .gifts import record_gift
 from .config import Config
 from .status import write_live_stat
@@ -30,6 +30,7 @@ PROBE_JS = """
 
 
 STATUS_RETRY = 30  # 配信状況の確認に失敗した時、確認し直すまでの秒数
+BCSVR_RETRY = 300  # 配信の印 (bcsvr_key) を取れなかった時、問い合わせ直すまでの秒数
 COMMENT_FILL_TIMEOUT = 30000  # コメント欄への入力を待つ上限 (ミリ秒)。サーバーが重い時は時間がかかる
 COMMENT_ECHO_WAIT = 6.0  # 配信ページが受信するコメント (自分の分も届く) で反映を確かめる待ち時間 (秒)
 COMMENT_LOG_WAIT = 15.0  # 届かなかった時にコメント履歴で確かめる上限 (秒)。履歴 API は 7〜10 秒ほど遅れて載る
@@ -145,6 +146,9 @@ class RoomWatcher:
         # 投稿したコメントの反映待ち (本文, 待っている Future)。配信ページが受信するコメントで解決する
         self._comment_waiters: list[tuple[str, asyncio.Future]] = []
         self._my_user_id: int | None = None
+        # この配信の印 (live_id, bcsvr_key)。ページはほかの配信の知らせも受け取るので、印が合うものだけ書く
+        self._bcsvr: tuple[int, str] | None = None
+        self._bcsvr_at: float | None = None  # 印を最後に問い合わせた時刻 (失敗しても問い合わせすぎないように)
         self.comment_echo_wait = COMMENT_ECHO_WAIT
         self._became_live = False
         self._went_offline = False
@@ -366,25 +370,39 @@ class RoomWatcher:
         # ページが受信するコメント・ギフト・入室のお知らせを読む (受信を読むだけで送信はしない)
         ws.on("framereceived", self._on_frame)
 
+    def _own_frame(self, key: str) -> bool:
+        """このルームの、今の配信の知らせか。配信していない時 (live_id が無い時) は書かない。
+        印をまだ問い合わせていない時は、配信中なのでこのルームのものとみなす (配信の始めのギフトを落とさないため)。"""
+        st = self.status
+        if not (st and st.is_live and st.live_id):
+            return False
+        if self._bcsvr and self._bcsvr[0] == st.live_id:
+            return key == self._bcsvr[1]
+        return True
+
     def _on_frame(self, payload: Any) -> None:
         now = time.time()
-        self.activity.feed(payload, now)
-        data = parse_message(payload)
+        frame = parse_frame(payload)
+        data = frame[1] if frame else None
         if data and data.get("t") == 1 and self._comment_waiters:  # コメント (自分の投稿も同じように届く)
             self._resolve_comment(data)
-        if data and data.get("t") == 1 and self.cfg.record_gifts and self.status:  # コメント (数だけ数える)
+        if not (frame and self._own_frame(frame[0])):  # ほかの配信の知らせ・配信していない時の知らせは書かない
+            return
+        assert self.status is not None
+        self.activity.feed(payload, now)
+        if data.get("t") == 1 and self.cfg.record_gifts:  # コメント (数だけ数える)
             try:
                 comment_counts.counter(self._state_dir).feed(self.key, self.status.live_id, data)
             except Exception as e:  # noqa: BLE001
                 self.log.debug("コメントの数の記録に失敗: %s", e)
-        if data and data.get("t") == 2 and self.cfg.record_gifts:  # ギフト
+        if data.get("t") == 2 and self.cfg.record_gifts:  # ギフト
             try:
-                record_gift(self._state_dir, self.key, self.status.live_id if self.status else None, data)
+                record_gift(self._state_dir, self.key, self.status.live_id, data)
             except Exception as e:  # noqa: BLE001
                 self.log.debug("ギフトの記録に失敗: %s", e)
-        if data and data.get("t") in (5, 18, 1001) and self.cfg.record_gifts:  # 来場・ファンレベルなどの知らせ
+        if data.get("t") in (5, 18, 1001) and self.cfg.record_gifts:  # 来場・ファンレベルなどの知らせ
             try:
-                live_events.record(self._state_dir, self.key, self.status.live_id if self.status else None, data)
+                live_events.record(self._state_dir, self.key, self.status.live_id, data)
             except Exception as e:  # noqa: BLE001
                 self.log.debug("知らせの記録に失敗: %s", e)
 
@@ -397,6 +415,26 @@ class RoomWatcher:
         for want, fut in list(self._comment_waiters):
             if want == text and (self._my_user_id is None or sender == self._my_user_id) and not fut.done():
                 fut.set_result(True)
+
+    async def _ensure_bcsvr_key(self, page: Page) -> None:
+        """今の配信の印 (bcsvr_key) を、配信ごとに 1 回だけページから問い合わせる (失敗したら 5 分あけて問い合わせ直す)。"""
+        st = self.status
+        if not (st and st.is_live and st.live_id) or (self._bcsvr and self._bcsvr[0] == st.live_id):
+            return
+        now = self._clock()
+        if self._bcsvr_at is not None and now - self._bcsvr_at < BCSVR_RETRY:
+            return
+        self._bcsvr_at = now
+        try:
+            info = await page.evaluate(
+                "async (roomId) => (await fetch('/api/live/live_info?room_id=' + roomId, { credentials: 'include' })).json()",
+                st.room_id)
+        except Exception as e:  # noqa: BLE001 - 分からないあいだは、配信中の知らせをこのルームのものとみなす
+            self.log.debug("配信の印を取得できません: %s", e)
+            return
+        if isinstance(info, dict) and info.get("bcsvr_key") and str(info.get("live_id")) == str(st.live_id):
+            self._bcsvr = (st.live_id, str(info["bcsvr_key"]))
+            self._bcsvr_at = None
 
     async def _ensure_my_user_id(self, page: Page) -> None:
         if self._my_user_id is not None or not self.status:
@@ -464,6 +502,7 @@ class RoomWatcher:
         try:
             self._save_activity()
             await self._ensure_my_user_id(self.page)  # コメント投稿時に問い合わせなくて済むよう先に取っておく
+            await self._ensure_bcsvr_key(self.page)
             await self._update_viewer_count()
         except Exception as e:  # noqa: BLE001 - 視聴者数の取得失敗で視聴を止めない
             self.log.debug("視聴者数の取得に失敗: %s", e)
