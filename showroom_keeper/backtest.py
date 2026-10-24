@@ -12,6 +12,7 @@
 - 隠すのは「T より後に終わったイベント」の貢献ランキング・ルームの結果・ファンの名簿の T の月から先。
   T より前に終わったイベントで、記録を取ったのが T より後のもの (さかのぼって集めた分) は見せる (式の当たり方を見るため。集める速さは見ない)
 - T の時に開催中だったイベントは、途中の値が分からないので、全部隠す (少なめに見る方に外れる)
+- どの予測も、同じ線で「何も考えない予測」(直前の 1 回と同じ・先月と同じ など。NAIVE) も採点する。式がこれに勝てなければ、式を使う意味が無い
 - 当たったかの線はここに書いたものだけ。画面の予測の言葉 (「次の勝負で動かせる量」など) から、いちばん素直な読み方で決めた
   使い方: python -m showroom_keeper.backtest <写しのあるフォルダ> [--at 2026-05 --at 2026-06] [--sample 2000] [--out backtest.json]
 """
@@ -37,7 +38,7 @@ from .status import JST
 
 log = logging.getLogger(__name__)
 
-VERSION = 1  # 採点の線を変えたら上げる (画面は版の違う結果を「前の線」と書く)
+VERSION = 2  # 採点の線を変えたら上げる (画面は版の違う結果を「前の線」と書く)
 FILE = "backtest.json"  # state のフォルダに置く結果
 DAY = 86400
 NEAR = 30 * DAY  # 「次の勝負」「次のイベント」を見る日数
@@ -104,6 +105,11 @@ class Score:
         self.ratios: list[float] = []
         self.by: dict[str, list[int]] = {}  # 種類 → [件数, 当たり]
         self.base: dict[str, list[int]] = {}  # 種類 → [同じ線を全員に当てはめた時に当たった数, 全員の数] (くらべる基準)
+        self.naive = [0, 0]  # 何も考えない予測の [当たり, 件数]
+
+    def add_naive(self, ok: bool) -> None:
+        self.naive[0] += bool(ok)
+        self.naive[1] += 1
 
     def add(self, ok: bool, kind: str | None = None, ratio: float | None = None) -> None:
         self.n += 1
@@ -117,6 +123,8 @@ class Score:
 
     def result(self) -> dict[str, Any]:
         out: dict[str, Any] = {"n": self.n, "hit": self.hit, "rate": round(self.hit / self.n, 3) if self.n else None}
+        if self.naive[1]:
+            out["naive"] = {"n": self.naive[1], "hit": self.naive[0], "rate": round(self.naive[0] / self.naive[1], 3)}
         if self.ratios:
             out["ratio_median"] = round(median(self.ratios), 3)  # 実際 ÷ 予測 の真ん中 (1 より大きければ、予測は少なめ)
         if self.by:
@@ -143,6 +151,20 @@ def pairs_agree(pred: dict[int, float], actual: dict[int, float]) -> tuple[int, 
     return agree, total
 
 
+# 何も考えない予測 (くらべる相手。式がこれより当たらなければ、式を入れている意味が無い)
+NAIVE: dict[str, str] = {
+    "status_fire": "直前の 1 回 (1 イベント × 1 ルーム) と同じ量",
+    "status_overall": "直前の 1 回と同じ量",
+    "status_order": "先月の量の多い順",
+    "power_forecast": "先月と同じ量",
+    "psyche_range": "推しのルームへの直前の 1 回の半分〜2 倍",
+    "psyche_appear": "直前の 90 日に推しのルームに出していれば、また出す",
+    "room_power": "直前のイベントのポイントの多い順",
+    "room_power_size": "直前のイベントのポイントと同じ",
+    "event_strength": "直前のイベントのポイントの多い順",
+}
+
+
 # 状態・時期が言っていること (次の 3 か月の量 next3 と、言った時の直近 3 か月 recent3・ふだんの月 usual から)
 STATE_CLAIMS: dict[str, Callable[[float, float, float], bool]] = {
     "上り調子": lambda nxt, recent, usual: recent > 0 and nxt >= recent,
@@ -161,6 +183,12 @@ PHASE_CLAIMS: dict[str, Callable[[float, float, float], bool]] = {
     "潜伏の疑い": lambda nxt, recent, usual: usual > 0 and nxt >= 2 * usual,  # 貯めた分をまとめて出す
     "休止 (お金の事情か潜伏)": lambda nxt, recent, usual: usual > 0 and nxt >= usual,
     "復帰": lambda nxt, recent, usual: usual > 0 and nxt >= usual,
+}
+# ルームの勢い (nxt = 次の 60 日 ÷ 言った時の前の 60 日)
+MOMENTUM_CLAIMS: dict[str, Callable[[float, float, float], bool]] = {
+    "上り調子": lambda nxt, _r, _u: nxt > 1,
+    "下り気味": lambda nxt, _r, _u: nxt < 1,
+    "変わらない": lambda nxt, _r, _u: 1 / room_analysis.MOMENTUM_STEP <= nxt <= room_analysis.MOMENTUM_STEP,
 }
 APPEAR_CLAIMS = {"高い": True, "ほぼ無い": False, "低い": False}
 
@@ -189,6 +217,7 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
                                                     (at, at + NEAR))}
         overall_pred: dict[int, float] = {}
         overall_real: dict[int, float] = {}
+        last_month_pt: dict[int, float] = {}
         state_rows: list[tuple[str, float, float, float]] = []
         phase_rows: list[tuple[str, float, float, float]] = []
         edges: dict[int, int] = {}
@@ -209,13 +238,19 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
             months = {m: past.scalar("SELECT points FROM user_month WHERE user_id=? AND month=?", (uid, m), 0) or 0
                       for m in (month, _add(month, -1), _add(month, -2))}
             recent3 = float(sum(months.values()))
+            before = past.all("""SELECT c.room_id, c.point, e.end FROM contributions c JOIN events e USING(event_id)
+                                 WHERE c.user_id=? AND c.point > 0 AND e.end > ? ORDER BY e.end DESC""", (uid, at - 120 * DAY))
+            last = float(before[0]["point"]) if before else 0.0
             next3 = float(sum(r["point"] for r in fut))
             usual = float(st["hp"] or 0)
             if st["fire"] and near_max:
                 scores["status_fire"].add(within(near_max, st["fire"]), st.get("scale"), near_max / st["fire"])
+                scores["status_fire"].add_naive(within(near_max, last))
             if st["overall"] and battle_max:
                 scores["status_overall"].add(within(battle_max, st["overall"]), st["state"], battle_max / st["overall"])
+                scores["status_overall"].add_naive(within(battle_max, last))
             overall_pred[uid], overall_real[uid] = float(st["overall"] or 0), float(near_max)
+            last_month_pt[uid] = float(months[month])
             state_rows.append((st["state"], next3, recent3, usual))
             # 前からある「戦力」(ギフターのページの別のタイル)
             pw = gifter_analysis.power(past, uid, month, at)
@@ -225,6 +260,7 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
                 if pw["forecast"]:
                     scores["power_forecast"].add(within(real_month, pw["forecast"]), pw.get("state"),
                                                  real_month / pw["forecast"] if real_month else None)
+                    scores["power_forecast"].add_naive(within(real_month, float(months[month])))
                 if pw["upper"]:
                     scores["power_upper"].add(big <= pw["upper"], pw.get("state"))
             mind = st.get("psyche")
@@ -234,14 +270,21 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
                     real = max((r["point"] for r in fut if r["room_id"] == o["room_id"]
                                 and r["end"] <= at + 90 * DAY), default=0)
                     scores["psyche_range"].add((o.get("low") or 0) <= real <= (o.get("high") or 0), mind.get("phase"))
+                    mine = [r for r in before if r["room_id"] == o["room_id"]]
+                    last_main = float(mine[0]["point"]) if mine else 0.0
+                    scores["psyche_range"].add_naive(within(real, last_main) if last_main else real == 0)
                     if o.get("appear") in APPEAR_CLAIMS:
                         scores["psyche_appear"].add((real > 0) == APPEAR_CLAIMS[o["appear"]], o["appear"])
+                        scores["psyche_appear"].add_naive((real > 0) == any(r["end"] > at - 90 * DAY for r in mine))
                 phase_rows.append((mind.get("phase"), next3, recent3, float(mind.get("usual") or 0)))
         _claims(scores["status_state"], state_rows, STATE_CLAIMS)
         _claims(scores["psyche_phase"], phase_rows, PHASE_CLAIMS)
         agree, total = pairs_agree(overall_pred, overall_real) if len(overall_pred) <= 5000 else _pairs_sampled(overall_pred, overall_real, seed)
         scores["status_order"].n += total
         scores["status_order"].hit += agree
+        agree, total = pairs_agree(last_month_pt, overall_real) if len(last_month_pt) <= 5000 else _pairs_sampled(last_month_pt, overall_real, seed)
+        scores["status_order"].naive[0] += agree
+        scores["status_order"].naive[1] += total
         _score_rooms(past, full, at, scores, rooms_limit)
     gifter_analysis._cuts.clear()
     return scores
@@ -287,6 +330,15 @@ def _score_rooms(past: Store, full: Store, at: float, scores: dict[str, Score], 
     events = full.all("""SELECT event_id, start, end FROM events WHERE start >= ? AND end IS NOT NULL AND end <= ?""", (at, at + NEAR))
     strength: dict[int, Any] = {}
     best: dict[int, float] = {}
+    lasts: dict[int, float | None] = {}
+
+    def last_of(rid: int) -> float | None:  # 直前のイベントのポイント (何も考えない予測)
+        if rid not in lasts:
+            r = past.one("""SELECT re.point FROM room_events re JOIN events e USING(event_id)
+                            WHERE re.room_id=? AND re.point > 0 AND e.end < ? ORDER BY e.end DESC LIMIT 1""", (rid, at))
+            lasts[rid] = float(r[0]) if r is not None else None
+        return lasts[rid]
+
     for e in events:
         rows = full.all("SELECT room_id, point, rank FROM room_events WHERE event_id=? AND point > 0", (e["event_id"],))
         real = {r["room_id"]: float(r["point"]) for r in rows}
@@ -295,27 +347,36 @@ def _score_rooms(past: Store, full: Store, at: float, scores: dict[str, Score], 
         a, t = pairs_agree({r: power[r] for r in real if r in power}, real)
         scores["room_power"].n += t
         scores["room_power"].hit += a
+        naive = {r: v for r in real for v in [last_of(r)] if v}
+        a, t = pairs_agree({r: v for r, v in naive.items() if r in power}, real)  # 地力をくらべたのと同じルームで
+        scores["room_power"].naive[0] += a
+        scores["room_power"].naive[1] += t
         st = {rid: x["per_day"] for rid in real for x in [event_analysis.room_strength(past, rid, at, strength)] if x}
         a, t = pairs_agree(st, real)
         scores["event_strength"].n += t
         scores["event_strength"].hit += a
+        a, t = pairs_agree({r: v for r, v in naive.items() if r in st}, real)
+        scores["event_strength"].naive[0] += a
+        scores["event_strength"].naive[1] += t
     for rid, pt in best.items():
         if rid in power:
             scores["room_power_size"].add(within(pt, power[rid]), None, pt / power[rid])
+            if last_of(rid):
+                scores["room_power_size"].add_naive(within(pt, last_of(rid) or 0))
     # 勢い: at の時の判定と、次の 60 日 ÷ at の前の 60 日
     rids = [r[0] for r in past.all("""SELECT DISTINCT re.room_id FROM room_events re JOIN events e USING(event_id)
                                        WHERE e.end > ? AND e.end <= ? AND re.point > 0""", (at - ROOM_DAYS, at))]
     if limit:
         rids = rids[:limit]
+    rows = []
     for rid in rids:
         mo = room_analysis.momentum(past, rid, at)
         if not mo.get("label"):
             continue
         nxt = room_analysis.momentum(full, rid, at + ROOM_DAYS).get("value")
-        if nxt is None:
-            continue
-        ok = {"上り調子": nxt > 1, "下り気味": nxt < 1}.get(mo["label"], 1 / room_analysis.MOMENTUM_STEP <= nxt <= room_analysis.MOMENTUM_STEP)
-        scores["room_momentum"].add(ok, mo["label"])
+        if nxt is not None:
+            rows.append((mo["label"], float(nxt), 0.0, 0.0))
+    _claims(scores["room_momentum"], rows, MOMENTUM_CLAIMS)
 
 
 # ------------------------------------------------------------------ まとめて動かす・読む
@@ -336,7 +397,8 @@ def run(state_dir: Path, months: Iterable[str], sample: int | None = None, rooms
            "min_n": MIN_N, "predictions": {}}
     for k, (label, claim) in PREDICTIONS.items():
         r = scores[k].result()
-        out["predictions"][k] = {"label": label, "claim": claim, **r, "checked": bool(r["n"])}
+        out["predictions"][k] = {"label": label, "claim": claim, **r, "checked": bool(r["n"]),
+                                 **({"naive_label": NAIVE[k]} if k in NAIVE else {})}
     return out
 
 
@@ -366,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
     path.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     for k, v in out["predictions"].items():
         rate = "未検証" if not v["checked"] else f"{v['rate'] * 100:.0f}% ({v['hit']}/{v['n']})"
+        if v.get("naive"):
+            rate += f" ・ 何も考えない予測 {v['naive']['rate'] * 100:.0f}%"
         print(f"{v['label']}: {rate}")
     print(f"結果: {path} ({out['seconds']} 秒)")
     return 0
