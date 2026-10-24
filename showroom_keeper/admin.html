@@ -827,7 +827,8 @@ const accRate = (hit, n) => `過去 ${num(n)} 件で <b>${Math.round(hit / n * 1
 function accText(key) {
   const p = accP(key);
   if (!p || !p.checked || !p.n) return `当たり方: <b>未検証</b> (過去に戻った答え合わせをまだしていません)`;
-  return `当たり方: ${accRate(p.hit, p.n)}${ACC.current === false ? " ・ 前の線での採点" : ""} ・ ${esc(p.claim)}`;
+  const nv = p.naive && p.naive.n ? ` ・ 何も考えない予測 (${esc(p.naive_label || "")}) は ${Math.round(p.naive.rate * 100)}%` : "";
+  return `当たり方: ${accRate(p.hit, p.n)}${nv}${ACC.current === false ? " ・ 前の線での採点" : ""} ・ ${esc(p.claim)}`;
 }
 // 種類ごと (「上り調子」と言った人など)。base = 同じ線をだれにでも当てはめた時に当たる割合 (これより高くないと、言う意味が無い)
 function accKind(key, kind) {
@@ -3957,11 +3958,13 @@ function renderAcc() {
     + dataTable("acc", [
       { label: "予測", value: (r) => r.label, html: (r) => `<b>${esc(r.label)}</b>`, cls: "name" },
       { label: "当たり", num: true, value: (r) => r.checked && r.n ? r.rate : -1, html: (r) => r.checked && r.n ? accRate(r.hit, r.n) : '<span class="tag warn">未検証</span>' },
+      { label: "何も考えない予測", num: true, value: (r) => r.naive && r.naive.n ? r.naive.rate : -1, html: (r) => r.naive && r.naive.n
+        ? `${Math.round(r.naive.rate * 100)}%${r.checked && r.n ? (r.rate > r.naive.rate ? ' <span class="tag live">式が上</span>' : r.rate === r.naive.rate ? ' <span class="tag">同じ</span>' : ' <span class="tag warn">式が下</span>') : ""}<br><span class="uid">${esc(r.naive_label || "")}</span>` : "-" },
       { label: "種類ごと", sort: false, value: (r) => "", html: (r) => r.by ? Object.entries(r.by).map(([kind, b]) => `${esc(kind)} ${b.n ? Math.round(b.rate * 100) : "—"}%${b.base != null ? ` <span class="uid">(だれにでも ${Math.round(b.base * 100)}%)</span>` : ""} <span class="uid">${num(b.n)} 件</span>`).join("<br>") : "" },
       { label: "実際 ÷ 予測", num: true, value: (r) => r.ratio_median, html: (r) => r.ratio_median != null ? `${r.ratio_median.toFixed(2)} <small>倍</small>` : "-" },
       { label: "何を確かめたか", sort: false, value: (r) => r.claim, html: (r) => `<span class="uid">${esc(r.claim)}</span>` },
     ], rows, { sort: null, phone: [0, 1], limit: 30, csvName: "予測の当たり方",
-      note: "実際 ÷ 予測 は真ん中の値 (1 より大きければ、予測は少なめに出ている)。「だれにでも」は、同じ線を全員に当てはめた時に当たる割合で、これより高くなければ、その判定には意味がありません" });
+      note: "何も考えない予測 = 直前の 1 回と同じ・先月と同じ など。式がこれより当たらなければ、式を使う意味がありません。実際 ÷ 予測 は真ん中の値 (1 より大きければ、予測は少なめに出ている)。「だれにでも」は、同じ線を全員に当てはめた時に当たる割合で、これより高くなければ、その判定には意味がありません" });
 }
 function renderCollect(d) {
   const j = d.job, last = j.last;

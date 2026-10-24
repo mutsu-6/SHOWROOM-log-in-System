@@ -205,3 +205,36 @@ def test_reads_stay_on_one_round_while_another_connection_switches(tmp_path):
             assert gs.ranking(a)["rows"] == before and gs._cuts(a) == cuts  # 前の回のまま
         after = gs.ranking(a)["rows"]
     assert [r["overall"] for r in after] == [r["overall"] * 10 for r in before]
+
+
+def _coverage(s, months, low):
+    """集まり具合 (research.coverage の結果) を、months のうち low の月だけ取った割合が低いとして残す。"""
+    s.set_meta("coverage_cache", {"at": NOW, "result": {"months": [{"month": m, "ratio": 0.3 if m in low else 1.0} for m in months],
+                                                         "read_from": None, "read_done": True}})
+
+
+def test_months_still_being_collected_do_not_count(tmp_path):
+    """集め終わっていない古い月が少なく見えても、それで「上り調子」にしない (直し A)。"""
+    gifter_analysis._cuts.clear()
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2)], "live", NOW)
+        last = gifter_analysis.last_month(NOW)
+        months = [gifter_analysis._add(last, -k) for k in range(11, -1, -1)]
+        for i, m in enumerate(months):  # 毎月 1 回。4〜6 か月前だけ、集め終わっていないので少なく見える
+            end = gs._month_start(m) + 15 * DAY
+            pt = 5_000 if i in (6, 7, 8) else 50_000
+            _event(s, 500 + i, (NOW - end) / DAY, [(1, 100_000, [(7, pt)] + [(1000 + k, 10) for k in range(30)]), (2, 1_000, [(9, 10)])])
+        plain = gs.compute(s, 7, NOW)
+        _coverage(s, months, set(months[6:9]))
+        fixed = gs.compute(s, 7, NOW, cache={})
+    gifter_analysis._cuts.clear()
+    assert plain["state"] == "上り調子" and plain["momentum"] > 5
+    assert fixed["state"] != "上り調子" and fixed["momentum"] is None and fixed["gaps"] == 3
+    assert fixed["hp"] == 50_000  # 予算も、少なく見える月を入れない
+
+
+def test_part_averages_known_months():
+    assert gs._part([None, 2.0, 4.0]) == 9.0 and gs._part([None, None]) is None
+
+

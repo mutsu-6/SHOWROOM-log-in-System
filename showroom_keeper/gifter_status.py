@@ -36,7 +36,7 @@ from statistics import median
 from typing import Any, Iterator
 
 from . import memory, psyche
-from .gifter_analysis import _add, last_month, month_cuts
+from .gifter_analysis import _add, last_month, month_cuts, unknown_months
 from .status import JST
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,8 @@ FORMULA = 2  # 式の版。上げても前の分は消さず、毎日の作り�
 # 作り直しの途中の人は gifter_status_next に書き、回し終えた時に一覧・順位・ランクの区切りを一度に入れ替える
 # (途中で入れ替えると、新しい式の人と前の式の人で順位が混ざる。再設計の決定案 W・Codex の確認 #127)。
 # 2 (2026-10-23): ファンの名簿が全員分でない時は離脱・枯渇にしない (不明)、火力などは終わった回だけでくらべる
+# (2026-10-25) 集め終わっていない月 (収集の集まり具合) は数えない。今は直近 24 か月が集め終わっているので値は変わらず、版は上げない。
+#   全体の波で割る・中小のルームの出動率 (資料「ギフター分析の精度」の B・D) は、採点 (backtest.py) で点が下がったので入れない
 EVERY = 86400  # 作り直す間隔 (秒)
 TICK = 60  # 暇かどうかを見て、少しずつ作る間隔 (秒)
 STEP_USERS = 200  # 1 回に作る人数
@@ -159,7 +161,9 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     first24 = _add(month, -(psyche.MONTHS - 1))
     totals = {r["month"]: r["points"] for r in s.all("SELECT month, points FROM user_month WHERE user_id=? AND month>=?",
                                                        (uid, min(first12, first24)))}
-    months = [totals.get(_add(month, -k), 0) for k in range(MONTHS - 1, -1, -1)]  # 古い順、month まで
+    unk = _unknown(s, cache)
+    # 古い順、month まで。集め終わっていない月は None (その月だけ少なく見えるので、予算・勢い・状態に入れない)
+    months: list[int | None] = [None if m in unk else totals.get(m, 0) for m in (_add(month, -k) for k in range(MONTHS - 1, -1, -1))]
     active = [v for v in months if v]
     budget = int(median(active)) if active else 0
     spent = totals.get(cur, 0)
@@ -186,8 +190,11 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     # 回復力: 使い切った月 (予算の 3 割以下) のあと、予算に戻るまでの月数 (中ほど)
     waits = []
     for i in range(1, len(months)):
-        if budget and months[i] <= LOW * budget and months[i - 1] > LOW * budget:
+        a, b = months[i], months[i - 1]
+        if budget and a is not None and b is not None and a <= LOW * budget and b > LOW * budget:
             for j in range(i + 1, len(months)):
+                if months[j] is None:
+                    break  # 分からない月をまたぐなら数えない
                 if months[j] >= budget:
                     waits.append(j - i)
                     break
@@ -200,10 +207,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     shots = [r for r in d12 if r["judged"] and fire and r["point"] >= SORTIE * fire]
     hit = round(sum(1 for r in shots if r["reached"]) / len(shots), 3) if len(shots) >= MIN_ROUNDS else None
 
-    # 勢い・疲労
-    recent, before = sum(months[-3:]), sum(months[-6:-3])
-    peak3 = max((sum(months[i:i + 3]) for i in range(len(months) - 2)), default=0)
-    momentum = _ratio(recent, before)
+    # 疲労
     new_high = bool(d12) and max((r["point"] for r in d12 if r["end"] >= _month_start(_add(month, -2))), default=0) >= max_out > 0
     tired_pt = sum(r["point"] for r in rows if (r["end"] or 0) >= now - FATIGUE_DAYS * 86400)
     fatigue = _ratio(tired_pt, budget)
@@ -243,14 +247,21 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     # 最後の 3 か月、どのルームのファンの名簿にも居ないと分かっているか。名簿が全員分でない・読んでいない月があれば分からない
     fan_gone = lines is not None and psyche.fan_gone(lines["fans"], len(lines["months"]))
 
+    # 勢い: 分からない月は数えない (全体の波で割るのは、採点で点が下がったのでしない)
+    norm = [None if v is None else float(v) for v in months]
+    recent, before = _part(norm[-3:]), _part(norm[-6:-3])
+    peak3 = max((sum(norm[i:i + 3]) for i in range(len(norm) - 2) if None not in norm[i:i + 3]), default=0)  # type: ignore[arg-type]
+    momentum = _ratio(recent, before) if recent is not None and before is not None else None
+    rec = recent or 0
+
     # 状態異常
     fan = s.one("SELECT 1 FROM active_fans WHERE user_id=? AND ym >= ? LIMIT 1", (uid, _add(month, -2).replace("-", ""))) is not None
     last3 = any((r["end"] or 0) >= _month_start(_add(month, -2)) for r in rows) or spent > 0
     if not last3 and not fan:
         state = "離脱" if fan_gone else "不明"
-    elif before and recent >= RISING * before or (not before and recent):
+    elif before is not None and (before and rec >= RISING * before or (not before and rec)):  # 前が分からなければ上り調子と言わない
         state = "上り調子"
-    elif peak3 and recent <= LOW * peak3:
+    elif peak3 and rec <= LOW * peak3:
         state = "温存中" if fan else ("枯渇" if fan_gone else "不明")
     else:
         state = "安定"
@@ -319,9 +330,25 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
             "stamina": stamina, "recovery": recovery, "intel": intel, "intel_rounds": len(b_judged), "hit": hit, "hit_rounds": len(shots),
             "momentum": momentum, "new_high": new_high, "fatigue": fatigue, "achievements": achievements, "tops": tops,
             "exp": exp, "level": level, "career": round(career, 1), "first_seen": first_seen, "spread": spread, "main_rooms": main_rooms,
-            "contest": contest, "state": state, "formula": FORMULA, "fire_rounds": len(fire_pool), "marks": marks, "fan": fan, "overall": overall, "ready": ready,
+            "contest": contest, "state": state, "formula": FORMULA, "gaps": sum(1 for v in months if v is None), "fire_rounds": len(fire_pool), "marks": marks, "fan": fan, "overall": overall, "ready": ready,
             "factor": round(factor * skill, 3), "scale": scale(fire), "rooms": rooms, "psyche": mind,
             "_top_room": top["room_id"] if top else None, "_top_share": top["share"] if top else None}
+
+
+def _unknown(s: Any, cache: dict[Any, Any] | None) -> set[str]:
+    """集め終わっていない月 (同じ回の人どうしで 1 回だけ読む)。"""
+    if cache is not None and ("unknown",) in cache:
+        return cache[("unknown",)]
+    out = unknown_months(s)
+    if cache is not None:
+        cache[("unknown",)] = out
+    return out
+
+
+def _part(xs: list[float | None]) -> float | None:
+    """分かる月の平均 × 月数 (分かる月が無ければ None)。"""
+    k = [x for x in xs if x is not None]
+    return sum(k) / len(k) * len(xs) if k else None
 
 
 def room_edge(s: Any, rid: int, since: float, cache: dict[int, int] | None = None) -> int:
