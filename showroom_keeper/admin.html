@@ -652,6 +652,9 @@ td a.name-link, td a { word-break: break-word; }
     <div class="section-title"><h3>自己点検</h3></div>
     <p class="sub" style="margin:0">5 分ごとに、これまでに起きた困りごと (エラー・重い処理・メモリの不足・書き込み待ちのふくらみ・止まった収集・残ったファイル) が起きていないかを確かめ、サーバーを起動し直さず・集めたデータを消さずに直せるものは自分で直します。</p>
     <div id="r-health"><div class="hint">まだ点検していません (起動して 1 分後に始めます)。</div></div>
+    <div class="section-title"><h3>予測の当たり方</h3></div>
+    <p class="sub" style="margin:0">画面の予測を、過去のある時点に戻ってその時のデータだけで作り直し、そのあとの実際とくらべた結果です。サーバーの外で、写しを使って数えます (サーバーは重くなりません)。答え合わせをしていない予測は「未検証」です。</p>
+    <div id="c-acc"></div>
     <h3>月ごとの集まり具合</h3>
     <div id="c-coverage"><div class="loading"><span class="spinner"></span>数えています…</div></div>
     <div class="section-title"><h3>ログ</h3><span class="grow"></span>
@@ -816,6 +819,23 @@ const loadingHtml = (msg = "読み込み中…") => `<div class="loading"><span 
 const errorHtml = (e) => `<div class="empty">取得できませんでした: ${esc(e.message || e)}</div>`;
 const stat = (v, l) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`;
 const tile = (label, value, sub = "", cls = "", href = "") => `<${href ? `a href="${href}"` : "div"} class="tile ${cls}"><div class="l">${label}</div><div class="v">${value}</div>${sub ? `<div class="s">${sub}</div>` : ""}</${href ? "a" : "div"}>`;
+/* 予測の当たり方 (サーバーの外で過去に戻って採点した backtest.json。置いていなければ、どれも未検証。showroom_keeper/backtest.py) */
+let ACC = null;
+const loadAcc = () => ACC ? Promise.resolve(ACC) : api("/api/backtest").then((d) => (ACC = d)).catch(() => (ACC = { predictions: {} }));
+const accP = (key) => (ACC && ACC.predictions ? ACC.predictions[key] : null) || null;
+const accRate = (hit, n) => `過去 ${num(n)} 件で <b>${Math.round(hit / n * 100)}%</b>${n < ((ACC && ACC.min_n) || 20) ? " (件数が少ない)" : ""}`;
+function accText(key) {
+  const p = accP(key);
+  if (!p || !p.checked || !p.n) return `当たり方: <b>未検証</b> (過去に戻った答え合わせをまだしていません)`;
+  return `当たり方: ${accRate(p.hit, p.n)}${ACC.current === false ? " ・ 前の線での採点" : ""} ・ ${esc(p.claim)}`;
+}
+// 種類ごと (「上り調子」と言った人など)。base = 同じ線をだれにでも当てはめた時に当たる割合 (これより高くないと、言う意味が無い)
+function accKind(key, kind) {
+  const p = accP(key), b = p && p.by ? p.by[kind] : null;
+  if (!b || !b.n) return `「${esc(kind || "—")}」の当たり方: <b>未検証</b>`;
+  return `「${esc(kind)}」の当たり方: ${accRate(b.hit, b.n)}${b.base != null ? ` (だれにでも言った時 ${Math.round(b.base * 100)}%)` : ""}`;
+}
+const accTag = (...keys) => `<div class="hint acc" style="margin-top:2px">${keys.map(accText).join("<br>")}</div>`;
 const ago = (sec) => { if (!sec) return "—"; const s = Date.now() / 1000 - sec; return s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分前` : s < 86400 ? `${Math.round(s / 3600)} 時間前` : `${Math.round(s / 86400)} 日前`; };
 const leftText = (sec) => { const s = sec - Date.now() / 1000; return s <= 0 ? "終了" : s < 3600 ? `あと ${Math.max(1, Math.round(s / 60))} 分` : s < 86400 * 2 ? `あと ${Math.round(s / 3600)} 時間` : `あと ${Math.round(s / 86400)} 日`; };
 const STATE_TAG = { ongoing: '<span class="tag live">開催中</span>', upcoming: '<span class="tag warn">これから</span>', ended: '<span class="tag">終了</span>', unknown: '<span class="tag">日付不明</span>' };
@@ -1855,6 +1875,7 @@ function gifterStatus(st, uid) {
       ${tile("状態", st.marks.map(markTag).join(" "), st.fan ? "直近 3 か月のアクティブファンにいる" : st.state === "不明" ? "直近 3 か月のアクティブファンに見えない (名簿が全員分でないので、居ないとは言えない)" : "直近 3 か月のアクティブファンにいない")}
     </div><div class="hint" style="margin-top:0">総合力 = 次の勝負で、一人で動かせる量の見込み (火力と残弾の小さい方 × 状態 × 腕)。ランクは、パワーギフターの中で上から 1% が S・5% が A・20% が B・50% が C、それより下が D。
       評価 (1〜100) は、パワーギフターの中で上から何番目くらいか。${esc(st.month.replace("-", "/"))} までの集め終わった月と、今月ここまでの分から。${esc(runNote(st.run))}。どの線も仮の値です${(st.formula || 1) < STATUS_FORMULA ? "。<b>この人の値は前の式のまま。新しい式での作り直しが全員分終わった時に、値・順位・ランクが全員そろって入れ替わります</b>" : ""}</div></div>
+    ${accTag("status_overall", "status_order")}<div class="hint acc" style="margin-top:2px">${accKind("status_state", st.state)}</div></div>
     <div>${radarSvg(sc)}</div></div>`;
   const rows = [];
   for (const [g, gl, items] of STATUS_GROUPS) for (const [k, l, val, note] of items) rows.push({ g, gl, k, l, val: val(st), raw: st[k], sc: sc[k], note: typeof note === "function" ? note(st) : note });
@@ -1930,6 +1951,7 @@ function gifterPsyche(st, uid) {
     ${tile("貯め型", tr.saver ? `${num(tr.saver)} <small>回</small>` : "—", tr.saver >= 2 ? "型として持っている (休んでから、まとめて出す)" : tr.saver ? "1 回 (まだ型とは言えない)" : "休んでからまとめて出した過去は無い")}
     ${tile("次の大事なイベントに出てくる見込み", esc(o.appear), `${roomOf(o.room_name)} で ${shortNum(o.low)}〜${shortNum(o.high)} pt${o.timing ? ` ・ ${esc(o.timing)}` : ""}`)}
   </div>`;
+  h += `${accTag("psyche_range")}<div class="hint acc" style="margin-top:2px">${accKind("psyche_phase", m.phase)} ・ ${accKind("psyche_appear", o.appear)}</div>`;
   if (m.notes.length) h += `<div class="note-box"><b>相手の名簿として見る時:</b> ${m.notes.map(esc).join(" / ")}</div>`;
   h += `<div class="hint" style="margin:6px 0 2px">月ごとのお金 (上) と関心 (下・アクティブファンのいちばん高いレベル。灰色の線は記録が無い月)。点線は、下の年表の変化があった月。ふだんの月の量 ${shortNum(m.usual)} pt</div><div style="overflow-x:auto">${mindChart(m)}</div>`;
   if (m.timeline.length) {
@@ -2068,7 +2090,7 @@ function gifterStates(st) {
         ${tile("今月の予想", `${shortNum(pw.forecast)} <small>pt</small>`, `${pw.forecast_tier ? `<b>${esc(pw.forecast_tier)}</b> の見込み ・ ` : ""}先月 ${pw.last_tier ? esc(pw.last_tier) : "—"} ・ 大きな勝負なら ${shortNum(pw.upper)} pt まで`)}
       </div>
       <div class="hint">円は、大きな有料ギフトの 1 SG = 3 pt (2.5 倍 × 1.2 倍) で割ったおよその額 (無料の星が多い人は少なく出ます)。今月の分は終わったイベントだけで、開催中のイベントは入っていません。
-        アプリの累計のクラスとちがい、直近の量だけを見ます。線はどれも仮の値です</div>`;
+        アプリの累計のクラスとちがい、直近の量だけを見ます。線はどれも仮の値です</div>${accTag("power_forecast", "power_upper")}`;
   }
   const en = st.engage;
   if (en) {
@@ -2586,6 +2608,7 @@ async function showGifter(uid) {
   box.innerHTML = loadingHtml();
   if (!/^\d{1,12}$/.test(uid)) { box.innerHTML = `<div class="empty">ユーザー ID は数字です</div>`; return; }
   const sup = currentSupport();
+  await loadAcc();
   const [d, l] = await Promise.all([
     api(`/api/research/gifter?user=${encodeURIComponent(uid)}&support=${encodeURIComponent(sup)}`).catch((e) => ({ found: false, error: e.message })),
     api(`/api/listener?user=${encodeURIComponent(uid)}&days=0`).catch(() => null),
@@ -2942,6 +2965,7 @@ async function loadRoomPower(rid, key) {
     <div class="row" style="margin:8px 0">${ammoLegend()}</div>
     <div class="hint" style="margin-top:0">大きさ = その人がこのルームに勝負の時に出せる量 (このルームでの本気の上限 × 出動率)、色 = その人の今月の残弾。
       大きくて緑の人は、終盤にまだ来られる人です。付き合い投げの人は数えません。出せる量の多い ${num(d.gifters.length)} 人まで。${ago(d.at)}に作った分 (1 日 1 回、サーバーが暇な時に作り直します)</div>
+    ${accTag("room_power", "room_power_size")}
     <div class="hm-wrap"><div class="hm"></div></div>`;
   const wrap = box.querySelector(".hm-wrap"), map = box.querySelector(".hm");
   const width = Math.max(300, wrap.clientWidth || 900), height = width < 640 ? 420 : 360;
@@ -3028,6 +3052,7 @@ function roomAnalysisHtml(d) {
         + (pf ? `直近に貢献した ${num(pf.recent)} 人のうち、初めての人 ${num(pf.new)}・戻ってきた人 ${num(pf.back)}・続けている人 ${num(pf.stayed)}。前の期間の人で直近は出ていない人 ${num(pf.left)}。` : "")
         + (mo.label_why ? esc(mo.label_why) : mo.label === "変わらない" && Math.abs(mo.value - 1) >= 0.2 ? "差はあるが、イベントごとのばらつきの範囲" : ""),
       mo.label === "上り調子" ? "ok" : mo.label === "下り気味" ? "warn" : "")}
+    ${mo.label ? `<div class="hint acc" style="flex-basis:100%;margin-top:2px">${accKind("room_momentum", mo.label)}</div>` : ""}
     ${tile("相手の中の位置", pl.recent_place == null ? "—" : placeText(pl.recent_place), pl.recent_place == null && pl.prev_place == null ? "参加ルームが 5 以上のイベントがまだありません"
       : `前の 60 日 ${placeText(pl.prev_place)} → 直近 ${placeText(pl.recent_place)}。参加ルームの中で上から何% にいたか。相手しだいで動くので、勢いではなく、どんな相手の中で戦ってきたかの目安`)}
     ${tile("戦術", st.style ? esc(st.style) : '<small>判定できない</small>', st.style ? `${num(st.events)} イベントから (${esc(styleCounts)})`
@@ -3473,7 +3498,7 @@ async function showRoom(key) {
   const box = $("#rp");
   box.innerHTML = loadingHtml();
   let d;
-  try { d = await api(`/api/room?room=${encodeURIComponent(key)}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  try { [d] = await Promise.all([api(`/api/room?room=${encodeURIComponent(key)}`), loadAcc()]); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "room" || page.arg !== key) return;
   const crumb = `<div class="crumb"><a href="#rooms">ルーム</a> ›</div>`;
   const recordBtn = `<button class="btn small" data-recorded-room="${esc(key)}">記録したギフトを見る</button>`;
@@ -3554,11 +3579,11 @@ const guessPlace = (f) => f.place == null ? '<span class="uid">分からない</
 async function showEventChoice(box) {
   let d;
   if (!currentSupport()) { box.innerHTML = `<div class="empty">右上の「見るルーム」でルームを選ぶと、そのルームが出たら何位くらいかを出します。</div>`; return; }
-  try { d = await api(`/api/events?state=choice&support=${encodeURIComponent(currentSupport())}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  try { [d] = await Promise.all([api(`/api/events?state=choice&support=${encodeURIComponent(currentSupport())}`), loadAcc()]); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "events") return;
   if (!d.support) { box.innerHTML = `<div class="empty">見るルームの情報がまだありません (「設定」の「調べるルーム」に入れると、毎日集めます)。</div>`; return; }
   const rows = d.events.flatMap((e) => e.focus.map((f) => ({ ...e, f })));
-  box.innerHTML = `<div class="hint" style="margin-top:0">開催中・これからのイベントで、見るルームが出たら何位くらいか。${STRENGTH_NOTE}</div>`
+  box.innerHTML = `<div class="hint" style="margin-top:0">開催中・これからのイベントで、見るルームが出たら何位くらいか。${STRENGTH_NOTE}</div>${accTag("event_strength")}`
     + dataTable("events-choice", [
       { label: "イベント", value: (r) => r.name, html: (r) => eventLink(r.event_id, r.name), cls: "name" },
       { label: "期間", sort: false, value: (r) => period(r), html: (r) => `<span class="uid">${esc(period(r))}</span>` },
@@ -3575,7 +3600,7 @@ async function showEventChoice(box) {
 }
 function eventStrength(st) {
   if (!st || !st.rooms.length) return "";
-  let h = `<h3>参加ルームの強さ <small class="muted">${num(st.rooms.length)} / ${num(st.total)} ルームの強さが分かりました</small></h3><div class="hint" style="margin-top:0">${STRENGTH_NOTE}</div>`;
+  let h = `<h3>参加ルームの強さ <small class="muted">${num(st.rooms.length)} / ${num(st.total)} ルームの強さが分かりました</small></h3><div class="hint" style="margin-top:0">${STRENGTH_NOTE}</div>${accTag("event_strength")}`;
   if (st.focus.length) {
     h += `<div class="tiles">${st.focus.map((f) => tile(`${esc(f.name)}${f.joined ? "" : " (出たら)"}`, guessPlace(f),
       (f.can_enter === false ? `<b style="color:var(--warn)">リーグ外 (${esc(f.league || "")}。出られるのは ${esc((st.leagues || []).join("・"))})</b><br>` : "")
@@ -3644,7 +3669,7 @@ function neededPoints(n, state) {
       } },
     ] : []),
   ], n.ranks, { sort: 0, desc: false, limit: 20, csvName: "必要ポイント",
-    note: n.current ? `期間の ${Math.round(n.current.elapsed * 100)}% が過ぎました。最後の見込み = 今のポイント × 前の回で同じ時点から最後までに増えた倍率 (真ん中の値。推移を残した回だけ)` : "" });
+    note: n.current ? `期間の ${Math.round(n.current.elapsed * 100)}% が過ぎました。最後の見込み = 今のポイント × 前の回で同じ時点から最後までに増えた倍率 (真ん中の値。推移を残した回だけ)<br>${accText("event_projected")}` : "" });
   h += `<div class="hint">くらべた回: ${n.past.map((p) => `${eventLink(p.event_id, p.name)} (${num(p.rooms)} ルーム)`).join(" ・ ")}</div>`;
   return h;
 }
@@ -3752,7 +3777,7 @@ async function showEvent(id) {
   const box = $("#ep");
   box.innerHTML = loadingHtml();
   let d;
-  try { d = await api(`/api/event?event=${encodeURIComponent(id)}&support=${encodeURIComponent(currentSupport())}`); } catch (e) { box.innerHTML = errorHtml(e); return; }
+  try { [d] = await Promise.all([api(`/api/event?event=${encodeURIComponent(id)}&support=${encodeURIComponent(currentSupport())}`), loadAcc()]); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "event" || page.arg !== id) return;
   const crumb = `<div class="crumb"><a href="#events">イベント</a> ›</div>`;
   if (!d.found) { box.innerHTML = `${crumb}<h2>イベント ${esc(id)}</h2><div class="empty">このイベントの情報はまだ集めていません。</div>`; return; }
@@ -3915,6 +3940,7 @@ async function showSeries(id) {
 let collectTimer = null;
 async function showCollect() {
   loadLogs();
+  loadAcc().then(renderAcc);
   clearTimeout(collectTimer);
   try {
     const d = await api("/api/research/status?coverage=1");
@@ -3922,6 +3948,20 @@ async function showCollect() {
     renderCollect(d);
   } catch (e) { $("#r-sweep").innerHTML = errorHtml(e); }
   collectTimer = setTimeout(() => { if (page.name === "collect" && !document.hidden) showCollect(); }, 15000);
+}
+function renderAcc() {
+  const box = $("#c-acc");
+  if (!box || !ACC) return;
+  const rows = Object.entries(ACC.predictions || {}).map(([k, p]) => ({ k, ...p }));
+  box.innerHTML = (ACC.found ? `<div class="hint" style="margin-top:0">${tm(ACC.at, true)} に数えた分 (${(ACC.months || []).map((m) => esc(m.replace("-", "/"))).join("・")} の初めの時点から${ACC.sample ? `。ギフターは ${num(ACC.sample)} 人を選んで` : ""})${ACC.current === false ? "。<b>前の線で数えた結果です</b>" : ""}</div>` : "")
+    + dataTable("acc", [
+      { label: "予測", value: (r) => r.label, html: (r) => `<b>${esc(r.label)}</b>`, cls: "name" },
+      { label: "当たり", num: true, value: (r) => r.checked && r.n ? r.rate : -1, html: (r) => r.checked && r.n ? accRate(r.hit, r.n) : '<span class="tag warn">未検証</span>' },
+      { label: "種類ごと", sort: false, value: (r) => "", html: (r) => r.by ? Object.entries(r.by).map(([kind, b]) => `${esc(kind)} ${b.n ? Math.round(b.rate * 100) : "—"}%${b.base != null ? ` <span class="uid">(だれにでも ${Math.round(b.base * 100)}%)</span>` : ""} <span class="uid">${num(b.n)} 件</span>`).join("<br>") : "" },
+      { label: "実際 ÷ 予測", num: true, value: (r) => r.ratio_median, html: (r) => r.ratio_median != null ? `${r.ratio_median.toFixed(2)} <small>倍</small>` : "-" },
+      { label: "何を確かめたか", sort: false, value: (r) => r.claim, html: (r) => `<span class="uid">${esc(r.claim)}</span>` },
+    ], rows, { sort: null, phone: [0, 1], limit: 30, csvName: "予測の当たり方",
+      note: "実際 ÷ 予測 は真ん中の値 (1 より大きければ、予測は少なめに出ている)。「だれにでも」は、同じ線を全員に当てはめた時に当たる割合で、これより高くなければ、その判定には意味がありません" });
 }
 function renderCollect(d) {
   const j = d.job, last = j.last;

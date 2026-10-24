@@ -430,6 +430,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                     else:  # SHOWROOM 全体の戦力ランキング
                         g = q.get("grade") if q.get("grade") in ("S", "A", "B", "C", "D") else None
                         self._json(gifter_status.ranking(s, min(2000, int(q.get("limit") or 500)), g))
+            elif url.path == "/api/backtest":  # 予測の当たり方 (サーバーの外で数えて置いたファイルを読むだけ)
+                from . import backtest
+
+                self._json(backtest.read(self._state_dir()))
             elif url.path == "/api/research/gifter":
                 from . import research
 
