@@ -42,12 +42,12 @@ from .status import JST
 log = logging.getLogger(__name__)
 
 VERSION = 1  # 作る中身を変えたら上げる (読む形が変わる時。作り直し終えるまで、前の版の人は出ない)
-FORMULA = 3  # 式の版。上げても前の分は消さず、毎日の作り直しが全員分終わった時に、全員そろって入れ替わる
+FORMULA = 2  # 式の版。上げても前の分は消さず、毎日の作り直しが全員分終わった時に、全員そろって入れ替わる
 # 作り直しの途中の人は gifter_status_next に書き、回し終えた時に一覧・順位・ランクの区切りを一度に入れ替える
 # (途中で入れ替えると、新しい式の人と前の式の人で順位が混ざる。再設計の決定案 W・Codex の確認 #127)。
 # 2 (2026-10-23): ファンの名簿が全員分でない時は離脱・枯渇にしない (不明)、火力などは終わった回だけでくらべる
-# 3 (2026-10-25): 集め終わっていない月を数えない・勢いと状態を全体の波とルームの休みで割る・上位 10 位に入らないルームの出動率
-#   (project の資料「ギフター分析の精度_2026-10-24」の A・B・D。採点 (backtest.py) で総合力の並びが 55% だったため)
+# (2026-10-25) 集め終わっていない月 (収集の集まり具合) は数えない。今は直近 24 か月が集め終わっているので値は変わらず、版は上げない。
+#   全体の波で割る・中小のルームの出動率 (資料「ギフター分析の精度」の B・D) は、採点 (backtest.py) で点が下がったので入れない
 EVERY = 86400  # 作り直す間隔 (秒)
 TICK = 60  # 暇かどうかを見て、少しずつ作る間隔 (秒)
 STEP_USERS = 200  # 1 回に作る人数
@@ -58,7 +58,6 @@ SETTLE = 2 * 86400  # 終わってからこれだけたったイベントの順�
 ROUND_RANKS = 10  # 勝負の回を残す順位 (特典の順位がこれより下なら、その 1 つ下まで)
 CLOSE = 0.10  # 特典の境目で、隣の順位との差がポイントのこれだけ以内なら「勝負になった回」
 SORTIE = 0.5  # 出動 = その回に、火力のこれだけ以上を出した
-BIG_SHARE = 0.25  # 勝負の回 (上位 10 位の接戦) が少ないルームは、そのルームのポイントが上からこの割合に入った回を「本気の回」として出動率を見る
 LOW = 0.3  # 月の量が予算のこれだけ以下なら「使い切った月」(回復力)。直近 3 か月が多かった 3 か月のこれだけ以下なら温存中か枯渇
 RISING = 1.5  # 直近 3 か月が前の 3 か月のこれだけ倍以上なら「上り調子」
 FATIGUE_DAYS = 30  # 疲労を見る日数
@@ -248,8 +247,8 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     # 最後の 3 か月、どのルームのファンの名簿にも居ないと分かっているか。名簿が全員分でない・読んでいない月があれば分からない
     fan_gone = lines is not None and psyche.fan_gone(lines["fans"], len(lines["months"]))
 
-    # 勢い: SHOWROOM 全体の波で割り、推しのルームがどれもイベントに出ていない月 (量が 0) と分からない月は数えない (心のカルテと同じ)
-    norm = _norm(months, lines)
+    # 勢い: 分からない月は数えない (全体の波で割るのは、採点で点が下がったのでしない)
+    norm = [None if v is None else float(v) for v in months]
     recent, before = _part(norm[-3:]), _part(norm[-6:-3])
     peak3 = max((sum(norm[i:i + 3]) for i in range(len(norm) - 2) if None not in norm[i:i + 3]), default=0)  # type: ignore[arg-type]
     momentum = _ratio(recent, before) if recent is not None and before is not None else None
@@ -296,9 +295,6 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
         cap = _second([x["point"] for x in done_by_room.get(rid, [])])
         mine = {x["event_id"]: x["point"] for x in by_room24.get(rid, [])}
         fights = [r[0] for r in s.all("SELECT event_id FROM event_rounds WHERE room_id=? AND end >= ? AND battle=1", (rid, since12))]
-        basis = "battle"
-        if len(fights) < MIN_ROUNDS:  # 上位 10 位の接戦が少ないルーム (中・小のルーム): ルームが本気で走った回でくらべる
-            fights, basis = _big_rounds(s, rid, since12, now, cache), "big"
         sortie = (round(sum(1 for e in fights if cap and mine.get(e, 0) >= SORTIE * cap) / len(fights), 3)
                   if len(fights) >= MIN_ROUNDS else None)
         kind = "推し" if rid == main else ("付き合い" if max(x["point"] for x in by_room24.get(rid, xs)) < TSUKIAI * main_max else "掛け持ち")
@@ -319,7 +315,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
         else:
             cls = "付き合い"
         rooms.append({"room_id": rid, "share": share, "kind": kind, "cap": cap, "points": room_sum[rid], "sortie": sortie,
-                      "fights": len(fights), "sortie_basis": basis, "morale": morale, "fan_level": fans.get(rid, {}).get("level"),
+                      "fights": len(fights), "morale": morale, "fan_level": fans.get(rid, {}).get("level"),
                       "fan_months": fans.get(rid, {}).get("months", 0), "visits": cum["visits"] if cum is not None else None,
                       "wins": sum(1 for x in by_room24.get(rid, []) if x["reached"] and (x["rank"] or 999) <= 3),
                       "power": power, "edge": edge, "class": cls})
@@ -349,40 +345,10 @@ def _unknown(s: Any, cache: dict[Any, Any] | None) -> set[str]:
     return out
 
 
-def _norm(months: list[int | None], lines: dict[str, Any] | None) -> list[float | None]:
-    """月の量を、SHOWROOM 全体の波 (心のカルテの season) で割る。量が 0 で、推しのルーム (心のカルテの top) が
-    どれもその月にイベントに出ていない月は、ルームの側の休みなので None。分からない月も None。"""
-    n = len(months)
-    season = (lines or {}).get("season") or []
-    season = season[-n:] if len(season) >= n else [1.0] * n
-    act = (lines or {}).get("active") or {}
-    out: list[float | None] = []
-    for i, v in enumerate(months):
-        off = v == 0 and bool(act) and not any(a[len(a) - n + i] for a in act.values())
-        out.append(None if v is None or off else v / (season[i] or 1))
-    return out
-
-
 def _part(xs: list[float | None]) -> float | None:
     """分かる月の平均 × 月数 (分かる月が無ければ None)。"""
     k = [x for x in xs if x is not None]
     return sum(k) / len(k) * len(xs) if k else None
-
-
-def _big_rounds(s: Any, rid: int, since: float, now: float, cache: dict[Any, Any] | None = None) -> list[int]:
-    """ルームが本気で走った回: 直近 12 か月の、終わって結果を取り終えた回のうち、ルームのポイントが上から BIG_SHARE に入った回
-    (少なくとも MIN_ROUNDS 回。回が足りなければ、ある分だけ)。ルームで引く主キーで読む。"""
-    key = ("big", rid)
-    if cache is not None and key in cache:
-        return cache[key]
-    rows = s.all("""SELECT re.event_id, re.point FROM room_events re JOIN events e USING(event_id)
-                    WHERE re.room_id=? AND e.end >= ? AND e.end <= ? AND re.final=1 AND re.point > 0""", (rid, since, now - SETTLE))
-    rows = sorted(rows, key=lambda r: -r["point"])
-    take = max(MIN_ROUNDS, -(-len(rows) * BIG_SHARE // 1))
-    out = [r["event_id"] for r in rows[:int(take)]]
-    if cache is not None:
-        cache[key] = out
-    return out
 
 
 def room_edge(s: Any, rid: int, since: float, cache: dict[int, int] | None = None) -> int:

@@ -234,19 +234,7 @@ def test_months_still_being_collected_do_not_count(tmp_path):
     assert fixed["hp"] == 50_000  # 予算も、少なく見える月を入れない
 
 
-def test_norm_skips_months_when_the_room_was_resting():
-    lines = {"season": [1.0] * 22 + [2.0, 1.0], "active": {1: [True] * 22 + [False, True]}}
-    assert gs._norm([10, 0], lines) == [5.0, 0.0]  # 全体が 2 倍の月は半分に。ルームが休みでなく 0 なら 0
-    lines["active"][1][-1] = False
-    assert gs._norm([10, 0], lines) == [5.0, None]  # ルームが休んだ月の 0 は数えない
+def test_part_averages_known_months():
     assert gs._part([None, 2.0, 4.0]) == 9.0 and gs._part([None, None]) is None
 
 
-def test_sortie_for_rooms_without_close_finishes(tmp_path):
-    """上位の接戦が無いルームでも、ルームが本気で走った回から出動率を出す (直し D)。"""
-    d = _db(tmp_path)
-    _run_all(d)
-    with Store(d) as s:
-        st = gs.read(s, 9)
-    r3 = {x["room_id"]: x for x in st["rooms"]}[3]
-    assert r3["sortie_basis"] == "big" and r3["sortie"] is not None
