@@ -110,6 +110,9 @@ tr:last-child td { border-bottom: 0; }
 td.num, th.num { text-align: right; white-space: nowrap; }
 td.rank { color: var(--muted); width: 1%; }
 td .uid { color: var(--muted); font-size: 11px; }
+.look { display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; vertical-align: middle; }
+.look img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
+.look b { font-size: 10px; font-weight: 600; color: var(--muted); border: 1px solid var(--line, #ccc); border-radius: 4px; padding: 0 3px; }
 td.name { max-width: 280px; word-break: break-word; }
 .splitbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--panel2); min-width: 80px; margin-top: 4px; }
 .splitbar .p { background: var(--accent); } .splitbar .f { background: var(--info); }
@@ -382,7 +385,7 @@ td a.name-link, td a { word-break: break-word; }
   td { font-size: 13px; }
   th { font-size: 11px; }
   th.sortable .arr { margin-left: 1px; }
-  td .uid-id { display: none; }
+  td .uid-id { display: block; font-size: 10px; }  /* 同じ名前の人を見分けられるように、スマホでも名前の下に小さく出す */
   td.name { max-width: none; min-width: 8em; }
   td.name > a:first-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .table-wrap:not(.dt-full) td { word-break: break-word; }
@@ -1086,6 +1089,59 @@ const splitBar = (u) => {
   if (!t) return "";
   return `<div class="splitbar" title="有料 ${num(u.paid_points)} / 無料 ${num(u.free_points)}"><div class="p" style="width:${(u.paid_points / t) * 100}%"></div><div class="f" style="width:${(u.free_points / t) * 100}%"></div></div>`;
 };
+// 名前の横に、配信の画面で見える見た目 (アバター・Class) を出す。配信の画面には ID が出ないので、同じ名前の人を画面で見分けるため。
+// 「ID 123」の札 (.uid-id) を見つけたら、まとめて 1 回だけ問い合わせる (記録したギフトの知らせで分かった人だけ。分からない人は何も出さない)。
+// 同じ表に、同じ名前で ID のちがう人が 2 人以上いれば「同じ名前あり」を付ける
+const LOOKS = new Map();
+let looksTimer = null;
+function decorateLooks() {
+  const spans = [...document.querySelectorAll(".uid-id:not([data-looked])")];
+  if (!spans.length) return;
+  const want = new Set();
+  for (const sp of spans) {
+    sp.dataset.looked = "1";
+    const m = /(\d+)/.exec(sp.textContent);
+    if (!m) continue;
+    sp.dataset.uid = m[1];
+    if (!LOOKS.has(m[1])) want.add(m[1]);
+  }
+  markSameNames(spans);
+  const ids = [...want].slice(0, 2000);
+  const paint = () => spans.forEach(paintLook);
+  if (!ids.length) { paint(); return; }
+  api(`/api/looks?users=${ids.join(",")}`).then((r) => {
+    ids.forEach((id) => LOOKS.set(id, (r.users || {})[id] || null));
+    paint();
+  }).catch(() => {});
+}
+function paintLook(sp) {
+  const l = LOOKS.get(sp.dataset.uid);
+  if (!l || (sp.previousElementSibling && sp.previousElementSibling.classList.contains("look"))) return;
+  const img = l.avatar_id != null ? `<img src="https://static.showroom-live.com/image/avatar/${Number(l.avatar_id)}.png" alt="" loading="lazy" referrerpolicy="no-referrer">` : "";
+  const cl = l.class_level != null ? `<b>Class ${Number(l.class_level)}</b>` : "";
+  if (img || cl) sp.insertAdjacentHTML("beforebegin", `<span class="look" title="配信の画面で見えるアバターと Class (記録したギフトの、いちばん新しい値)">${img}${cl}</span>`);
+}
+function markSameNames(spans) {
+  const groups = new Map();  // 表 → 名前 → ID の集まり
+  for (const sp of spans) {
+    const cell = sp.parentElement, table = sp.closest("table"), el = cell && cell.querySelector("button.linkish, a, b");
+    if (!table || !el || !sp.dataset.uid) continue;
+    const name = el.textContent.trim();
+    if (!groups.has(table)) groups.set(table, new Map());
+    const g = groups.get(table);
+    if (!g.has(name)) g.set(name, []);
+    g.get(name).push([sp.dataset.uid, el]);
+  }
+  for (const g of groups.values()) {
+    for (const items of g.values()) {
+      if (new Set(items.map(([id]) => id)).size < 2) continue;
+      for (const [, el] of items) {
+        if (!el.dataset.same) { el.dataset.same = "1"; el.insertAdjacentHTML("afterend", ' <span class="tag warn" title="この表に、同じ名前で ID のちがう人がいます。ID・アバター・Class で見分けてください">同じ名前あり</span>'); }
+      }
+    }
+  }
+}
+new MutationObserver(() => { clearTimeout(looksTimer); looksTimer = setTimeout(decorateLooks, 150); }).observe(document.documentElement, { childList: true, subtree: true });
 const userCell = (u) => `<td class="name"><button class="linkish" data-user="${esc(u.user_id)}">${esc(u.name || "(名前なし)")}</button> <span class="uid uid-id">ID ${esc(u.user_id)}</span> <button class="linkish uid" data-listener="${esc(u.user_id)}" title="この人のページを開く">ページ ›</button></td>`;
 // 手で組んだ表の「全部の列」 (スマホの幅で ph-hide の列を隠している時だけ出る)
 const colsBtn = `<div class="dt-foot ph-only"><button type="button" class="btn small" data-cols-toggle>全部の列</button></div>`;

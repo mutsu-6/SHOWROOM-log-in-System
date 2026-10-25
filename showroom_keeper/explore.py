@@ -90,6 +90,7 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             return
         senders: dict[int, list[Any]] = {}  # user_id -> [回数, 最後の時刻, 最後の名前, pt, そのうち無料, 最初の時刻, 一覧に無いギフトの回数]
         names: dict[tuple[int, str], float] = {}
+        looks: dict[int, tuple[Any, Any, float]] = {}  # user_id -> (アバターの番号, Class, 時刻) のいちばん新しいもの
         for line in chunk[:end].splitlines():
             try:
                 g = json.loads(line)
@@ -110,6 +111,8 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
                 x[2] = name or x[2]
             if name:
                 names[(uid, name)] = max(at, names.get((uid, name), 0.0))
+            if (g.get("av") is not None or g.get("cl") is not None) and at >= looks.get(uid, (None, None, -1.0))[2]:
+                looks[uid] = (_small_int(g.get("av")), _small_int(g.get("cl")), at)
         with s.tx() as c:
             if not _same_pos(c, "gift_sender_pos", room_key, row):
                 return
@@ -127,6 +130,11 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
                              ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
                           [(uid, name, _fold(name), at) for (uid, name), at in names.items()])
+            c.executemany("""INSERT INTO user_looks(user_id, avatar_id, class_level, at) VALUES (?, ?, ?, ?)
+                             ON CONFLICT(user_id) DO UPDATE SET avatar_id=COALESCE(excluded.avatar_id, avatar_id),
+                               class_level=COALESCE(excluded.class_level, class_level), at=excluded.at
+                             WHERE excluded.at >= COALESCE(user_looks.at, 0)""",
+                          [(uid, *x) for uid, x in looks.items()])
             if senders:
                 c.execute("""INSERT INTO gift_room_totals(room_key, records, last_at) VALUES (?, ?, ?)
                              ON CONFLICT(room_key) DO UPDATE SET records=records+excluded.records,
@@ -135,6 +143,13 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
             c.execute("""INSERT INTO gift_sender_pos(room_key, pos, size, at) VALUES (?, ?, ?, ?)
                          ON CONFLICT(room_key) DO UPDATE SET pos=excluded.pos, size=excluded.size, at=excluded.at""",
                       (room_key, pos + end, pos + end, time.time()))
+
+
+def _small_int(v: Any) -> int | None:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def ensure_room_totals(s: Store) -> None:

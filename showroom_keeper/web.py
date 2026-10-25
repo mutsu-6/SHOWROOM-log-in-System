@@ -487,6 +487,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import news
 
                 self._json(news.build(self._state_dir(), float(q.get("days") or 7)))
+            elif url.path == "/api/looks":  # 画面に出ているギフターの見た目 (アバターの番号・Class)。記録したギフトから分かった人だけ
+                from .research_store import Store
+
+                ids = [int(x) for x in str(q.get("users") or "").split(",")[:2000] if x.strip().isdigit()]
+                with Store(self._state_dir()) as s:
+                    self._json({"users": {str(k): v for k, v in s.looks(ids).items()}})
             elif url.path == "/api/lookup/user":
                 from .listing import lookup_user
 
