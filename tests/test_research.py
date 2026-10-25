@@ -252,7 +252,14 @@ def test_analysis_does_not_wait_to_add_new_gift_records(collected, monkeypatch):
 def test_recorded_only_rooms_are_counted(tmp_path):
     record_gift(tmp_path, "nowhere", 9, {"t": 2, "u": 70, "ac": "記録だけ", "g": 5, "n": 2, "created_at": NOW - 60})
     r = research.analyze(tmp_path, [])
-    assert [(c["user_id"], c["other_points"], c["top_rooms"][0]["key"]) for c in r["candidates"]] == [(70, 200, "nowhere")]
+    # 有料 200 pt (元 pt) は、累計ランキングの物差し (2.5 倍) で 500 pt としてくらべる
+    assert [(c["user_id"], c["other_points"], c["top_rooms"][0]["key"]) for c in r["candidates"]] == [(70, 500, "nowhere")]
+
+
+def test_ranked_points_scale_only_paid_gifts():
+    assert research.ranked_points(1000, 0) == 2500 and research.ranked_points(1000, 1000) == 1000
+    assert research.ranked_points(1000, 400) == 1900 and research.ranked_points(0, 0) == 0
+    assert research.room_score({"cumulative": 2000, "events": 0, "recorded": 1000, "recorded_ranked": 2500}) == 2500
 
 
 def test_gifter_detail_and_habits(collected):

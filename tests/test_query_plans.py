@@ -502,3 +502,27 @@ def test_event_backtest_reads_rooms_by_event_and_by_room(traced):
     out = backtest_event.run(state_dir, [month], [])
     assert out["periods"]["dev"]["all"]["label_candidates"] and any("room_events r" in q for q, _ in seen)  # 本当に読んでいる
     assert full_scans(state_dir, seen) == []
+
+
+def test_multiplier_check_reads_gifts_by_room_and_time(traced):
+    import json
+
+    from showroom_keeper import multiplier_check
+
+    d, seen = traced
+    (d / "cache").mkdir(exist_ok=True)
+    (d / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"gift_name": "大", "point": 100, "free": False}}}))
+    with Store(d) as s:
+        rooms = [r["room_id"] for r in s.all("SELECT room_id FROM room_events WHERE event_id=1")]
+        keys = {r["room_id"]: r["key"] for r in s.all("SELECT room_id, key FROM rooms")}
+        users = [r["user_id"] for r in s.all("SELECT user_id FROM contributions WHERE event_id=1 LIMIT 3")]
+        e = s.one("SELECT start, end FROM events WHERE event_id=1")
+        s.conn.executemany("INSERT INTO gift_events(user_id, at, room_key, gift_id, num) VALUES (?, ?, ?, 1, 1)",
+                           [(u, (e["start"] + e["end"]) / 2, keys[r]) for r in rooms if keys.get(r) for u in users])
+        s.conn.executemany("INSERT INTO gift_event_pos(room_key, pos, size, at) VALUES (?, 0, 0, ?)",
+                           [(keys[r], NOW) for r in rooms if keys.get(r)])
+        s.conn.commit()
+    seen.clear()
+    out = multiplier_check.run(d)
+    assert out["events"] and any("FROM gift_events WHERE room_key" in " ".join(q.split()) for q, _ in seen)  # 本当に読んでいる
+    assert full_scans(d, seen) == []

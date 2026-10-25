@@ -588,9 +588,23 @@ def habits(gifts: list[tuple[float, int, str]]) -> dict[str, Any] | None:
             "first_at": min(at for at, _, _ in gifts), "last_at": max(at for at, _, _ in gifts)}
 
 
+# 記録したギフト (カタログの単価 × 個数。倍率未反映) を、累計ランキング・貢献ランキングとくらべる時の物差し。
+# SHOWROOM の決まり (docs/SHOWROOM公式の決まり.md 2-2) で、ルームの累計ランキングでは有料ギフトが 2.5 倍 (2021-03-01 から)。
+# 無料の星はそのまま。まとめ投げの 1.2 倍・連打のボーナスはイベントの pt だけなので掛けない (「少なくとも」の値になる)。
+# レインボースターも 2.5 倍だが、カタログでは無料と見分けていないので、そのままで数える (少なめに出る)
+PAID_RANK_RATE = 2.5
+
+
+def ranked_points(points: int, free: int) -> int:
+    """記録したギフトの元 pt を、累計ランキングと同じ物差し (有料 × 2.5 + 無料) にした値 (推定。切り捨て)。"""
+    paid = max(0, (points or 0) - (free or 0))
+    return int(paid * PAID_RANK_RATE) + min(points or 0, free or 0)
+
+
 def room_score(slot: dict[str, Any]) -> int:
-    """そのルームに送った (少なくとも) ポイント。累計ランキングはイベントの分も含むので、合計せず大きい方を使う。"""
-    return max(slot["cumulative"], slot["events"], slot["recorded"])
+    """そのルームに送った (少なくとも) ポイント。累計ランキングはイベントの分も含むので、合計せず大きい方を使う。
+    記録したギフトは、累計ランキングと同じ物差しにした値 (recorded_ranked) でくらべる (元 pt のままだと、倍率の分だけ小さく出る)。"""
+    return max(slot["cumulative"], slot["events"], slot.get("recorded_ranked", slot["recorded"]))
 
 
 class _Recorded:
@@ -648,6 +662,10 @@ class _Recorded:
             if r["name"] and (r["last_at"] or 0) >= last.get(uid, -1):
                 self.names[uid], last[uid] = r["name"], r["last_at"] or 0
         self.gifts = _RecordedGifts(self)
+
+    def ranked(self, uid: int, key: str) -> int:
+        """(人, ルーム) の記録したギフトを、累計ランキングと同じ物差しにした値 (ranked_points)。"""
+        return ranked_points(self.points.get((uid, key), 0), self.free.get((uid, key), 0))
 
 
 class _PairPoints:
@@ -846,15 +864,17 @@ def _slots(store: Store, rooms: _Rooms, rec: _Recorded, uids: list[int]) -> dict
     out: dict[int, dict[int, dict[str, Any]]] = defaultdict(dict)
     for part in _chunks(uids):
         for r in store.all(f"SELECT * FROM user_room WHERE user_id IN ({','.join('?' * len(part))})", part):
-            out[r["user_id"]][r["room_id"]] = {"recorded": 0, "cumulative": r["cumulative"] or 0, "visits": r["visits"] or 0,
-                                               "events": r["events"] or 0, "cumulative_rank": r["cumulative_rank"]}
+            out[r["user_id"]][r["room_id"]] = {"recorded": 0, "recorded_ranked": 0, "cumulative": r["cumulative"] or 0,
+                                               "visits": r["visits"] or 0, "events": r["events"] or 0,
+                                               "cumulative_rank": r["cumulative_rank"]}
     for uid in uids:
         for key, pt in rec.by_user.get(uid, {}).items():
             if not pt:
                 continue
-            slot = out[uid].setdefault(rooms.id(key), {"recorded": 0, "cumulative": 0, "visits": 0, "events": 0,
+            slot = out[uid].setdefault(rooms.id(key), {"recorded": 0, "recorded_ranked": 0, "cumulative": 0, "visits": 0, "events": 0,
                                                        "cumulative_rank": None})
-            slot["recorded"] += pt
+            slot["recorded"] += pt  # 元 pt (倍率未反映。表示用)
+            slot["recorded_ranked"] += rec.ranked(uid, key)  # 累計ランキングの物差し (くらべる用)
     return out
 
 
@@ -1343,10 +1363,10 @@ def _analyze_base(state_dir: Path, limit: int) -> dict[str, Any]:
     with Store(state_dir) as s:
         rooms = _Rooms(s, state_dir)
         c = s.conn
-        merged: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))  # 記録したギフト: 人 → ルーム → pt
+        merged: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))  # 記録したギフト: 人 → ルーム → pt (累計ランキングの物差し)
         for (uid, key), pt in rec.points.items():
             if pt:
-                merged[uid][rooms.id(key)] += pt
+                merged[uid][rooms.id(key)] += rec.ranked(uid, key)
         _rec_names(s, rec)
         # この接続の作業用のメモリ (メモリの空きが少ない時は、空きの 8 分の 1 まで。ブラウザを追い出さない)
         free = memory.free_mb()
@@ -1423,7 +1443,7 @@ def _support_scores(s: Store, rooms: _Rooms, rec: _Recorded, sup: set[int]) -> d
         if pt:
             rid = rooms.id(key)
             if rid in sup:
-                recorded[(uid, rid)] += pt
+                recorded[(uid, rid)] += rec.ranked(uid, key)  # 累計ランキングの物差し (room_score と同じ)
     for pair, pt in recorded.items():
         if pt > pts.get(pair, 0):
             pts[pair] = pt

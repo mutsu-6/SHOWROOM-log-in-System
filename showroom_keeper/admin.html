@@ -515,7 +515,7 @@ td a.name-link, td a { word-break: break-word; }
   <section data-page="gifters">
     <div class="page-head">
       <div class="grow"><h2>ギフター</h2>
-        <p class="sub" style="margin:0">集めた情報 (累計ランキング・イベントの貢献ランキング・記録したギフト) で分かったギフターです。名前をクリックすると、その人のページを開きます。</p></div>
+        <p class="sub" style="margin:0">集めた情報 (累計ランキング・イベントの貢献ランキング・記録したギフト) で分かったギフターです。pt はルームごとにいちばん大きい値で、記録したギフトは有料を 2.5 倍して累計ランキングと同じ物差しにそろえています (推定)。名前をクリックすると、その人のページを開きます。</p></div>
       <div class="row">
         <span class="row view-room" style="gap:6px;color:var(--muted)">見るルーム <input type="text" class="view-room-input" autocomplete="off" data-suggest="room" placeholder="選ばない (全体を見る)" title="このルームから見た、ギフター・誘導の候補・似ているルームを出します" style="width:220px"><button type="button" class="btn small" data-view-clear title="選ばない (全体を見る)">×</button></span>
         <button type="button" class="btn small" id="r-refresh">集計し直す</button>
@@ -1191,14 +1191,15 @@ function renderEventGifts(r) {
   if (r.user) return html + `<h3>「${esc(r.user.query)}」の履歴</h3>` + userBlock(r.user.users, r.official_enabled ? r.user.official : null);
   const c = r.coverage;
   if (c && c.official) {
-    const pct = Math.min(100, (c.recorded / c.official) * 100);
+    // 記録は元 pt、公式は倍率が入った pt。割合は、有料を 2.5 倍にそろえた値でくらべる (古いデータは元 pt のまま)
+    const pct = Math.min(100, ((c.recorded_ranked ?? c.recorded) / c.official) * 100);
     html += `<div class="card coverage"><b>記録の取りこぼしの目安</b>
       <div class="bar"><div style="width:${pct}%"></div></div>
-      <div class="hint" style="margin:0">記録のある ${num(c.rooms)} ルームで、記録 ${num(c.recorded)} pt / 公式 ${num(c.official)} pt (${pct.toFixed(pct < 10 ? 1 : 0)}%)。差は記録を始める前の分・停止中の分などです。</div></div>`;
+      <div class="hint" style="margin:0">記録のある ${num(c.rooms)} ルームで、記録 ${num(c.recorded)} pt ${RAW_PT}${c.recorded_ranked != null ? ` (有料を 2.5 倍にそろえると ${num(c.recorded_ranked)} pt)` : ""} / 公式 ${num(c.official)} pt (${pct.toFixed(pct < 10 ? 1 : 0)}%。参考)。差は記録を始める前の分・停止中の分と、倍率のちがい (まとめ投げの 1.2 倍・2.5 倍の付かないイベントなど) です。</div></div>`;
   }
   if (r.official_enabled) {
     html += `<h3>公式の貢献ランキング (イベント全体)</h3><div class="hint" style="margin:-6px 0 8px">SHOWROOM 発表の各ルーム上位 100 人の合計です。記録を始める前の分も含みます。</div>`;
-    html += `<div class="table-wrap"><table><thead><tr><th>#</th><th>リスナー</th><th class="num">公式 pt</th><th class="num">うち記録</th><th class="ph-hide">ルーム</th></tr></thead>
+    html += `<div class="table-wrap"><table><thead><tr><th>#</th><th>リスナー</th><th class="num">公式 pt</th><th class="num">うち記録 (倍率未反映)</th><th class="ph-hide">ルーム</th></tr></thead>
       <tbody>${r.official_ranking.slice(0, 100).map((u, i) => `<tr><td class="rank">${i + 1}</td>${userCell(u)}<td class="num"><b>${num(u.points)}</b></td><td class="num">${u.recorded == null ? "—" : num(u.recorded)}</td><td class="ph-hide">${esc(roomsText(u.rooms))}</td></tr>`).join("")}</tbody></table></div>${colsBtn}`;
   }
   if (r.recorded) {
@@ -1652,9 +1653,9 @@ window.addEventListener("resize", () => {
 // 支出の移り変わり (分析のギフターの詳しい表示)。種類は重なりがあるので足さずに切り替える
 const TIMELINE_KINDS = [["events", "イベントの貢献"], ["cumulative", "累計ランキングの増え"], ["recorded", "記録したギフト"]];
 const TIMELINE_NOTES = {
-  events: "イベントの貢献ランキング (各ルームの上位 100 人) に出たポイントを、イベントが終わった月に数えています。2015 年ごろのイベントからあります",
+  events: "イベントの貢献ランキング (各ルームの上位 100 人) に出たポイントを、イベントが終わった月に数えています。2015 年ごろのイベントからあります。有料ギフトの 2.5 倍は 2021 年 3 月からなので、それより前の月は倍率なしで小さく出ます (2.5 倍の付かないイベントも同じ)",
   cumulative: "ルームの累計ランキング (上位 30 人) を取り直した間に増えた分を、取り直した月に数えています。集め始めてからの分です",
-  recorded: "このシステムで記録したギフトです。記録しているルームの分だけです",
+  recorded: "このシステムで記録したギフトです。記録しているルームの分だけです。カタログの単価 × 個数の元 pt (倍率未反映) なので、ほかの 2 つ (倍率が入った SHOWROOM の pt) より小さく出ます",
 };
 let timelineKind = null;
 function renderTimeline(t) {
@@ -2314,7 +2315,7 @@ function renderRankingCharts(d, sel) {
     { width: half, height: 180, unit: "回", maxBar: 56, xTitle: "順位" }) : chartEmpty("順位の分かるイベントがありません");
   // ルーム別の分かったポイント (上位 10 ルーム)
   const rooms = d.rooms.filter((r) => r.points > 0).slice(0, 10), max = Math.max(1, ...rooms.map((r) => r.points));
-  const roomChart = rooms.length ? `<div class="hbars">${rooms.map((r) => `<div class="hbar" data-tip="${esc(r.name)}\n分かった ${num(r.points)} pt${r.cumulative ? `\n累計ランキング ${num(r.cumulative)} pt${r.cumulative_rank ? ` (${r.cumulative_rank} 位)` : ""}` : ""}${r.events ? `\nイベント ${num(r.events)} pt` : ""}${r.visits ? `\n来場 ${num(r.visits)} 回` : ""}">
+  const roomChart = rooms.length ? `<div class="hbars">${rooms.map((r) => `<div class="hbar" data-tip="${esc(r.name)}\n分かった ${num(r.points)} pt${r.recorded ? `\n記録したギフト ${num(r.recorded)} pt (倍率未反映)` : ""}${r.cumulative ? `\n累計ランキング ${num(r.cumulative)} pt${r.cumulative_rank ? ` (${r.cumulative_rank} 位)` : ""}` : ""}${r.events ? `\nイベント ${num(r.events)} pt` : ""}${r.visits ? `\n来場 ${num(r.visits)} 回` : ""}">
       <span class="hn">${esc(r.name)}</span><span class="ht"><i style="width:${(r.points / max) * 100}%;background:${r.support ? "var(--accent)" : "var(--info)"}"></i></span><span class="hv">${shortNum(r.points)}</span></div>`).join("")}</div>`
     : chartEmpty("ポイントの分かるルームがありません");
   box.innerHTML = `<h3>ランキングから分かること</h3><div class="hint" style="margin-top:0">累計ランキングとイベントの貢献ランキングから作ります (送った日時は分からないので、イベントの終わった日で並べます)。</div>
@@ -2782,12 +2783,12 @@ async function showGifter(uid) {
   if (d.found) {
     html += `<h3>ルーム別${d.room_total > d.rooms.length ? ` <small class="muted">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</small>` : ""}</h3>` + dataTable("gp-rooms", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ?  ' <span class="tag live">見るルーム</span>' : ""}`, cls: "name" },
-      { label: "分かった pt", num: true, value: (r) => r.points, html: (r) => `<b>${num(r.points)}</b>` },
+      { label: "分かった pt", num: true, value: (r) => r.points, html: (r) => `<b>${num(r.points)}</b>${r.recorded_ranked && r.points === r.recorded_ranked && r.points > Math.max(r.cumulative || 0, r.events || 0) ? ' <span class="tag" title="記録したギフトの有料分を 2.5 倍して、累計ランキングの物差しにそろえた推定">推定</span>' : ""}` },
       { label: "累計ランキング", num: true, value: (r) => r.cumulative || 0, html: (r) => r.cumulative ? `${num(r.cumulative)}${r.cumulative_rank ? ` (${num(r.cumulative_rank)} 位)` : ""}` : "-" },
       { label: "イベント", num: true, value: (r) => r.events || 0, html: (r) => r.events ? num(r.events) : "-" },
-      { label: "記録したギフト", num: true, value: (r) => r.recorded || 0, html: (r) => r.recorded ? num(r.recorded) : "-" },
+      { label: "記録したギフト (倍率未反映)", num: true, value: (r) => r.recorded || 0, html: (r) => r.recorded ? num(r.recorded) : "-" },
       { label: "来場", num: true, value: (r) => r.visits || 0, html: (r) => r.visits ? num(r.visits) : "-" },
-    ], d.rooms, { sort: 1, limit: 20, csvName: `ギフター_${uid}_ルーム別`, rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
+    ], d.rooms, { sort: 1, limit: 20, csvName: `ギフター_${uid}_ルーム別`, note: "分かった pt は、累計ランキング・イベント・記録したギフトのうち、いちばん大きい値 (重なるので足さない)。記録したギフトは有料を 2.5 倍して、累計ランキングと同じ物差しにそろえてくらべる (推定)。イベントは全期間の合計で、2021 年 3 月より前の回は 2.5 倍なし", rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key)}"` });
     html += `<div id="r-rank-charts"></div>`;
   }
   html += `<div id="r-charts">${rec ? loadingHtml("行動のグラフを描いています…") : `<h3>行動のくせ</h3><div class="hint" style="margin-top:0">曜日・時間帯・1 回の大きさなどは、記録したギフトから分かります。この人のギフトはまだ記録していません (送っているルームを「設定」の「ギフトだけ記録するルーム」に入れると、送った時から分かるようになります)。</div>`}</div>`;

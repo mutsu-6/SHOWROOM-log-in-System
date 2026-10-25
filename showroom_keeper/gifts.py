@@ -434,7 +434,12 @@ def event_report(state_dir: Path, event_key: str, user: str | None = None, offic
         if gifts:
             # 記録のあるルームについて、公式の合計と比べて取りこぼしの目安を出す
             recorded_rooms = {g["room"] for g in gifts}
+            # 記録は元 pt (倍率未反映)、公式はイベントの倍率が入った pt なので、元 pt のままでは割合が倍率の分だけ小さく出る。
+            # くらべる割合は、有料を 2.5 倍した値 (research.ranked_points。まとめ投げの 1.2 倍などは入れない参考の値) で出す
+            from .research import ranked_points
+
             report["coverage"] = {"rooms": len(recorded_rooms), "recorded": sum(u["points"] for u in listeners),
+                                  "recorded_ranked": sum(ranked_points(u["points"], u["free_points"]) for u in listeners),
                                   "official": sum(r["point"] for r in rows if r["room"] in recorded_rooms)}
     if user:
         report["user"] = {"query": user, "users": user_history(sorted(gifts, key=lambda g: g["at"]), catalog, user),
@@ -494,6 +499,6 @@ def show_event(state_dir: Path, event_key: str, top: int, user: str | None = Non
         print(f"   公式の貢献者 {len(r['official_ranking']):,} 人 / 計 {r['official_total']:,} pt")
         c = r.get("coverage")
         if c and c["official"]:
-            print(f"   記録のある {c['rooms']} ルームでは、記録 {c['recorded']:,} pt / 公式 {c['official']:,} pt"
-                  f" ({c['recorded'] / c['official']:.0%})。差は記録を始める前の分・停止中の分など")
+            print(f"   記録のある {c['rooms']} ルームでは、記録 {c['recorded']:,} pt (倍率未反映) / 公式 {c['official']:,} pt。"
+                  f"有料を 2.5 倍にそろえると {c['recorded_ranked'] / c['official']:.0%} (参考)。差は記録を始める前の分・停止中の分・倍率のちがいなど")
     return 0
