@@ -55,14 +55,15 @@ def build(state_dir: Path, days: float = 7, now: float | None = None, use_cache:
                 ("big_gifts", "大きなギフト", _big_gifts(state_dir, s, since)),
                 ("top_fans", "イベントで 1 人がいちばん送った", _top_fans(s, names, since, now)),
                 ("big_rooms", "イベントでいちばん集めたルーム", _big_rooms(s, names, since, now)),
-                ("close_races", "接戦のイベント", _close_races(s, names, since, now)),
+                ("close_races", "接戦のイベント", *_close_races(s, names, since, now)),
                 ("comebacks", "最終日の大逆転", _comebacks(s, names, since, now)),
                 ("last_shots", "終わる直前の一気投げ", _last_shots(s, names, since, now)),
                 ("new_stars", "今月の新星ギフター", _new_stars(s, names, now)),
                 ("top_month", "今月いちばん送っているギフター", _top_month(s, names, now)),
                 ("rising_rooms", "上り調子のルーム", _rising_rooms(s)),
             ]
-        out = {"topics": [{"key": k, "title": t, "items": items} for k, t, items in topics],
+        # 4 つ目は、順位と pt が合わなくて載せなかった数 (接戦だけ)
+        out = {"topics": [{"key": k, "title": t, "items": items, **({"skipped": rest[0]} if rest else {})} for k, t, items, *rest in topics],
                "days": days, "since": since, "now": now, "made_at": time.time()}
         _cache[key] = (time.time(), out)
         return out
@@ -131,17 +132,26 @@ def _big_rooms(s: Store, names: _Names, since: float, now: float) -> list[dict[s
     return [{**names.event(r["event_id"]), **names.room(r["room_id"]), "point": r["point"], "rank": r["rank"]} for r in rows]
 
 
-def _close_races(s: Store, names: _Names, since: float, now: float) -> list[dict[str, Any]]:
-    out = []
+def _close_races(s: Store, names: _Names, since: float, now: float) -> tuple[list[dict[str, Any]], int]:
+    """接戦のイベントと、順位と pt が合わなくて載せなかったイベントの数。
+
+    room_events の順位と pt は、その時の参加ルームの一覧に出たルームだけ上書きされ、一覧から消えたルームの行は前の値のまま残る。
+    このため「1 位」と「2 位」が別の時に読んだ値になることがある (1 位の pt が 2 位より少ない・1 位が 2 つある)。
+    そういう回は、正しい接戦とは言えないので載せずに数だけ出す (行は消さず、直しもしない)。
+    """
+    out, odd = [], 0
     for e in _ended(s, since, now):
         top = s.all("SELECT room_id, point, rank FROM room_events WHERE event_id=? AND rank IN (1, 2) ORDER BY rank", (e["event_id"],))
         if len(top) < 2 or top[0]["rank"] != 1 or not top[0]["point"] or top[0]["point"] < CLOSE_MIN_POINT:
+            continue
+        if [r["rank"] for r in top] != [1, 2] or (top[1]["point"] or 0) > top[0]["point"]:
+            odd += 1
             continue
         gap = top[0]["point"] - (top[1]["point"] or 0)
         out.append({**names.event(e["event_id"]), "first": {**names.room(top[0]["room_id"]), "point": top[0]["point"]},
                     "second": {**names.room(top[1]["room_id"]), "point": top[1]["point"]},
                     "gap": gap, "gap_share": gap / top[0]["point"]})
-    return sorted(out, key=lambda x: x["gap_share"])[:TOP]
+    return sorted(out, key=lambda x: x["gap_share"])[:TOP], odd
 
 
 def _comebacks(s: Store, names: _Names, since: float, now: float) -> list[dict[str, Any]]:

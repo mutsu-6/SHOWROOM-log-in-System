@@ -4242,14 +4242,17 @@ if (!$("#f-hours").value) $("#f-hours").value = feed.hours = "24";
 if (!$("#f-min").value) $("#f-min").value = feed.min = "10000";
 const feedKey = (x) => `${x.kind}:${x.at}:${x.user_id || ""}:${x.room_key || ""}:${x.event_id || ""}`;
 const rankText = (r) => r ? `${num(r)} 位` : "順位不明";
+// 記録したギフトの pt (カタログの単価 × 個数) は、イベントの 2.5 倍・まとめ投げの 1.2 倍が入っていない元の pt。
+// 貢献ランキング・ルームのイベントの pt (倍率反映済み) とは、そのままくらべられない
+const RAW_PT = '<span class="tag" title="ギフトの元 pt (カタログの単価 × 個数)。イベントの 2.5 倍やまとめ投げの 1.2 倍は入っていません。貢献ランキングの pt とはそのままくらべられません">倍率未反映</span>';
 function feedItem(x) {
   const g = x.user_id ? gifterLink(x.user_id, x.name || `ID ${x.user_id}`) : "";
   const room = roomLink(x.room_key, x.room_name), ev = x.event_id ? eventLink(x.event_id, x.event_name) : "";
   const memo = x.memo ? `<div class="sm">メモ: ${esc(x.memo)}</div>` : "";
   switch (x.kind) {
-    case "big_gift": return [`${g} が ${room} に <b>${num(x.point)} pt</b> のギフト`,
+    case "big_gift": return [`${g} が ${room} に <b>${num(x.point)} pt</b> ${RAW_PT} のギフト`,
       `${x.gifts.map((y) => `${esc(y.name)} ×${num(y.num)}`).join("、")}${x.times > 1 ? ` ・ ${num(x.times)} 回 (${tm(x.first_at)} から)` : ""}`];
-    case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b>`,
+    case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b> ${RAW_PT}`,
       `${num(x.times)} 回 ・ うち有料 ${num(x.paid_points)} pt${x.times > 1 ? ` ・ ${tm(x.first_at)} から` : ""}`, memo];
     case "watch_visit": return [`<span class="tag warn">気になる</span> ${g} が ${room} に来場`, `${x.n === 1 ? "初めての訪問" : `${num(x.n)} 回目の訪問`}`, memo];
     case "event_daily": return [`<span class="tag">注目度 ${num(x.place)} 位</span> ${ev} の ${x.ended ? `終わった時点 (${tm(x.end, true).slice(0, 11)})` : `${tm(x.at, true).slice(0, 11)} 時点`}の上位 3 ルーム`,
@@ -4345,8 +4348,8 @@ $("#f-read").addEventListener("click", () => { markSeen(); feed.mark = feed.seen
 const pct = (v) => v == null ? "—" : `${Math.round(v * 100)}%`;
 const leftSec = (s) => s < 60 ? `${Math.round(s)} 秒前` : `${Math.round(s / 60)} 分前`;
 const NEWS = {
-  big_gifts: ["💎", "記録しているルームで、1 回 1 万 pt 以上のギフト (10 分以内の続きはまとめる)",
-    (x) => [`${gifterLink(x.user_id, x.name || `ID ${x.user_id}`)} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt`,
+  big_gifts: ["💎", "記録しているルームで、1 回 1 万 pt 以上のギフト (10 分以内の続きはまとめる)。pt はギフトの元 pt で、イベントの倍率は入っていません",
+    (x) => [`${gifterLink(x.user_id, x.name || `ID ${x.user_id}`)} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt ${RAW_PT}`,
       `${x.gifts.map((y) => `${esc(y.name)} ×${num(y.num)}`).join("、")} ・ ${tm(x.at, true).slice(0, 11)}`]],
   top_fans: ["👑", "終わったイベントの貢献ランキングの 1 位の人のポイント (ルームごと)",
     (x) => [`${x.user_id ? gifterLink(x.user_id, x.name || `ID ${x.user_id}`) : "1 位の人"} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt`,
@@ -4390,7 +4393,8 @@ async function showNews() {
   $("#n-made").textContent = `直近 ${d.days} 日 ・ ${tm(d.made_at, true).slice(0, 11)} に選びました (30 分ごとに選び直します)`;
   const shown = d.topics.filter((t) => t.items.length && NEWS[t.key]);
   box.innerHTML = shown.length ? `<div class="news">${shown.map((t) => `<div class="card"><h3><span aria-hidden="true">${NEWS[t.key][0]}</span>${esc(t.title)}</h3>
-      <div class="why">${esc(NEWS[t.key][1])}</div><ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol></div>`).join("")}</div>`
+      <div class="why">${esc(NEWS[t.key][1])}</div><ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol>${t.skipped
+        ? `<div class="hint">順位と pt が合わない ${num(t.skipped)} 件のイベントは載せていません (1 位の pt が 2 位より少ない・1 位が 2 つある。参加ルームの一覧から消えたルームの行が、前に読んだ順位と pt のまま残るため)</div>` : ""}</div>`).join("")}</div>`
       + `<div class="hint">まだ話題の無いもの: ${d.topics.filter((t) => !t.items.length).map((t) => esc(t.title)).join("、") || "なし"}</div>`
     : `<div class="empty">直近 ${d.days} 日の話題はまだありません。全ルームの収集が進み、イベントが終わると出てきます。</div>`;
 }

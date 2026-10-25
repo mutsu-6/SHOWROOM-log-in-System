@@ -135,8 +135,9 @@ def _big_gifts(state_dir: Path, s: Store, rooms: _Rooms, since: float, min_point
             last.update(at=r["at"], point=last["point"] + pt, times=last["times"] + 1)
             last["gifts"][name] = last["gifts"].get(name, 0) + r["num"]
             continue
+        # basis: raw = ギフトの元 pt (カタログの単価 × 個数)。イベントの 2.5 倍・まとめ投げの 1.2 倍は入っていない
         out.append({"kind": "big_gift", "level": "high", "at": r["at"], "first_at": r["at"], "room_key": r["room_key"],
-                    "user_id": r["user_id"], "point": pt, "times": 1, "gifts": {name: r["num"]}})
+                    "user_id": r["user_id"], "point": pt, "times": 1, "gifts": {name: r["num"]}, "basis": "raw"})
     out = sorted(out, key=lambda x: x["at"], reverse=True)[:MAX_ITEMS["big_gift"]]
     names = _user_names(s, {x["user_id"] for x in out})
     for x in out:
@@ -159,7 +160,8 @@ def _watched(state_dir: Path, s: Store, rooms: _Rooms, since: float) -> list[dic
         for r in s.all("SELECT at, room_key, gift_id, num FROM gift_events WHERE user_id=? AND at>=? ORDER BY at", (uid, since)):
             info = catalog.get(r["gift_id"]) or {}
             x = gifts.setdefault((uid, r["room_key"]), {"kind": "watch_gift", **base, "room_key": r["room_key"],
-                                                        "first_at": r["at"], "points": 0, "paid_points": 0, "times": 0})
+                                                        "first_at": r["at"], "points": 0, "paid_points": 0, "times": 0,
+                                                        "basis": "raw"})  # ギフトの元 pt (倍率は入っていない)
             pt = int(info.get("point") or 0) * int(r["num"] or 1)
             x["points"] += pt
             x["paid_points"] += 0 if info.get("free", True) else pt
