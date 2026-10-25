@@ -500,5 +500,5 @@ def test_event_backtest_reads_rooms_by_event_and_by_room(traced):
     state_dir, seen = traced
     seen.clear()
     out = backtest_event.run(state_dir, [month], [])
-    assert out["periods"]["dev"]["all"]["label_ok"] and any("room_events r" in q for q, _ in seen)  # 本当に読んでいる
+    assert out["periods"]["dev"]["all"]["label_candidates"] and any("room_events r" in q for q, _ in seen)  # 本当に読んでいる
     assert full_scans(state_dir, seen) == []

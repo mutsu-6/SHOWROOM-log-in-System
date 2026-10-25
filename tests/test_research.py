@@ -1471,8 +1471,8 @@ def test_unexpected_answer_or_empty_does_not_erase_the_ranking(tmp_path):
 def test_normal_answers_record_when_they_were_read(tmp_path):
     got = _ranking_case(tmp_path / "a", {"ranking": [{"user_id": 1, "name": "u1", "point": 500, "rank": 1}]}, rows=[(1, 300)])
     assert got["ok"] and got["rows"] == [(1, 500)] and got["try_status"] == "200" and got["ok_at"] == NOW and got["gone_at"] is None
-    got = _ranking_case(tmp_path / "b", {"ranking": []})  # 前に何も無く、正常な空
-    assert got["ok"] and got["rows"] == [] and got["ok_at"] == NOW and got["final"] == 1
+    got = _ranking_case(tmp_path / "b", {"ranking": []})  # 前に何も無く、空の答え (どこまでの一覧かは確かめられない)
+    assert got["ok"] and got["rows"] == [] and got["try_status"] == "200-empty" and got["ok_at"] is None and got["final"] == 1
     got = _ranking_case(tmp_path / "c", http_error(500), rows=[(1, 300)])
     assert not got["ok"] and got["rows"] == [(1, 300)] and got["try_status"] == "error" and got["failures"] == 1
 

@@ -36,12 +36,12 @@ def test_room_points_are_compared_with_simple_history(tmp_path):
     out = be.run(tmp_path, ["2026-04"], ["2026-05"])
     assert (tmp_path / "research.db").read_bytes() == before  # 写しは書き換えない
     d = out["periods"]["dev"]["all"]
-    assert d["label_ok"] == 2  # イベント 20 のルーム 1・2
+    assert d["label_candidates"] == 2  # イベント 20 のルーム 1・2
     assert d["label_dropped"] == {"point_missing": 1, "not_read_after_result": 1, "room_list_capped": 2}
     assert d["coverage"] == {"b0a": 1.0, "b0b": 0.5}  # ルーム 2 は履歴が 1 回だけ (0 にしない)
-    assert d["common"] == 1
+    assert d["common"] == 1 and d["b0b_short_history"] == 1
     m = d["methods"]
     assert m["b0a"]["mae"] == 1000 and m["b0a"]["bias"] == -1000  # 直前 4000、実際 5000
     assert m["b0b"]["mae"] == 2000  # 直近 3 回 (2000・3000・4000) の中央値 3000
-    assert out["periods"]["check"]["all"]["label_ok"] == 0 and "遡及" in out["kind"]
+    assert out["periods"]["check"]["all"]["label_candidates"] == 0 and "遡及" in out["kind"]
     json.dumps(out)

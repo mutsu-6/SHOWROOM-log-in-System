@@ -822,9 +822,11 @@ class Store:
         return len(keep)
 
     def ranking_tried(self, event_id: int, room_id: int, now: float, status: str, ok: bool = False, gone: bool = False) -> None:
-        """貢献ランキングを最後に読んだ時刻と結果 ("200"・"200-empty" (前は人がいたのに空)・"404"・"shape" (思っていた形でない)・"error")。
+        """貢献ランキングを最後に読んだ時刻と結果。答え (HTTP) と、中身を確かめた結果を 1 つの値で分ける:
+        "200" = 200 で形が合い 1 人以上 (確かめて取れた)、"200-empty" = 200 で形は合うが空 (どこまでの一覧かは確かめられない)、
+        "shape" = 200 だが思っていた形でない、"404" = SHOWROOM に無い、"error" = そのほかの失敗。
 
-        ok_at は思っていた形で取れた時刻、gone_at は 404 で取り直すのをやめた時刻。この欄ができる前の行は NULL のまま
+        ok_at は「200」の時刻 (確かめて取れた時だけ)、gone_at は 404 で取り直すのをやめた時刻。この欄ができる前の行は NULL のまま
         (前に取れたかは分からないので、取れたことにはしない)。
         """
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, try_at, try_status, ok_at, gone_at) VALUES (?, ?, ?, ?, ?, ?)

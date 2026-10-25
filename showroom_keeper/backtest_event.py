@@ -3,12 +3,14 @@
 Codex の設計 (docs/報告/Codexの作業_2026-10-25.md 15 章) の最初の比較。式 (地力など) をくらべる前の物差しにする。
 
 - 1 件 = ルーム × イベント。予測の時点 T は、イベントが始まる 24 時間前
-- 正解はルームの最終ポイント (room_events.point)。次のすべてに当てはまる時だけ使う。外れた回は理由ごとに数え、0 にはしない
+- 正解は保存済みのルームのポイント (room_events.point)。次のすべてに当てはまる時だけ「候補」として使う。外れた回は理由ごとに数え、0 にはしない。
+  候補でも、検証済みの最終 pt ではない (参加ルームのページを最後まで読めたか (途中の 404 でも読めた分を保存する)・そのルームが最後の一覧に
+  いたか (一覧から消えたルームの行は残る)・最終値か・pt の単位や倍率は、記録からは確かめられない)
   - そのイベントの参加ルームを、正式な結果のあと (次の日の 13:00 ごろ、research.CONFIRMED_SQL) に読み直してある
   - point が NULL ではない
   - 参加ルームが、読むページの上限 (sweep.EVENT_ROOM_PAGES) で切れていない
 - B0a = 同じルームで T より前に終わった直前のイベントの最終ポイント。B0b = 直近 3 回の中央値 (3 回に満たなければ「履歴不足」)。
-  履歴にも、正解と同じ条件を当てる
+  履歴にも、正解と同じ条件を当てる。履歴に使うのは、正式な結果が T より前に出ていた回だけ (T にはまだ決まっていなかった結果を使わない)
 - **遡及の比較**: room_events.point は読み直すたびに上書きされ、いつ分かった値かが残らない。T の時に本当にその値を
   知っていたかは確かめられないので、「今の記録で過去を振り返った比較」であって、当時の情報での予測の当たり方ではない
 - 物差しは、両方の予測がある同じケースでの誤差の平均 (MAE)・中央値・偏り。予測の大きさの区分は、開発の期間の B0a の
@@ -50,7 +52,7 @@ USABLE = f"""CASE WHEN e.end IS NULL THEN 'end_unknown'
                   WHEN e.rooms_at IS NULL OR e.rooms_at < {CONFIRMED} THEN 'not_read_after_result'
                   WHEN COALESCE(e.room_count, 0) >= {ROOM_CAP} THEN 'room_list_capped'
                   WHEN r.point IS NULL THEN 'point_missing'
-                  ELSE 'ok' END"""
+                  ELSE 'candidate' END"""
 
 
 def connect(state_dir: Path) -> sqlite3.Connection:
@@ -80,7 +82,7 @@ def cases(conn: sqlite3.Connection, month: str) -> tuple[list[dict[str, Any]], d
         rows = conn.execute(f"""SELECT r.room_id, r.point, {USABLE} AS why FROM room_events r INDEXED BY room_events_event
                                 JOIN events e ON e.event_id = r.event_id WHERE r.event_id=?""", (e["event_id"],)).fetchall()
         for r in rows:
-            if r["why"] != "ok":
+            if r["why"] != "candidate":
                 dropped[r["why"]] = dropped.get(r["why"], 0) + 1
                 continue
             out.append({"event_id": e["event_id"], "room_id": r["room_id"], "at": at, "actual": float(r["point"]),
@@ -89,10 +91,11 @@ def cases(conn: sqlite3.Connection, month: str) -> tuple[list[dict[str, Any]], d
 
 
 def history(conn: sqlite3.Connection, room_id: int, at: float) -> dict[str, Any]:
-    """同じルームで at より前に終わり、正解と同じ条件を満たす直近の回から、B0a・B0b を作る。"""
+    """同じルームで at より前に終わり、正式な結果も at より前に出ていて (結果が決まってから使う)、正解と同じ条件を満たす直近の回から、B0a・B0b を作る。"""
     pts = [float(r["point"]) for r in conn.execute(
         f"""SELECT r.point FROM room_events r JOIN events e ON e.event_id = r.event_id
-            WHERE r.room_id=? AND e.end <= ? AND {USABLE} = 'ok' ORDER BY e.end DESC LIMIT ?""", (room_id, at, HISTORY))]
+            WHERE r.room_id=? AND e.end <= ? AND {CONFIRMED} <= ? AND {USABLE} = 'candidate'
+            ORDER BY e.end DESC LIMIT ?""", (room_id, at, at, HISTORY))]
     return {"b0a": pts[0] if pts else None, "b0b": median(pts) if len(pts) >= HISTORY else None, "history": len(pts)}
 
 
@@ -124,7 +127,8 @@ def errors(rows: Iterable[dict[str, Any]], key: str) -> dict[str, Any]:
 def score(rows: list[dict[str, Any]], dropped: dict[str, int], cuts: list[float]) -> dict[str, Any]:
     common = [r for r in rows if all(r[k] is not None for k in METHODS)]
     out: dict[str, Any] = {
-        "label_ok": len(rows), "label_dropped": dropped,
+        "label_candidates": len(rows), "label_dropped": dropped,
+        "b0b_short_history": sum(1 for r in rows if r["b0a"] is not None and r["b0b"] is None),  # 履歴が 3 回に満たず、同じケースから外れた数
         # 方式ごとに、正解のあるケースのうち予測を出せた割合 (履歴不足は 0 にせず、ここで数える)
         "coverage": {k: round(sum(1 for r in rows if r[k] is not None) / len(rows), 3) if rows else None for k in METHODS},
         "common": len(common),
@@ -148,7 +152,8 @@ def run(state_dir: Path, dev: list[str], check: list[str]) -> dict[str, Any]:
         conn.close()
     dev_rows = [r for m in dev for r in got[m][0]]
     cuts = _bands([r["b0a"] for r in dev_rows if r["b0a"] is not None and r["b0b"] is not None])
-    out: dict[str, Any] = {"version": VERSION, "at": time.time(), "kind": "遡及の比較 (今の記録で過去を振り返った。当時の情報での予測ではない)",
+    out: dict[str, Any] = {"version": VERSION, "at": time.time(), "kind": "遡及の参考比較 (今の記録で過去を振り返った。当時の情報での予測ではない)",
+                           "label": "保存済みの room_events.point (候補の条件を満たすもの)。ページを読み終えたか・そのルームが最後の一覧にいたか・最終値か・pt の単位は確かめていないので、検証済みの最終 pt ではない",
                            "dev": dev, "check": check, "size_cuts_from_dev": cuts, "lead_hours": LEAD / 3600, "periods": {}}
     for label, months in (("dev", dev), ("check", check)):
         rows = [r for m in months for r in got[m][0]]

@@ -422,7 +422,10 @@ class Collector:
             self.store.ranking_tried(event_id, room_id, self._clock(), "200" if shaped else "shape")
             return True
         self._save_ranking(event_id, room_id, rows, final)
-        self.store.ranking_tried(event_id, room_id, self._clock(), "200" if shaped else "shape", ok=shaped)
+        # ok_at (確かめて取れた) は、形が合い、1 人以上いた時だけ。空の答えは、どこまでの一覧かを確かめられないので「200-empty」
+        # (正常な空とは決めない。採点では分からない回として外す)
+        status = "200" if shaped and rows else "200-empty" if shaped else "shape"
+        self.store.ranking_tried(event_id, room_id, self._clock(), status, ok=status == "200")
         return True
 
     def _has_ranking(self, event_id: int, room_id: int) -> bool:
