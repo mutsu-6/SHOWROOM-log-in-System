@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -54,7 +55,7 @@ CREATE INDEX IF NOT EXISTS contributions_user_pt ON contributions(user_id, point
 CREATE TABLE IF NOT EXISTS user_room (
     user_id INTEGER, room_id INTEGER, cumulative INTEGER DEFAULT 0, cumulative_rank INTEGER,
     visits INTEGER DEFAULT 0, events INTEGER DEFAULT 0, PRIMARY KEY (user_id, room_id)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS user_room_room ON user_room(room_id);
+-- ルームで引く索引 (user_room_room) は、下の Store の作りで足す (前の形から作り直した表は、別の名前の索引を持って来るため。shrink.py)
 -- ギフターの月ごとのイベントの貢献ポイント (イベントが終わった月、日本時間)。貢献ランキングを保存するたびに足す
 -- (支出の増え減りを、全部の貢献ランキングを数え直さずに出すため)
 CREATE TABLE IF NOT EXISTS user_month (
@@ -279,6 +280,27 @@ PROGRESS_THIN_GAP = 6 * 3600  # 終わったイベントの推移は、最後の
 PROGRESS_THIN_AFTER = 7 * 86400  # 終わってこれだけたち、走り方を作り終えたイベントの推移を間引く (秒)
 
 
+def pack_text(text: str | None) -> bytes | None:
+    """長い文を縮めて (zlib) 入れる形にする。イベントのページの文は、縮めると 3 分の 1 ほどになる (1 日 +38MB だった。2026-10-26)。"""
+    return None if text is None else zlib.compress(text.encode("utf-8"), 6)
+
+
+def unpack_text(value: Any) -> str | None:
+    """pack_text で縮めた文を戻す。前に縮めずに入れた文 (str) は、そのまま返す。"""
+    if isinstance(value, (bytes, memoryview)):
+        return zlib.decompress(bytes(value)).decode("utf-8")
+    return value
+
+
+def _has_index_on(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    """表に、col から始まる索引があるか (sqlite_master の索引の一覧だけを見る)。"""
+    for idx in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        first = conn.execute(f"PRAGMA index_info({idx[1]})").fetchone()
+        if first is not None and first[2] == col:
+            return True
+    return False
+
+
 SLOW_SQL = 2.0  # これより長くかかった読み込みを、自己点検に知らせる (秒)
 slow_hooks: list[Any] = []  # 遅い読み込みを受け取る関数 (sql, 秒)。自己点検が登録する
 
@@ -363,6 +385,8 @@ class Store:
                 ur = self.conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_room'").fetchone()
                 if ur and "WITHOUT ROWID" not in (ur[0] or "").upper():
                     self.conn.execute("CREATE INDEX IF NOT EXISTS user_room_scan ON user_room(user_id, room_id, cumulative, events)")
+                if not _has_index_on(self.conn, "user_room", "room_id"):
+                    self.conn.execute("CREATE INDEX IF NOT EXISTS user_room_room ON user_room(room_id)")
                 # 走り方をまだ作っていない・推移をまだ間引いていないイベントだけの索引 (room_analysis.step が収集の仕事のたびに探す。
                 # 前は終わった全部のイベント 3 万件を順に見ていて、ほとんど 0 件なのに 1 回 0.1〜0.15 秒かかっていた。2026-10-19 に Cursor が測った)
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS events_style_todo ON events(end)
@@ -499,9 +523,10 @@ class Store:
             c.execute("UPDATE rooms SET profile_at=?, followers=COALESCE(?, followers) WHERE room_id=?", (now, p.get("follower_num"), rid))
 
     def set_event_page(self, event_id: int, status: int, text: str | None, now: float) -> None:
+        """イベントのページの文を残す。文は縮めて (zlib) 入れる (読む時は unpack_text で戻す)。"""
         self.conn.execute("""INSERT INTO event_pages(event_id, at, status, text) VALUES (?, ?, ?, ?)
                              ON CONFLICT(event_id) DO UPDATE SET at=excluded.at, status=excluded.status,
-                             text=COALESCE(excluded.text, text)""", (int(event_id), now, int(status), text))
+                             text=COALESCE(excluded.text, text)""", (int(event_id), now, int(status), pack_text(text)))
 
     def upsert_notices(self, rows: Iterable[dict[str, Any]], now: float) -> int:
         """お知らせを残す。戻り値は新しく入った数。中身 (contents) が無い行は、前の中身を消さない。"""

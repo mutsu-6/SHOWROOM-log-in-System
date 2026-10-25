@@ -9,6 +9,7 @@ import pytest
 from showroom_keeper import listing, research, sweep
 from showroom_keeper.config import Config, apply_settings, save_settings
 from showroom_keeper.gifts import record_gift
+from showroom_keeper import research_store
 from showroom_keeper.research_store import Store
 from showroom_keeper.status import JST
 
@@ -1046,7 +1047,7 @@ def test_event_details_pages_and_notices(tmp_path, monkeypatch):
     assert info["parent_id"] == 3 and info["reward_rank"] == 5 and info["block"] == "All Livers"
     assert _json.loads(info["leagues"]) == [10, 20] and "image_m" not in _json.loads(info["data"])
     assert _json.loads(info["data"])["event_description"] == "説明"
-    assert page_row["status"] == 200 and page_row["text"] == "大会\nポイントの数え方\n有料ギフト 1.5 倍"
+    assert page_row["status"] == 200 and research_store.unpack_text(page_row["text"]) == "大会\nポイントの数え方\n有料ギフト 1.5 倍"
 
     # お知らせ: ログイン状態が無ければ読まない
     assert sw._next_notices(NOW)
