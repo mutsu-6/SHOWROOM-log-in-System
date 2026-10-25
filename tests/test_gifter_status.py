@@ -117,6 +117,8 @@ def test_running_event_counts_toward_spent_but_not_firepower(tmp_path):
         gs.build_rounds(s, NOW)
         st = gs.compute(s, 7, NOW)
     assert st["fire"] == 60_000 and st["max_out"] == 60_000 and st["fire_rounds"] == 5  # 5,000 は火力の回に入らない
+    # 最近 90 日は 40・70 日前に終わった回、その前の 90 日は 100・130・160 日前の回。終わっていない回は入らない
+    assert st["recent90"] == 120_000 and st["prev90"] == 180_000 and st["max_out_rounds"] == 5
     assert st["formula"] == gs.FORMULA
     assert st["rooms"][0]["cap"] == 60_000
 

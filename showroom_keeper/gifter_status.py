@@ -178,6 +178,9 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     fire_pool = battle12 if fire_basis == "battle" else d12
     fire = _second([r["point"] for r in fire_pool])
     max_out = max((r["point"] for r in d12), default=0)
+    # 最近 90 日と、その前の 90 日に見えた貢献 pt (倍率反映済みの取得値。上位 100 人に入らなかった回は入らない)
+    recent90 = sum(r["point"] for r in rows if now - 90 * 86400 <= (r["end"] or 0) <= now)
+    prev90 = sum(r["point"] for r in rows if now - 180 * 86400 <= (r["end"] or 0) < now - 90 * 86400)
 
     # 持久力: 1 か月に、火力の半分以上を出したイベントの数 (送った月の中ほど)
     per_month: dict[str, int] = {}
@@ -326,7 +329,8 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
         log.exception("心のカルテを作れませんでした (ユーザー %s)", uid)
         mind = None
     return {"user_id": uid, "at": now, "month": month,
-            "hp": budget, "mp": left, "spent": spent, "fire": fire, "fire_basis": fire_basis, "max_out": max_out,
+            "hp": budget, "mp": left, "spent": spent, "fire": fire, "fire_basis": fire_basis, "max_out": max_out, "max_out_rounds": len(d12),
+            "recent90": recent90, "prev90": prev90,
             "stamina": stamina, "recovery": recovery, "intel": intel, "intel_rounds": len(b_judged), "hit": hit, "hit_rounds": len(shots),
             "momentum": momentum, "new_high": new_high, "fatigue": fatigue, "achievements": achievements, "tops": tops,
             "exp": exp, "level": level, "career": round(career, 1), "first_seen": first_seen, "spread": spread, "main_rooms": main_rooms,

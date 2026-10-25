@@ -1859,10 +1859,10 @@ const TERMS = {
   "総合力": ["次の勝負の見込み量", "見込み量", "本気の 1 回の量と今月の残りの小さい方 × 最近の様子の係数 × 選び方の係数 (pt)"],
   "ランク": ["見込み量の段階", "段階", "見込み量の上から 1% が S・5% が A・20% が B・50% が C、それより下が D"],
   "今撃てる量": ["今出せる量", "今出せる", "本気の 1 回の量と今月の残りの小さい方"],
-  "HP (月の予算)": ["月のふつうの量", "月の量", "直近 12 か月の、送った月の量の中ほど"],
-  "残弾": ["今月の残り", "今月の残り", "月のふつうの量 − 今月に終わる (予定の) イベントで今までに見えた量。0 より下は 0"],
+  "HP (月の予算)": ["月のふつうの量", "月の量", "直近 12 か月の、送った月の量の中ほど (見えた貢献 pt からの推定。持っているお金ではない)"],
+  "残弾": ["今月の残り (推定)", "今月の残り", "月のふつうの量 − 今月に終わる (予定の) イベントで今までに見えた量。0 より下は 0。推定で、使えるお金の残高ではない"],
   "火力": ["本気の 1 回の量", "本気の量", "終わった回の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く)"],
-  "最大出力": ["いちばん多かった 1 回", "最多の回", "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)"],
+  "最大出力": ["いちばん多かった 1 回", "最多の回", "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (確認できた貢献 pt。上位 100 人に入った回だけ)"],
   "持久力": ["月に本気で出る回数", "本気の回数", "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
   "回復力": ["使い切ったあと戻るまで", "戻るまで", "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
   "知性": ["届いた勝負に出した量の割合", "届いた量", "勝負になった回に出した量のうち、ルームが目標 (特典の順位) に届いた回の分の割合"],
@@ -1901,15 +1901,17 @@ const termShort = (old) => (TERMS[old] || [old, old])[1];
 const termNote = (old, note) => { const t = TERMS[old]; const n = note ?? (t ? t[2] : ""); return t && t[0] !== old ? `${n}${n ? "。" : ""}前の名前: ${old}` : n; };
 const markName = (m) => term(m === "疲労" ? "疲労 (印)" : m);
 const ptYen = (v) => v ? `${shortNum(v)} <small>pt</small>` : "—";
-const yenOf = (v) => v ? `およそ ${shortNum(Math.round(v / 3))} 円` : "";
+// 円は 3 pt = 1 円で割った参考の目安 (gifter_analysis.PT_PER_YEN)。無料の星や倍率の違いがあるので、使ったお金そのものではない
+const yenOf = (v) => v ? `参考 約 ${shortNum(Math.round(v / 3))} 円` : "";
 // [キー, 前の名前 (TERMS のキー), 値の出し方, 説明]
 const STATUS_FORMULA = 2;  // gifter_status.FORMULA と同じ (式を変えた版)
 const STATUS_GROUPS = [
   ["財布", [
-    ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど"],
+    ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど (見えた貢献 pt からの推定。持っているお金ではない)"],
     ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月のふつうの量 − 今月の分 (${shortNum(st.spent)} pt。終わる予定の月が今月のイベントの、今までに見えた貢献。開催中のイベントの途中の値も入る)。0 より下は 0`],
     ["fire", "火力", (st) => st.fire_rounds === 0 ? '<span class="uid">比べるデータなし</span>' : `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}${st.fire_rounds === 1 ? " ・ 1 件だけの参考値" : ""}</span>`, (st) => `終わった回 (終わって 2 日たち、終わったあとの貢献ランキングを取り終えた回) のうち、${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く。1 回だけならその値)${st.fire_rounds != null ? ` ・ くらべた回 ${num(st.fire_rounds)}` : ""}`],
-    ["max_out", "最大出力", (st) => ptYen(st.max_out), "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。開催中の途中の値は入れない"],
+    ["max_out", "最大出力", (st) => `${ptYen(st.max_out)}${st.max_out_rounds != null ? ` <span class="uid">${num(st.max_out_rounds)} 回のうち</span>` : ""}`, "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。確認できた貢献 pt で、上位 100 人に入った回だけ。開催中の途中の値は入れない"],
+    ["recent90", "最近 90 日", (st) => st.recent90 == null ? '<span class="uid">次の作り直しから</span>' : `${ptYen(st.recent90)} <span class="uid">その前の 90 日 ${shortNum(st.prev90)} pt</span>`, "直近 90 日に終わったイベントで、貢献ランキングに見えた pt の合計 (SHOWROOM のイベント pt の取得値。倍率はイベントの決まりのとおりで、ここでは掛けない)。上位 100 人に入らなかった回は入らない (0 ではなく分からない)"],
     ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
     ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
   ]],
@@ -2194,7 +2196,7 @@ function gifterStates(st) {
         ${tile(`${ym(pw.month)} ここまで`, `${shortNum(pw.spent)} <small>pt</small>`, `${pw.now_tier ? `今月のクラス <b>${esc(pw.now_tier)}</b> ・ ` : ""}残り (予算から) ${shortNum(pw.left)} pt`)}
         ${tile("今月の予想", `${shortNum(pw.forecast)} <small>pt</small>`, `${pw.forecast_tier ? `<b>${esc(pw.forecast_tier)}</b> の見込み ・ ` : ""}先月 ${pw.last_tier ? esc(pw.last_tier) : "—"} ・ 大きな勝負なら ${shortNum(pw.upper)} pt まで`)}
       </div>
-      <div class="hint">円は、大きな有料ギフトの 1 SG = 3 pt (2.5 倍 × 1.2 倍) で割ったおよその額 (無料の星が多い人は少なく出ます)。今月の分は終わったイベントだけで、開催中のイベントは入っていません。
+      <div class="hint">pt はどれも貢献ランキングの pt (SHOWROOM のイベント pt の取得値。倍率はイベントの決まりのとおりで、ここでもう一度掛けることはしない)。円は、大きな有料ギフトの 1 SG = 3 pt (2.5 倍 × 1.2 倍) で割った参考の目安で、使ったお金そのものではありません (無料の星が多い人・倍率の付かないイベントでは合いません)。今月の分は終わったイベントだけで、開催中のイベントは入っていません。
         アプリの累計のクラスとちがい、直近の量だけを見ます。線はどれも仮の値です</div>${accTag("power_forecast", "power_upper")}`;
   }
   const en = st.engage;
@@ -4244,7 +4246,7 @@ const feedKey = (x) => `${x.kind}:${x.at}:${x.user_id || ""}:${x.room_key || ""}
 const rankText = (r) => r ? `${num(r)} 位` : "順位不明";
 // 記録したギフトの pt (カタログの単価 × 個数) は、イベントの 2.5 倍・まとめ投げの 1.2 倍が入っていない元の pt。
 // 貢献ランキング・ルームのイベントの pt (倍率反映済み) とは、そのままくらべられない
-const RAW_PT = '<span class="tag" title="ギフトの元 pt (カタログの単価 × 個数)。イベントの 2.5 倍やまとめ投げの 1.2 倍は入っていません。貢献ランキングの pt とはそのままくらべられません">倍率未反映</span>';
+const RAW_PT = '<span class="tag" title="ギフトの元 pt (保存してある今のカタログの単価 × 個数)。イベントの 2.5 倍やまとめ投げの 1.2 倍は入っていません。貢献ランキングの pt とはそのままくらべられません">倍率未反映</span>';
 function feedItem(x) {
   const g = x.user_id ? gifterLink(x.user_id, x.name || `ID ${x.user_id}`) : "";
   const room = roomLink(x.room_key, x.room_name), ev = x.event_id ? eventLink(x.event_id, x.event_name) : "";
