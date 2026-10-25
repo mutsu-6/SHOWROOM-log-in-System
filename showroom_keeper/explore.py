@@ -14,7 +14,7 @@ from typing import Any
 
 from . import event_analysis, room_analysis, room_parts, search_index, series as series_mod
 from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
-from .research_store import Store
+from .research_store import Store, unpack_text
 
 SEARCH_LIMIT = 20  # 検索で種類ごとに返す数
 ROOM_GIFTERS = 200  # ルームのページに出すギフターの数
@@ -873,7 +873,8 @@ def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = No
                    "block": data.get("event_block_label"), "leagues": data.get("league_ids"), "parent_id": data.get("parent_event_id") or None,
                    "required_level": data.get("required_level"), "required_level_max": data.get("required_level_max"),
                    "box": data.get("is_box_event"), "official": data.get("is_official"), "type_name": data.get("type_name"),
-                   "series": series, "page": dict(pg) if pg is not None else None}
+                   "series": series,
+                   "page": {**dict(pg), "text": unpack_text(pg["text"])} if pg is not None else None}
         return {**_event_row(e, now), "found": True, "type": e["type"], "show_ranking": bool(e["show_ranking"]),
                 "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
