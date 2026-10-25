@@ -43,7 +43,7 @@ def soon(state_dir: Path) -> bool:
 
 def _run(state_dir: Path, mark: bool = True) -> None:
     global _running
-    from . import explore, listing, search_index
+    from . import explore, listing, search_index, shrink
     from .research_store import Store
 
     try:
@@ -65,6 +65,10 @@ def _run(state_dir: Path, mark: bool = True) -> None:
                 search_index.refresh(s)
             except Exception as e:  # noqa: BLE001 - 足せなくても、次に頼まれた時にまた足す
                 log.debug("来場・検索の索引を足せませんでした: %s", e)
+            try:
+                shrink.step(s, memory.holding)  # データを消さずに research.db を小さくする (少しずつ。終われば表を見るだけ)
+            except Exception as e:  # noqa: BLE001 - できなくても、次にまた続ける
+                log.warning("research.db を小さくする仕事が進みませんでした: %s", e)
     except Exception as e:  # noqa: BLE001
         log.debug("新しい分を足せませんでした: %s", e)
     finally:
