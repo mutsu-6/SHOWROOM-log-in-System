@@ -1911,7 +1911,7 @@ const STATUS_GROUPS = [
     ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月のふつうの量 − 今月の分 (${shortNum(st.spent)} pt。終わる予定の月が今月のイベントの、今までに見えた貢献。開催中のイベントの途中の値も入る)。0 より下は 0`],
     ["fire", "火力", (st) => st.fire_rounds === 0 ? '<span class="uid">比べるデータなし</span>' : `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}${st.fire_rounds === 1 ? " ・ 1 件だけの参考値" : ""}</span>`, (st) => `終わった回 (終わって 2 日たち、終わったあとの貢献ランキングを取り終えた回) のうち、${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く。1 回だけならその値)${st.fire_rounds != null ? ` ・ くらべた回 ${num(st.fire_rounds)}` : ""}`],
     ["max_out", "最大出力", (st) => `${ptYen(st.max_out)}${st.max_out_rounds != null ? ` <span class="uid">${num(st.max_out_rounds)} 回のうち</span>` : ""}`, "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。確認できた貢献 pt で、上位 100 人に入った回だけ。開催中の途中の値は入れない"],
-    ["recent90", "最近 90 日", (st) => st.recent90 == null ? '<span class="uid">次の作り直しから</span>' : `${ptYen(st.recent90)} <span class="uid">その前の 90 日 ${shortNum(st.prev90)} pt</span>`, "直近 90 日に終わったイベントで、貢献ランキングに見えた pt の合計 (SHOWROOM のイベント pt の取得値。倍率はイベントの決まりのとおりで、ここでは掛けない)。上位 100 人に入らなかった回は入らない (0 ではなく分からない)"],
+    ["recent90", "最近 90 日", (st) => st.recent90 == null ? '<span class="uid">次の作り直しから</span>' : `${ptYen(st.recent90)} <span class="uid">${st.recent90_rounds != null ? `${num(st.recent90_rounds)} 回 ・ ` : ""}その前の 90 日 ${shortNum(st.prev90)} pt${st.prev90_rounds != null ? ` (${num(st.prev90_rounds)} 回)` : ""}</span>`, "直近 90 日に終わったイベントで、終わったあとの貢献ランキングを取り終え、名前で推測した行でない回の pt の合計 (SHOWROOM のイベント pt の取得値。倍率はイベントの決まりのとおりで、ここでは掛けない)。上位 100 人に入らなかった回は入らない (0 ではなく分からない)"],
     ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
     ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
   ]],
@@ -4393,10 +4393,10 @@ async function showNews() {
   try { d = await loadNews(days); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "news" || days !== newsDays) return;
   $("#n-made").textContent = `直近 ${d.days} 日 ・ ${tm(d.made_at, true).slice(0, 11)} に選びました (30 分ごとに選び直します)`;
-  const shown = d.topics.filter((t) => t.items.length && NEWS[t.key]);
+  const shown = d.topics.filter((t) => (t.items.length || t.skipped) && NEWS[t.key]);  // 全部を載せなかった時も、載せなかった数は見せる
   box.innerHTML = shown.length ? `<div class="news">${shown.map((t) => `<div class="card"><h3><span aria-hidden="true">${NEWS[t.key][0]}</span>${esc(t.title)}</h3>
-      <div class="why">${esc(NEWS[t.key][1])}</div><ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol>${t.skipped
-        ? `<div class="hint">順位と pt が合わない ${num(t.skipped)} 件のイベントは載せていません (1 位の pt が 2 位より少ない・1 位が 2 つある。参加ルームの一覧から消えたルームの行が、前に読んだ順位と pt のまま残るため)</div>` : ""}</div>`).join("")}</div>`
+      <div class="why">${esc(NEWS[t.key][1])}</div>${t.items.length ? `<ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol>` : ""}${t.skipped
+        ? `<div class="hint">順位と pt が合わない ${num(t.skipped)} 件のイベントは載せていません (1 位と 2 位がちょうど 1 つずつでない・2 位の pt が無い・1 位の pt が 2 位より少ない。参加ルームの一覧から消えたルームの行が、前に読んだ順位と pt のまま残っている可能性があります。まだ確かめていません)</div>` : ""}</div>`).join("")}</div>`
       + `<div class="hint">まだ話題の無いもの: ${d.topics.filter((t) => !t.items.length).map((t) => esc(t.title)).join("、") || "なし"}</div>`
     : `<div class="empty">直近 ${d.days} 日の話題はまだありません。全ルームの収集が進み、イベントが終わると出てきます。</div>`;
 }

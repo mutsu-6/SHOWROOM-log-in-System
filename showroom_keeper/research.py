@@ -218,10 +218,11 @@ def _rows(data: Any, cumulative: bool = False) -> list[dict[str, Any]]:
 
 
 def _ranking_rows(data: Any) -> list[dict[str, Any]] | None:
-    """貢献ランキングの答えの行。形が思っていたものでなければ None (辞書でない・ranking が配列でない・user_id の無い行や数字でない値が混じる)。"""
+    """貢献ランキングの答えの行。形が思っていたものでなければ None (辞書でない・ranking が配列でない・user_id か point の無い行や
+    数字でない値が混じる)。point が無い行を 0 pt とすると、本当の 0 と分からないものが混ざるので、形の違う答えとして扱う。"""
     if not isinstance(data, dict) or not isinstance(data.get("ranking"), list):
         return None
-    if not all(isinstance(r, dict) and r.get("user_id") for r in data["ranking"]):
+    if not all(isinstance(r, dict) and r.get("user_id") and r.get("point") is not None for r in data["ranking"]):
         return None
     try:
         return _rows(data)

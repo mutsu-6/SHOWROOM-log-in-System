@@ -149,7 +149,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     first12 = _add(month, -(MONTHS - 1))
     since12, since24 = _month_start(first12), _month_start(_add(month, -(LONG_MONTHS - 1)))
     rows = s.all("""SELECT c.event_id, c.room_id, c.point, c.rank, e.end, r.battle, r.reached, d.event_id IS NOT NULL AS judged,
-                           es.stage_no, re.final
+                           es.stage_no, re.final, c.guessed
                     FROM contributions c JOIN events e USING(event_id)
                     LEFT JOIN room_events re ON re.event_id=c.event_id AND re.room_id=c.room_id
                     LEFT JOIN event_rounds r ON r.event_id=c.event_id AND r.room_id=c.room_id
@@ -178,9 +178,13 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     fire_pool = battle12 if fire_basis == "battle" else d12
     fire = _second([r["point"] for r in fire_pool])
     max_out = max((r["point"] for r in d12), default=0)
-    # 最近 90 日と、その前の 90 日に見えた貢献 pt (倍率反映済みの取得値。上位 100 人に入らなかった回は入らない)
-    recent90 = sum(r["point"] for r in rows if now - 90 * 86400 <= (r["end"] or 0) <= now)
-    prev90 = sum(r["point"] for r in rows if now - 180 * 86400 <= (r["end"] or 0) < now - 90 * 86400)
+    # 最近 90 日と、その前の 90 日に確認できた貢献 pt (イベントの終わりの日で切る。SHOWROOM の取得値で、倍率は掛けない)。
+    # 両方の期間で同じ条件: 終わったあとのランキングを取り終えた回 (final) で、名前で推測した行 (guessed) は入れない。
+    # 上位 100 人に入らなかった回は入らない (0 ではなく分からない)。回数も出す
+    seen = [r for r in rows if r["final"] and not r["guessed"]]
+    p90 = [r for r in seen if now - 90 * 86400 <= (r["end"] or 0) <= now]
+    q90 = [r for r in seen if now - 180 * 86400 <= (r["end"] or 0) < now - 90 * 86400]
+    recent90, prev90 = sum(r["point"] for r in p90), sum(r["point"] for r in q90)
 
     # 持久力: 1 か月に、火力の半分以上を出したイベントの数 (送った月の中ほど)
     per_month: dict[str, int] = {}
@@ -330,7 +334,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
         mind = None
     return {"user_id": uid, "at": now, "month": month,
             "hp": budget, "mp": left, "spent": spent, "fire": fire, "fire_basis": fire_basis, "max_out": max_out, "max_out_rounds": len(d12),
-            "recent90": recent90, "prev90": prev90,
+            "recent90": recent90, "prev90": prev90, "recent90_rounds": len(p90), "prev90_rounds": len(q90),
             "stamina": stamina, "recovery": recovery, "intel": intel, "intel_rounds": len(b_judged), "hit": hit, "hit_rounds": len(shots),
             "momentum": momentum, "new_high": new_high, "fatigue": fatigue, "achievements": achievements, "tops": tops,
             "exp": exp, "level": level, "career": round(career, 1), "first_seen": first_seen, "spread": spread, "main_rooms": main_rooms,

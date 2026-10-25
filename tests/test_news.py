@@ -82,3 +82,14 @@ def test_close_races_skip_rank_and_point_that_disagree(tmp_path):
     assert races["skipped"] == 3  # 数だけ出す
     with Store(tmp_path) as s:  # 行は消さず、直しもしない
         assert s.scalar("SELECT point FROM room_events WHERE event_id=70 AND room_id=3") == 154_007
+
+
+def test_close_races_report_the_skipped_count_even_when_nothing_is_shown(tmp_path):
+    """載せる接戦が 1 つも無くても、載せなかった数は出す (画面は skipped があれば話題を見せる)。"""
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (3, 4)], "archive", NOW)
+        s.upsert_events([{"event_id": 70, "name": "おかしい回", "start": NOW - 9 * DAY, "end": NOW - 3 * DAY}])
+        s.set_event_rooms(70, [{"room_id": 3, "point": 154_007, "rank": 1}, {"room_id": 4, "point": 333_968, "rank": 2}], NOW)
+    out = news.build(tmp_path, 7, now=NOW, use_cache=False)
+    races = next(t for t in out["topics"] if t["key"] == "close_races")
+    assert races["items"] == [] and races["skipped"] == 1

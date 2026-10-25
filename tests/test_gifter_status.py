@@ -119,6 +119,25 @@ def test_running_event_counts_toward_spent_but_not_firepower(tmp_path):
     assert st["fire"] == 60_000 and st["max_out"] == 60_000 and st["fire_rounds"] == 5  # 5,000 は火力の回に入らない
     # 最近 90 日は 40・70 日前に終わった回、その前の 90 日は 100・130・160 日前の回。終わっていない回は入らない
     assert st["recent90"] == 120_000 and st["prev90"] == 180_000 and st["max_out_rounds"] == 5
+    assert st["recent90_rounds"] == 2 and st["prev90_rounds"] == 3
+
+
+def test_recent_90_days_leave_out_guessed_and_unfinished_rows(tmp_path):
+    """最近 90 日は、取り終えた回 (final) の、名前で推測していない行だけ。その前の 90 日も同じ条件。"""
+    d = _db(tmp_path)
+    with Store(d) as s:
+        s.upsert_events([{"event_id": 91, "name": "推測", "start": NOW - 27 * DAY, "end": NOW - 20 * DAY},
+                         {"event_id": 92, "name": "取り終えていない", "start": NOW - 37 * DAY, "end": NOW - 30 * DAY},
+                         {"event_id": 93, "name": "前の推測", "start": NOW - 127 * DAY, "end": NOW - 120 * DAY}])
+        for eid in (91, 92, 93):
+            s.set_event_rooms(eid, [{"room_id": 4, "point": 10_000, "rank": 1}], NOW)
+        s.set_contributions(91, 4, [{"user_id": 7, "name": "u7", "point": 7_000, "rank": 1, "guessed": True}], NOW, final=True)
+        s.set_contributions(92, 4, [{"user_id": 7, "name": "u7", "point": 8_000, "rank": 1}], NOW, final=False)
+        s.set_contributions(93, 4, [{"user_id": 7, "name": "u7", "point": 9_000, "rank": 1, "guessed": True}], NOW, final=True)
+        gs.build_rounds(s, NOW)
+        st = gs.compute(s, 7, NOW)
+    assert st["recent90"] == 120_000 and st["recent90_rounds"] == 2
+    assert st["prev90"] == 180_000 and st["prev90_rounds"] == 3
     assert st["formula"] == gs.FORMULA
     assert st["rooms"][0]["cap"] == 60_000
 

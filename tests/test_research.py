@@ -1473,7 +1473,8 @@ def test_unexpected_answer_with_nothing_before_is_not_saved_as_empty(tmp_path):
     """前に何も無くても、形の違う答えは空の成功にしない (あとでもう一度読み、RANKING_RETRIES 回でやめる。Codex の受入例)。"""
     good = {"user_id": 1, "name": "u1", "point": 500, "rank": 1}
     for i, answer in enumerate(({"error": "synthetic"}, None, [good], "x", {"ranking": [good, {"name": "id なし"}]},
-                                {"ranking": [good, "x"]}, {"ranking": [{**good, "point": "abc"}]}, {"ranking": None})):
+                                {"ranking": [good, "x"]}, {"ranking": [{**good, "point": "abc"}]}, {"ranking": None},
+                                {"ranking": [{"user_id": 1, "name": "u1", "rank": 1}]}, {"ranking": [{**good, "point": None}]})):
         got = _ranking_case(tmp_path / str(i), answer)
         assert not got["ok"] and got["rows"] == [] and got["final"] == 0 and got["ranking_at"] is None, answer
         assert got["failures"] == 1 and got["try_status"] == "shape" and got["ok_at"] is None and got["c_count"] is None
@@ -1481,9 +1482,10 @@ def test_unexpected_answer_with_nothing_before_is_not_saved_as_empty(tmp_path):
 
 def test_mixed_bad_rows_do_not_replace_the_ranking(tmp_path):
     good = {"user_id": 5, "name": "u5", "point": 900, "rank": 1}
-    got = _ranking_case(tmp_path, {"ranking": [good, {"point": 3}]}, rows=[(1, 300), (2, 100)])
-    assert not got["ok"] and got["rows"] == [(1, 300), (2, 100)] and got["try_status"] == "shape"
-    assert got["ranking_at"] == NOW - 6 * 86400 and got["c_count"] == 2 and got["failures"] == 1
+    for i, bad in enumerate(({"point": 3}, {"user_id": 6, "name": "u6", "rank": 2})):  # id の無い行・pt の無い行 (0 pt とはしない)
+        got = _ranking_case(tmp_path / str(i), {"ranking": [good, bad]}, rows=[(1, 300), (2, 100)])
+        assert not got["ok"] and got["rows"] == [(1, 300), (2, 100)] and got["try_status"] == "shape"
+        assert got["ranking_at"] == NOW - 6 * 86400 and got["c_count"] == 2 and got["failures"] == 1
 
 
 def test_guessed_rows_keep_their_history_on_empty_or_unexpected_answers(tmp_path):
