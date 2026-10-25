@@ -212,7 +212,7 @@ class Sweeper:
         if heat.step(st, now):  # ルームのヒートマップの 12 時間の区切り (SHOWROOM には問い合わせない)
             self.doing = "ヒートマップの区切り"
         if heat.power_step(st, now):  # ルームの地力と残弾 (ギフターのステータスを作り終えたあと、暇な時に 1 回)
-            self.doing = "ルームの地力と残弾"
+            self.doing = "ルームが集められる量と今月の残り"
         # 登録時期の目印を先にそろえる (その間も、開催中のイベントの推移は 1 時間ごとに残す)
         if not st.meta("anchor_done_at") and (self._next_progress(now) or self._next_signup_anchor(now)):
             return True
