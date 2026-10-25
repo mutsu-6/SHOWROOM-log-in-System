@@ -314,3 +314,21 @@ def test_gift_room_index_is_built_in_the_background_on_old_databases(tmp_path, m
         explore.ensure_gift_event_indexes(s)
         assert indexes(s) == new
         explore.ensure_gift_event_indexes(s)  # 2 回目は何もしない
+
+
+def test_gift_records_keep_the_looks_seen_on_the_stream(tmp_path):
+    """ギフトの知らせのアバターの番号 (av)・Class (cl) を記録し、人ごとにいちばん新しい値を残す (配信の画面で同じ名前の人を見分けるため)。"""
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "gift_catalog.json").write_text(json.dumps({"gifts": {"1": {"point": 1, "free": True}}}))
+    record_gift(tmp_path, "rec_room", 1, {"u": 55, "ac": "同じ名前", "g": 1, "n": 1, "av": 1001, "cl": 3, "h": 2, "created_at": NOW})
+    record_gift(tmp_path, "rec_room", 1, {"u": 56, "ac": "同じ名前", "g": 1, "n": 1, "created_at": NOW})  # 見た目の無い知らせ
+    line = json.loads((tmp_path / "gifts" / "rec_room.jsonl").read_text().splitlines()[0])
+    assert line["av"] == 1001 and line["cl"] == 3 and line["h"] == 2
+    with Store(tmp_path) as s:
+        explore.update_gift_senders(tmp_path, s, "rec_room")
+        assert s.looks([55, 56]) == {55: {"avatar_id": 1001, "class_level": 3, "at": int(NOW)}}
+    record_gift(tmp_path, "rec_room", 1, {"u": 55, "ac": "同じ名前", "g": 1, "n": 1, "av": 1002, "cl": 4, "created_at": NOW + 9})
+    record_gift(tmp_path, "rec_room", 1, {"u": 55, "ac": "同じ名前", "g": 1, "n": 1, "av": 999, "cl": 1, "created_at": NOW - 9})  # 古い知らせ
+    with Store(tmp_path) as s:
+        explore.update_gift_senders(tmp_path, s, "rec_room")
+        assert s.looks([55])[55]["avatar_id"] == 1002 and s.looks([55])[55]["class_level"] == 4  # 新しい方が残る

@@ -64,6 +64,9 @@ CREATE INDEX IF NOT EXISTS user_month_month ON user_month(month);
 -- 月ごとに多い順に並べる (大口・中堅・少額の区切りを出す)
 CREATE INDEX IF NOT EXISTS user_month_points ON user_month(month, points);
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT);
+-- 配信の画面で見える、その人の見た目 (アバターの番号・Class)。記録したギフトの知らせ (av・cl) の、いちばん新しい値。
+-- 配信の画面には ID が出ないので、同じ名前の人を画面で見分けるのに使う (explore.update_gift_senders が足す)
+CREATE TABLE IF NOT EXISTS user_looks (user_id INTEGER PRIMARY KEY, avatar_id INTEGER, class_level INTEGER, at REAL);
 -- 前に使っていた名前 (名前を変えた時・退会した時に前の名前を残す。Internet Archive の古いページからも足す)
 CREATE TABLE IF NOT EXISTS user_names (
     user_id INTEGER, name TEXT, at REAL, source TEXT, PRIMARY KEY (user_id, name)) WITHOUT ROWID;
@@ -471,6 +474,17 @@ class Store:
                 [{"room_id": int(r["room_id"]), "key": r.get("key"), "name": r.get("name"), "followers": r.get("followers"),
                   "live_at": r.get("live_at"), "via": via, "now": now} for r in rooms if r.get("room_id")])
         return self.scalar("SELECT COUNT(*) FROM rooms") - before
+
+    def looks(self, user_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+        """人ごとの見た目 {user_id: {avatar_id, class_level, at}} (分かっている人だけ。主キーで引く)。"""
+        ids = sorted({int(u) for u in user_ids})
+        out: dict[int, dict[str, Any]] = {}
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            for r in self.conn.execute(f"SELECT user_id, avatar_id, class_level, at FROM user_looks WHERE user_id IN ({','.join('?' * len(part))})",
+                                       part):
+                out[r[0]] = {"avatar_id": r[1], "class_level": r[2], "at": r[3]}
+        return out
 
     def room(self, key: str | None = None, room_id: int | None = None) -> sqlite3.Row | None:
         if room_id is not None:

@@ -210,6 +210,12 @@ def test_list_endpoints(admin, tmp_path, monkeypatch):
     code, body = call(base + "/api/lookup/user?id=12")
     assert code == 200 and json.loads(body)["user"]["name"] == "だれか"
     assert call(base + "/api/lookup/user?id=x1")[0] == 400
+    from showroom_keeper.research_store import Store
+
+    with Store(tmp_path) as s, s.tx() as c:
+        c.execute("INSERT INTO user_looks VALUES (7, 1001, 3, 5)")
+    code, body = call(base + "/api/looks?users=7,8,x")
+    assert code == 200 and json.loads(body)["users"] == {"7": {"avatar_id": 1001, "class_level": 3, "at": 5}}
 
 
 def test_research_endpoints(admin, monkeypatch):

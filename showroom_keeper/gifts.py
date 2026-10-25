@@ -34,6 +34,10 @@ def record_gift(state_dir: Path, room_key: str, live_id: int | None, event: dict
         "gift_id": event.get("g"),
         "num": int(event.get("n") or 1),
     }
+    # 配信の画面で見える見た目 (アバターの番号・Class) と、まだ意味の分からない小さな数 (h。連打の回数かもしれない。2026-10-26 に Cursor が見つけた)
+    for key, src in (("av", "av"), ("cl", "cl"), ("h", "h")):
+        if event.get(src) is not None:
+            entry[key] = event.get(src)
     path = gift_dir(state_dir) / f"{room_key}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
