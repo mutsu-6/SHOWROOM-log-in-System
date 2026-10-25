@@ -144,10 +144,10 @@ def _close_races(s: Store, names: _Names, since: float, now: float) -> tuple[lis
         top = s.all("SELECT room_id, point, rank FROM room_events WHERE event_id=? AND rank IN (1, 2) ORDER BY rank", (e["event_id"],))
         if len(top) < 2 or top[0]["rank"] != 1 or not top[0]["point"] or top[0]["point"] < CLOSE_MIN_POINT:
             continue
-        if [r["rank"] for r in top] != [1, 2] or (top[1]["point"] or 0) > top[0]["point"]:
+        if [r["rank"] for r in top] != [1, 2] or top[1]["point"] is None or top[1]["point"] > top[0]["point"]:
             odd += 1
             continue
-        gap = top[0]["point"] - (top[1]["point"] or 0)
+        gap = top[0]["point"] - top[1]["point"]
         out.append({**names.event(e["event_id"]), "first": {**names.room(top[0]["room_id"]), "point": top[0]["point"]},
                     "second": {**names.room(top[1]["room_id"]), "point": top[1]["point"]},
                     "gap": gap, "gap_share": gap / top[0]["point"]})

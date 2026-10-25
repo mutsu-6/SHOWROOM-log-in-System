@@ -74,9 +74,11 @@ def test_close_races_skip_rank_and_point_that_disagree(tmp_path):
         s.upsert_events([{"event_id": 80, "name": "1 位が 2 つ", "start": NOW - 9 * DAY, "end": NOW - 3 * DAY}])
         s.set_event_rooms(80, [{"room_id": 3, "point": 300_000, "rank": 1}, {"room_id": 4, "point": 290_000, "rank": 1},
                                {"room_id": 5, "point": 280_000, "rank": 2}], NOW)
+        s.upsert_events([{"event_id": 90, "name": "2 位の pt が無い", "start": NOW - 9 * DAY, "end": NOW - 3 * DAY}])
+        s.set_event_rooms(90, [{"room_id": 3, "point": 300_000, "rank": 1}, {"room_id": 4, "point": None, "rank": 2}], NOW)
     out = news.build(tmp_path, 7, now=NOW)
     races = next(t for t in out["topics"] if t["key"] == "close_races")
     assert [x["event_id"] for x in races["items"]] == [50]  # 合わない回は載せない
-    assert races["skipped"] == 2  # 数だけ出す
+    assert races["skipped"] == 3  # 数だけ出す
     with Store(tmp_path) as s:  # 行は消さず、直しもしない
         assert s.scalar("SELECT point FROM room_events WHERE event_id=70 AND room_id=3") == 154_007
