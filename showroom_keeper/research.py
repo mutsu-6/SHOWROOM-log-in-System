@@ -392,23 +392,55 @@ class Collector:
             if not is_missing(e):
                 self.failures += 1
                 self.store.ranking_failed(event_id, room_id)
+                self.store.ranking_tried(event_id, room_id, self._clock(), "error")
                 log.warning("イベント %s (ルーム %s) の貢献ランキングを取れませんでした: %s", event_id, room_id,
                             str(e).splitlines()[0] if str(e) else type(e).__name__)
                 return False
-            data = {}
+            return self._ranking_gone(event_id, room_id, final)
         ev = (data or {}).get("event")
         if isinstance(ev, dict) and ev.get("ended_at"):
             # 番号で読んだ古いイベントは、ここで初めて日付が分かる (「順位を公開しない」はここでは見ない)
             self.store.upsert_events([{**_event_info({**ev, "event_id": event_id}), "show_ranking": None}])
             self.store.upsert_event_info([{**ev, "event_id": event_id}], self._clock())
+        shaped = isinstance(data, dict) and isinstance(data.get("ranking"), list)
         rows = _rows(data)
+        if not rows and self.store.one("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? AND guessed IS NULL LIMIT 1",
+                                       (event_id, room_id)):
+            # 思っていた形でない答えや、前は人がいたのに空の答え: 前に取れた分を空で上書きしない
+            # (一時の失敗と同じに数え、あとでもう一度読む。RANKING_RETRIES 回で読むのをやめる)
+            self.failures += 1
+            self.store.ranking_failed(event_id, room_id)
+            self.store.ranking_tried(event_id, room_id, self._clock(), "200-empty" if shaped else "shape")
+            log.warning("イベント %s (ルーム %s) の貢献ランキングが%s。前に取れた分を残します", event_id, room_id,
+                        "空でした" if shaped else "思っていた形ではありませんでした")
+            return False
         if not rows and self.store.one("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? AND guessed IS NOT NULL",
                                        (event_id, room_id)):
             # SHOWROOM に残っていなかった: 名前で推測した分 (Internet Archive) を消さずに残す
             self.store.conn.execute("UPDATE room_events SET final=1, ranking_at=?, failures=0 WHERE event_id=? AND room_id=?",
                                     (self._clock(), event_id, room_id))
+            self.store.ranking_tried(event_id, room_id, self._clock(), "200" if shaped else "shape")
             return True
         self._save_ranking(event_id, room_id, rows, final)
+        self.store.ranking_tried(event_id, room_id, self._clock(), "200" if shaped else "shape", ok=shaped)
+        return True
+
+    def _has_ranking(self, event_id: int, room_id: int) -> bool:
+        return self.store.one("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? LIMIT 1", (event_id, room_id)) is not None
+
+    def _ranking_gone(self, event_id: int, room_id: int, final: bool) -> bool:
+        """SHOWROOM にもうランキングが無かった (404)。取り直さないように終わった印を付けるが、前に取れた分は消さない。
+
+        取れていた回は ranking_at・c_* を前のままにする (gone_at で 404 だったと分かる)。何も無かった回は、前と同じく空として入れる。
+        終わっていないイベント (final が False) は、前と同じく終わった印を付けない (あとでもう一度読む)。
+        """
+        now = self._clock()
+        if self._has_ranking(event_id, room_id):
+            self.store.conn.execute("UPDATE room_events SET final=MAX(final, ?), failures=0, ranking_at=COALESCE(ranking_at, ?) "
+                                    "WHERE event_id=? AND room_id=?", (int(final), now, event_id, room_id))
+        else:
+            self._save_ranking(event_id, room_id, [], final)
+        self.store.ranking_tried(event_id, room_id, now, "404", gone=True)
         return True
 
 

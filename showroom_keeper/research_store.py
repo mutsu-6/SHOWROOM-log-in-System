@@ -333,7 +333,9 @@ class Store:
                                    ("user_rooms", "room_key TEXT"), ("event_series", "parents TEXT"),
                                    ("event_series", "route TEXT"), ("event_series", "brand TEXT"),
                                    ("gift_senders", "points INTEGER DEFAULT 0"), ("gift_senders", "free_points INTEGER DEFAULT 0"),
-                                   ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0")):
+                                   ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0"),
+                                   ("room_events", "try_at REAL"), ("room_events", "try_status TEXT"),
+                                   ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -818,6 +820,17 @@ class Store:
         with self.tx() as c:
             c.executemany("INSERT OR REPLACE INTO event_final(event_id, at, room_id, point, rank) VALUES (?, ?, ?, ?, ?)", keep)
         return len(keep)
+
+    def ranking_tried(self, event_id: int, room_id: int, now: float, status: str, ok: bool = False, gone: bool = False) -> None:
+        """貢献ランキングを最後に読んだ時刻と結果 ("200"・"200-empty" (前は人がいたのに空)・"404"・"shape" (思っていた形でない)・"error")。
+
+        ok_at は思っていた形で取れた時刻、gone_at は 404 で取り直すのをやめた時刻。この欄ができる前の行は NULL のまま
+        (前に取れたかは分からないので、取れたことにはしない)。
+        """
+        self.conn.execute("""INSERT INTO room_events(room_id, event_id, try_at, try_status, ok_at, gone_at) VALUES (?, ?, ?, ?, ?, ?)
+                             ON CONFLICT(room_id, event_id) DO UPDATE SET try_at=excluded.try_at, try_status=excluded.try_status,
+                               ok_at=COALESCE(excluded.ok_at, ok_at), gone_at=COALESCE(excluded.gone_at, gone_at)""",
+                          (int(room_id), int(event_id), now, status, now if ok else None, now if gone else None))
 
     def ranking_failed(self, event_id: int, room_id: int) -> None:
         self.conn.execute("""INSERT INTO room_events(room_id, event_id, failures) VALUES (?, ?, 1)

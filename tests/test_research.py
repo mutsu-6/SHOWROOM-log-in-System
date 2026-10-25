@@ -1414,3 +1414,72 @@ def test_throttle_soft_requests_do_not_count_network_errors():
         with pytest.raises(urllib.error.HTTPError):
             th.call(lambda p: (_ for _ in ()).throw(http_error(429)), "/x", soft=True)
     assert th.state()["paused"] > 0  # SHOWROOM が断った (429 など) ものは数える
+
+
+def _ranking_case(tmp_path, answer, rows=(), guessed=False, ended=True):
+    """1 つのイベント・ルーム (event 900, room 9) に前の貢献ランキング rows がある所で、SHOWROOM が answer を返した時。"""
+    def get(path):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    c = research.Collector(tmp_path, get=get, throttle=quiet_throttle(), clock=lambda: NOW)
+    s = c.store
+    s.upsert_events([{"event_id": 900, "name": "イベント", "start": NOW - 9 * 86400, "end": NOW - 7 * 86400, "show_ranking": 1}])
+    s.set_event_rooms(900, [{"room_id": 9, "point": 5000, "rank": 1}], NOW - 7 * 86400)
+    if rows:
+        s.set_contributions(900, 9, [{"user_id": u, "name": f"u{u}", "point": p, "rank": i + 1, "guessed": guessed}
+                                     for i, (u, p) in enumerate(rows)], NOW - 6 * 86400, final=True)
+    ok = c.fetch_ranking(900, 9, final=ended)
+    got = {"ok": ok, "rows": s.all("SELECT user_id, point FROM contributions WHERE event_id=900 AND room_id=9 ORDER BY user_id"),
+           **dict(s.one("SELECT final, ranking_at, failures, c_count, try_status, ok_at, gone_at FROM room_events WHERE event_id=900 AND room_id=9"))}
+    got["rows"] = [tuple(r) for r in got["rows"]]
+    c.close()
+    return got
+
+
+def test_404_keeps_the_ranking_we_already_had(tmp_path):
+    got = _ranking_case(tmp_path, http_error(404), rows=[(1, 300), (2, 100)])
+    assert got["rows"] == [(1, 300), (2, 100)]  # 前に取れた分を消さない
+    assert got["ok"] and got["final"] == 1 and got["try_status"] == "404" and got["gone_at"] == NOW
+    assert got["ranking_at"] == NOW - 6 * 86400 and got["c_count"] == 2 and got["ok_at"] is None  # 前に取れた時刻と数字はそのまま
+
+
+def test_404_with_nothing_before_is_an_empty_finished_ranking(tmp_path):
+    got = _ranking_case(tmp_path, http_error(404))
+    assert got["rows"] == [] and got["final"] == 1 and got["c_count"] == 0 and got["ranking_at"] == NOW  # 前と同じ (取り直さない)
+    assert got["gone_at"] == NOW and got["ok_at"] is None  # 正常な空とは分けられる
+
+
+def test_404_while_running_reads_again_later(tmp_path):
+    got = _ranking_case(tmp_path, http_error(404), ended=False)
+    assert got["final"] == 0 and got["gone_at"] == NOW
+
+
+def test_404_keeps_guessed_rows(tmp_path):
+    got = _ranking_case(tmp_path, http_error(404), rows=[(1, 300)], guessed=True)
+    assert got["rows"] == [(1, 300)] and got["final"] == 1 and got["gone_at"] == NOW
+
+
+def test_unexpected_answer_or_empty_does_not_erase_the_ranking(tmp_path):
+    for i, answer in enumerate(({"error": "something"}, {"ranking": []}, None)):
+        got = _ranking_case(tmp_path / str(i), answer, rows=[(1, 300)])
+        assert not got["ok"] and got["rows"] == [(1, 300)] and got["failures"] == 1  # 一時の失敗と同じ (あとでもう一度読む)
+        assert got["try_status"] == ("200-empty" if answer == {"ranking": []} else "shape") and got["ranking_at"] == NOW - 6 * 86400
+
+
+def test_normal_answers_record_when_they_were_read(tmp_path):
+    got = _ranking_case(tmp_path / "a", {"ranking": [{"user_id": 1, "name": "u1", "point": 500, "rank": 1}]}, rows=[(1, 300)])
+    assert got["ok"] and got["rows"] == [(1, 500)] and got["try_status"] == "200" and got["ok_at"] == NOW and got["gone_at"] is None
+    got = _ranking_case(tmp_path / "b", {"ranking": []})  # 前に何も無く、正常な空
+    assert got["ok"] and got["rows"] == [] and got["ok_at"] == NOW and got["final"] == 1
+    got = _ranking_case(tmp_path / "c", http_error(500), rows=[(1, 300)])
+    assert not got["ok"] and got["rows"] == [(1, 300)] and got["try_status"] == "error" and got["failures"] == 1
+
+
+def test_rows_from_before_the_new_columns_stay_unknown(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 900, "name": "イベント", "start": NOW - 9 * 86400, "end": NOW - 7 * 86400, "show_ranking": 1}])
+        s.set_contributions(900, 9, [{"user_id": 1, "name": "u1", "point": 300, "rank": 1}], NOW, final=True)
+        r = s.one("SELECT try_at, try_status, ok_at, gone_at FROM room_events WHERE event_id=900")
+        assert tuple(r) == (None, None, None, None)  # 前に取れた分は、正常に取れたことにしない
