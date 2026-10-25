@@ -77,6 +77,7 @@ def test_scores_compare_with_what_happened(tmp_path):
     assert p["room_power"]["n"] >= 1  # 同じイベントのルームを 2 つずつくらべた
     assert p["event_strength"]["n"] >= 1
     assert p["event_projected"]["checked"] is False
+    assert p["status_fire"]["naive"]["n"] >= 1 and p["status_order"]["naive"]["n"] >= 1 and p["status_fire"]["naive_label"]
     with Store(tmp_path) as s:
         assert s.scalar("SELECT COUNT(*) FROM gifter_status") == 0 and s.scalar("SELECT COUNT(*) FROM event_rounds") == 0
 

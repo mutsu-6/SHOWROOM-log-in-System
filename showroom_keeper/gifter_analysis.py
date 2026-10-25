@@ -100,6 +100,29 @@ def month_cuts(s: Store, month: str) -> dict[str, Any]:
     return out
 
 
+KNOWN_RATIO = 0.8  # 貢献ランキングをこの割合まで取った月だけ、月の量を数に入れる (それより少ない月は「分からない」。採点で決め直す)
+
+
+def unknown_months(s: Store) -> set[str]:
+    """貢献ランキングを集め終わっていない月 ("2026-03" の形)。月の量がその月だけ少なく見えるので、ステータスと心のカルテは数に入れない。
+
+    収集が数えて残した集まり具合 (meta の coverage_cache。research.coverage) を読むだけ (ここでは数え直さない)。
+    取った割合が KNOWN_RATIO より低い月と、過去のイベントの読み込み (新しい方からさかのぼる) がまだ届いていない月。
+    まだ数えていなければ空 (どの月も分かる扱い。前と同じ)。"""
+    saved = s.meta("coverage_cache") or {}
+    res = saved.get("result") if isinstance(saved, dict) else None
+    if not isinstance(res, dict):
+        return set()
+    out = {m["month"] for m in res.get("months") or [] if m.get("ratio") is not None and m["ratio"] < KNOWN_RATIO}
+    read_from = res.get("read_from")
+    if read_from and not res.get("read_done"):
+        m = _add(read_from, -36)  # ステータス・心のカルテが見る 24 か月より前まで
+        while m < read_from:
+            out.add(m)
+            m = _add(m, 1)
+    return out
+
+
 def tier(points: int, cuts: dict[str, Any]) -> str | None:
     if not points or cuts["top"] is None:
         return None

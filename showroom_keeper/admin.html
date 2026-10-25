@@ -842,7 +842,8 @@ const accRate = (hit, n) => `過去 ${num(n)} 件で <b>${Math.round(hit / n * 1
 function accText(key) {
   const p = accP(key);
   if (!p || !p.checked || !p.n) return `当たり方: <b>未検証</b> (過去に戻った答え合わせをまだしていません)`;
-  return `当たり方: ${accRate(p.hit, p.n)}${ACC.current === false ? " ・ 前の線での採点" : ""} ・ ${esc(p.claim)}`;
+  const nv = p.naive && p.naive.n ? ` ・ 何も考えない予測 (${esc(p.naive_label || "")}) は ${Math.round(p.naive.rate * 100)}%` : "";
+  return `当たり方: ${accRate(p.hit, p.n)}${nv}${ACC.current === false ? " ・ 前の線での採点" : ""} ・ ${esc(p.claim)}`;
 }
 // 種類ごと (「上り調子」と言った人など)。base = 同じ線をだれにでも当てはめた時に当たる割合 (これより高くないと、言う意味が無い)
 function accKind(key, kind, label = kind) {
@@ -1858,10 +1859,10 @@ const TERMS = {
   "総合力": ["次の勝負の見込み量", "見込み量", "本気の 1 回の量と今月の残りの小さい方 × 最近の様子の係数 × 選び方の係数 (pt)"],
   "ランク": ["見込み量の段階", "段階", "見込み量の上から 1% が S・5% が A・20% が B・50% が C、それより下が D"],
   "今撃てる量": ["今出せる量", "今出せる", "本気の 1 回の量と今月の残りの小さい方"],
-  "HP (月の予算)": ["月のふつうの量", "月の量", "直近 12 か月の、送った月の量の中ほど"],
-  "残弾": ["今月の残り", "今月の残り", "月のふつうの量 − 今月に終わる (予定の) イベントで今までに見えた量。0 より下は 0"],
+  "HP (月の予算)": ["月のふつうの量", "月の量", "直近 12 か月の、送った月の量の中ほど (見えた貢献 pt からの推定。持っているお金ではない)"],
+  "残弾": ["今月の残り (推定)", "今月の残り", "月のふつうの量 − 今月に終わる (予定の) イベントで今までに見えた量。0 より下は 0。推定で、使えるお金の残高ではない"],
   "火力": ["本気の 1 回の量", "本気の量", "終わった回の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く)"],
-  "最大出力": ["いちばん多かった 1 回", "最多の回", "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)"],
+  "最大出力": ["いちばん多かった 1 回", "最多の回", "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (確認できた貢献 pt。上位 100 人に入った回だけ)"],
   "持久力": ["月に本気で出る回数", "本気の回数", "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
   "回復力": ["使い切ったあと戻るまで", "戻るまで", "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
   "知性": ["届いた勝負に出した量の割合", "届いた量", "勝負になった回に出した量のうち、ルームが目標 (特典の順位) に届いた回の分の割合"],
@@ -1900,15 +1901,17 @@ const termShort = (old) => (TERMS[old] || [old, old])[1];
 const termNote = (old, note) => { const t = TERMS[old]; const n = note ?? (t ? t[2] : ""); return t && t[0] !== old ? `${n}${n ? "。" : ""}前の名前: ${old}` : n; };
 const markName = (m) => term(m === "疲労" ? "疲労 (印)" : m);
 const ptYen = (v) => v ? `${shortNum(v)} <small>pt</small>` : "—";
-const yenOf = (v) => v ? `およそ ${shortNum(Math.round(v / 3))} 円` : "";
+// 円は 3 pt = 1 円で割った参考の目安 (gifter_analysis.PT_PER_YEN)。無料の星や倍率の違いがあるので、使ったお金そのものではない
+const yenOf = (v) => v ? `参考 約 ${shortNum(Math.round(v / 3))} 円` : "";
 // [キー, 前の名前 (TERMS のキー), 値の出し方, 説明]
 const STATUS_FORMULA = 2;  // gifter_status.FORMULA と同じ (式を変えた版)
 const STATUS_GROUPS = [
   ["財布", [
-    ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど"],
+    ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど (見えた貢献 pt からの推定。持っているお金ではない)"],
     ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月のふつうの量 − 今月の分 (${shortNum(st.spent)} pt。終わる予定の月が今月のイベントの、今までに見えた貢献。開催中のイベントの途中の値も入る)。0 より下は 0`],
     ["fire", "火力", (st) => st.fire_rounds === 0 ? '<span class="uid">比べるデータなし</span>' : `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}${st.fire_rounds === 1 ? " ・ 1 件だけの参考値" : ""}</span>`, (st) => `終わった回 (終わって 2 日たち、終わったあとの貢献ランキングを取り終えた回) のうち、${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く。1 回だけならその値)${st.fire_rounds != null ? ` ・ くらべた回 ${num(st.fire_rounds)}` : ""}`],
-    ["max_out", "最大出力", (st) => ptYen(st.max_out), "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。開催中の途中の値は入れない"],
+    ["max_out", "最大出力", (st) => `${ptYen(st.max_out)}${st.max_out_rounds != null ? ` <span class="uid">${num(st.max_out_rounds)} 回のうち</span>` : ""}`, "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。確認できた貢献 pt で、上位 100 人に入った回だけ。開催中の途中の値は入れない"],
+    ["recent90", "最近 90 日", (st) => st.recent90 == null ? '<span class="uid">次の作り直しから</span>' : `${ptYen(st.recent90)} <span class="uid">${st.recent90_rounds != null ? `${num(st.recent90_rounds)} 回 ・ ` : ""}その前の 90 日 ${shortNum(st.prev90)} pt${st.prev90_rounds != null ? ` (${num(st.prev90_rounds)} 回)` : ""}</span>`, "直近 90 日に終わったイベントの、保存してある貢献 pt の合計 (名前で推測した行は入れない。取り直さない印が付いた回だけだが、最終の結果を取れたとは限らない: 終わって 1 時間後の値や、途中で取れなくなった回の途中の値のこともある) (SHOWROOM のイベント pt の取得値。倍率はイベントの決まりのとおりで、ここでは掛けない)。上位 100 人に入らなかった回は入らない (0 ではなく分からない)"],
     ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
     ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
   ]],
@@ -2193,7 +2196,7 @@ function gifterStates(st) {
         ${tile(`${ym(pw.month)} ここまで`, `${shortNum(pw.spent)} <small>pt</small>`, `${pw.now_tier ? `今月のクラス <b>${esc(pw.now_tier)}</b> ・ ` : ""}残り (予算から) ${shortNum(pw.left)} pt`)}
         ${tile("今月の予想", `${shortNum(pw.forecast)} <small>pt</small>`, `${pw.forecast_tier ? `<b>${esc(pw.forecast_tier)}</b> の見込み ・ ` : ""}先月 ${pw.last_tier ? esc(pw.last_tier) : "—"} ・ 大きな勝負なら ${shortNum(pw.upper)} pt まで`)}
       </div>
-      <div class="hint">円は、大きな有料ギフトの 1 SG = 3 pt (2.5 倍 × 1.2 倍) で割ったおよその額 (無料の星が多い人は少なく出ます)。今月の分は終わったイベントだけで、開催中のイベントは入っていません。
+      <div class="hint">pt はどれも貢献ランキングの pt (SHOWROOM のイベント pt の取得値。倍率はイベントの決まりのとおりで、ここでもう一度掛けることはしない)。円は、大きな有料ギフトの 1 SG = 3 pt (2.5 倍 × 1.2 倍) で割った参考の目安で、使ったお金そのものではありません (無料の星が多い人・倍率の付かないイベントでは合いません)。今月の分は終わったイベントだけで、開催中のイベントは入っていません。
         アプリの累計のクラスとちがい、直近の量だけを見ます。線はどれも仮の値です</div>${accTag("power_forecast", "power_upper")}`;
   }
   const en = st.engage;
@@ -4062,11 +4065,13 @@ function renderAcc() {
     + dataTable("acc", [
       { label: "予測", value: (r) => r.label, html: (r) => `<b>${esc(r.label)}</b>`, cls: "name" },
       { label: "当たり", num: true, value: (r) => r.checked && r.n ? r.rate : -1, html: (r) => r.checked && r.n ? accRate(r.hit, r.n) : '<span class="tag warn">未検証</span>' },
+      { label: "何も考えない予測", num: true, value: (r) => r.naive && r.naive.n ? r.naive.rate : -1, html: (r) => r.naive && r.naive.n
+        ? `${Math.round(r.naive.rate * 100)}%${r.checked && r.n ? (r.rate > r.naive.rate ? ' <span class="tag live">式が上</span>' : r.rate === r.naive.rate ? ' <span class="tag">同じ</span>' : ' <span class="tag warn">式が下</span>') : ""}<br><span class="uid">${esc(r.naive_label || "")}</span>` : "-" },
       { label: "種類ごと", sort: false, value: (r) => "", html: (r) => r.by ? Object.entries(r.by).map(([kind, b]) => `${esc(r.k === "status_state" ? markName(kind) : kind)} ${b.n ? Math.round(b.rate * 100) : "—"}%${b.base != null ? ` <span class="uid">(だれにでも ${Math.round(b.base * 100)}%)</span>` : ""} <span class="uid">${num(b.n)} 件</span>`).join("<br>") : "" },
       { label: "実際 ÷ 予測", num: true, value: (r) => r.ratio_median, html: (r) => r.ratio_median != null ? `${r.ratio_median.toFixed(2)} <small>倍</small>` : "-" },
       { label: "何を確かめたか", sort: false, value: (r) => r.claim, html: (r) => `<span class="uid">${esc(r.claim)}</span>` },
     ], rows, { sort: null, phone: [0, 1], limit: 30, csvName: "予測の当たり方",
-      note: "実際 ÷ 予測 は真ん中の値 (1 より大きければ、予測は少なめに出ている)。「だれにでも」は、同じ線を全員に当てはめた時に当たる割合で、これより高くなければ、その判定には意味がありません" });
+      note: "何も考えない予測 = 直前の 1 回と同じ・先月と同じ など。式がこれより当たらなければ、式を使う意味がありません。実際 ÷ 予測 は真ん中の値 (1 より大きければ、予測は少なめに出ている)。「だれにでも」は、同じ線を全員に当てはめた時に当たる割合で、これより高くなければ、その判定には意味がありません" });
 }
 function renderCollect(d) {
   const j = d.job, last = j.last;
@@ -4239,14 +4244,17 @@ if (!$("#f-hours").value) $("#f-hours").value = feed.hours = "24";
 if (!$("#f-min").value) $("#f-min").value = feed.min = "10000";
 const feedKey = (x) => `${x.kind}:${x.at}:${x.user_id || ""}:${x.room_key || ""}:${x.event_id || ""}`;
 const rankText = (r) => r ? `${num(r)} 位` : "順位不明";
+// 記録したギフトの pt (カタログの単価 × 個数) は、イベントの 2.5 倍・まとめ投げの 1.2 倍が入っていない元の pt。
+// 貢献ランキング・ルームのイベントの pt (倍率反映済み) とは、そのままくらべられない
+const RAW_PT = '<span class="tag" title="ギフトの元 pt (保存してある今のカタログの単価 × 個数)。イベントの 2.5 倍やまとめ投げの 1.2 倍は入っていません。貢献ランキングの pt とはそのままくらべられません">倍率未反映</span>';
 function feedItem(x) {
   const g = x.user_id ? gifterLink(x.user_id, x.name || `ID ${x.user_id}`) : "";
   const room = roomLink(x.room_key, x.room_name), ev = x.event_id ? eventLink(x.event_id, x.event_name) : "";
   const memo = x.memo ? `<div class="sm">メモ: ${esc(x.memo)}</div>` : "";
   switch (x.kind) {
-    case "big_gift": return [`${g} が ${room} に <b>${num(x.point)} pt</b> のギフト`,
+    case "big_gift": return [`${g} が ${room} に <b>${num(x.point)} pt</b> ${RAW_PT} のギフト`,
       `${x.gifts.map((y) => `${esc(y.name)} ×${num(y.num)}`).join("、")}${x.times > 1 ? ` ・ ${num(x.times)} 回 (${tm(x.first_at)} から)` : ""}`];
-    case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b>`,
+    case "watch_gift": return [`<span class="tag warn">気になる</span> ${g} が ${room} にギフト <b>${num(x.points)} pt</b> ${RAW_PT}`,
       `${num(x.times)} 回 ・ うち有料 ${num(x.paid_points)} pt${x.times > 1 ? ` ・ ${tm(x.first_at)} から` : ""}`, memo];
     case "watch_visit": return [`<span class="tag warn">気になる</span> ${g} が ${room} に来場`, `${x.n === 1 ? "初めての訪問" : `${num(x.n)} 回目の訪問`}`, memo];
     case "event_daily": return [`<span class="tag">注目度 ${num(x.place)} 位</span> ${ev} の ${x.ended ? `終わった時点 (${tm(x.end, true).slice(0, 11)})` : `${tm(x.at, true).slice(0, 11)} 時点`}の上位 3 ルーム`,
@@ -4342,8 +4350,8 @@ $("#f-read").addEventListener("click", () => { markSeen(); feed.mark = feed.seen
 const pct = (v) => v == null ? "—" : `${Math.round(v * 100)}%`;
 const leftSec = (s) => s < 60 ? `${Math.round(s)} 秒前` : `${Math.round(s / 60)} 分前`;
 const NEWS = {
-  big_gifts: ["💎", "記録しているルームで、1 回 1 万 pt 以上のギフト (10 分以内の続きはまとめる)",
-    (x) => [`${gifterLink(x.user_id, x.name || `ID ${x.user_id}`)} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt`,
+  big_gifts: ["💎", "記録しているルームで、1 回 1 万 pt 以上のギフト (10 分以内の続きはまとめる)。pt はギフトの元 pt で、イベントの倍率は入っていません",
+    (x) => [`${gifterLink(x.user_id, x.name || `ID ${x.user_id}`)} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt ${RAW_PT}`,
       `${x.gifts.map((y) => `${esc(y.name)} ×${num(y.num)}`).join("、")} ・ ${tm(x.at, true).slice(0, 11)}`]],
   top_fans: ["👑", "終わったイベントの貢献ランキングの 1 位の人のポイント (ルームごと)",
     (x) => [`${x.user_id ? gifterLink(x.user_id, x.name || `ID ${x.user_id}`) : "1 位の人"} が ${roomLink(x.room_key, x.room_name)} に`, `${num(x.point)} pt`,
@@ -4385,9 +4393,10 @@ async function showNews() {
   try { d = await loadNews(days); } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "news" || days !== newsDays) return;
   $("#n-made").textContent = `直近 ${d.days} 日 ・ ${tm(d.made_at, true).slice(0, 11)} に選びました (30 分ごとに選び直します)`;
-  const shown = d.topics.filter((t) => t.items.length && NEWS[t.key]);
+  const shown = d.topics.filter((t) => (t.items.length || t.skipped) && NEWS[t.key]);  // 全部を載せなかった時も、載せなかった数は見せる
   box.innerHTML = shown.length ? `<div class="news">${shown.map((t) => `<div class="card"><h3><span aria-hidden="true">${NEWS[t.key][0]}</span>${esc(t.title)}</h3>
-      <div class="why">${esc(NEWS[t.key][1])}</div><ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol></div>`).join("")}</div>`
+      <div class="why">${esc(NEWS[t.key][1])}</div>${t.items.length ? `<ol>${t.items.map((x) => newsLine(t, x)).join("")}</ol>` : ""}${t.skipped
+        ? `<div class="hint">順位と pt が合わない ${num(t.skipped)} 件のイベントは載せていません (1 位と 2 位がちょうど 1 つずつでない・2 位の pt が無い・1 位の pt が 2 位より少ない。参加ルームの一覧から消えたルームの行が、前に読んだ順位と pt のまま残っている可能性があります。まだ確かめていません)</div>` : ""}</div>`).join("")}</div>`
       + `<div class="hint">まだ話題の無いもの: ${d.topics.filter((t) => !t.items.length).map((t) => esc(t.title)).join("、") || "なし"}</div>`
     : `<div class="empty">直近 ${d.days} 日の話題はまだありません。全ルームの収集が進み、イベントが終わると出てきます。</div>`;
 }

@@ -489,3 +489,16 @@ def test_next_ranking_reads_newest_events_first_whatever_the_statistics(tmp_path
         plan = " ".join(r[3] for r in s.conn.execute("EXPLAIN QUERY PLAN " + sweep.NEXT_RANKING_SQL + " LIMIT 100", args))
         assert "USING INDEX events_end" in plan and "INDEX room_events_todo" in plan and "TEMP B-TREE" not in plan, plan
         assert [(r["room_id"], r["event_id"]) for r in s.all(sweep.NEXT_RANKING_SQL, args)][:3] == [(1, 1), (2, 1), (3, 1)]
+
+
+def test_event_backtest_reads_rooms_by_event_and_by_room(traced):
+    from datetime import datetime
+
+    from showroom_keeper import backtest_event
+    from showroom_keeper.status import JST
+    month = datetime.fromtimestamp(NOW - 17 * DAY, JST).strftime("%Y-%m")  # イベント 1 の始まった月
+    state_dir, seen = traced
+    seen.clear()
+    out = backtest_event.run(state_dir, [month], [])
+    assert out["periods"]["dev"]["all"]["label_candidates"] and any("room_events r" in q for q, _ in seen)  # 本当に読んでいる
+    assert full_scans(state_dir, seen) == []

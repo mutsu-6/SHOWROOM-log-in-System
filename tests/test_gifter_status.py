@@ -1,5 +1,6 @@
 import json
 import time
+import urllib.error
 
 from showroom_keeper import gifter_analysis, gifter_status as gs, research
 from showroom_keeper.research_store import Store
@@ -117,6 +118,48 @@ def test_running_event_counts_toward_spent_but_not_firepower(tmp_path):
         gs.build_rounds(s, NOW)
         st = gs.compute(s, 7, NOW)
     assert st["fire"] == 60_000 and st["max_out"] == 60_000 and st["fire_rounds"] == 5  # 5,000 は火力の回に入らない
+    # 最近 90 日は 40・70 日前に終わった回、その前の 90 日は 100・130・160 日前の回。終わっていない回は入らない
+    assert st["recent90"] == 120_000 and st["prev90"] == 180_000 and st["max_out_rounds"] == 5
+    assert st["recent90_rounds"] == 2 and st["prev90_rounds"] == 3
+
+
+def test_recent_90_days_leave_out_guessed_and_unfinished_rows(tmp_path):
+    """最近 90 日は、取り終えた回 (final) の、名前で推測していない行だけ。その前の 90 日も同じ条件。"""
+    d = _db(tmp_path)
+    with Store(d) as s:
+        s.upsert_events([{"event_id": 91, "name": "推測", "start": NOW - 27 * DAY, "end": NOW - 20 * DAY},
+                         {"event_id": 92, "name": "取り終えていない", "start": NOW - 37 * DAY, "end": NOW - 30 * DAY},
+                         {"event_id": 93, "name": "前の推測", "start": NOW - 127 * DAY, "end": NOW - 120 * DAY}])
+        for eid in (91, 92, 93):
+            s.set_event_rooms(eid, [{"room_id": 4, "point": 10_000, "rank": 1}], NOW)
+        s.set_contributions(91, 4, [{"user_id": 7, "name": "u7", "point": 7_000, "rank": 1, "guessed": True}], NOW, final=True)
+        s.set_contributions(92, 4, [{"user_id": 7, "name": "u7", "point": 8_000, "rank": 1}], NOW, final=False)
+        s.set_contributions(93, 4, [{"user_id": 7, "name": "u7", "point": 9_000, "rank": 1, "guessed": True}], NOW, final=True)
+        gs.build_rounds(s, NOW)
+        st = gs.compute(s, 7, NOW)
+    assert st["recent90"] == 120_000 and st["recent90_rounds"] == 2
+    assert st["prev90"] == 180_000 and st["prev90_rounds"] == 3
+
+
+def test_recent_90_days_keep_a_partial_value_left_by_a_404(tmp_path):
+    """開催中に 300 pt を取り、終わったあと 404 で final が付いた回: 途中の値のまま残り、最近 90 日に入る。
+    だから最近 90 日は「保存済みの貢献 pt」で、最終の確定値とは呼ばない (Codex の受入例)。"""
+    d = _db(tmp_path)
+    with Store(d) as s:
+        s.upsert_events([{"event_id": 94, "name": "途中で 404", "start": NOW - 12 * DAY, "end": NOW - 10 * DAY, "show_ranking": 1}])
+        s.set_event_rooms(94, [{"room_id": 4, "point": 10_000, "rank": 1}], NOW - 11 * DAY)
+        s.set_contributions(94, 4, [{"user_id": 7, "name": "u7", "point": 300, "rank": 1}], NOW - 11 * DAY, final=False)
+    def gone(path):
+        raise urllib.error.HTTPError("https://www.showroom-live.com/api", 404, "error", {}, None)
+
+    c = research.Collector(d, get=gone, throttle=research.Throttle(0, sleep=lambda s: None), clock=lambda: NOW)
+    assert c.fetch_ranking(94, 4, final=True)
+    c.close()
+    with Store(d) as s:
+        assert s.one("SELECT final, try_status FROM room_events WHERE event_id=94 AND room_id=4")["try_status"] == "404"
+        gs.build_rounds(s, NOW)
+        st = gs.compute(s, 7, NOW)
+    assert st["recent90"] == 120_300 and st["recent90_rounds"] == 3
     assert st["formula"] == gs.FORMULA
     assert st["rooms"][0]["cap"] == 60_000
 
@@ -205,3 +248,36 @@ def test_reads_stay_on_one_round_while_another_connection_switches(tmp_path):
             assert gs.ranking(a)["rows"] == before and gs._cuts(a) == cuts  # 前の回のまま
         after = gs.ranking(a)["rows"]
     assert [r["overall"] for r in after] == [r["overall"] * 10 for r in before]
+
+
+def _coverage(s, months, low):
+    """集まり具合 (research.coverage の結果) を、months のうち low の月だけ取った割合が低いとして残す。"""
+    s.set_meta("coverage_cache", {"at": NOW, "result": {"months": [{"month": m, "ratio": 0.3 if m in low else 1.0} for m in months],
+                                                         "read_from": None, "read_done": True}})
+
+
+def test_months_still_being_collected_do_not_count(tmp_path):
+    """集め終わっていない古い月が少なく見えても、それで「上り調子」にしない (直し A)。"""
+    gifter_analysis._cuts.clear()
+    with Store(tmp_path) as s:
+        s.set_meta("user_month_upto", True)
+        s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2)], "live", NOW)
+        last = gifter_analysis.last_month(NOW)
+        months = [gifter_analysis._add(last, -k) for k in range(11, -1, -1)]
+        for i, m in enumerate(months):  # 毎月 1 回。4〜6 か月前だけ、集め終わっていないので少なく見える
+            end = gs._month_start(m) + 15 * DAY
+            pt = 5_000 if i in (6, 7, 8) else 50_000
+            _event(s, 500 + i, (NOW - end) / DAY, [(1, 100_000, [(7, pt)] + [(1000 + k, 10) for k in range(30)]), (2, 1_000, [(9, 10)])])
+        plain = gs.compute(s, 7, NOW)
+        _coverage(s, months, set(months[6:9]))
+        fixed = gs.compute(s, 7, NOW, cache={})
+    gifter_analysis._cuts.clear()
+    assert plain["state"] == "上り調子" and plain["momentum"] > 5
+    assert fixed["state"] != "上り調子" and fixed["momentum"] is None and fixed["gaps"] == 3
+    assert fixed["hp"] == 50_000  # 予算も、少なく見える月を入れない
+
+
+def test_part_averages_known_months():
+    assert gs._part([None, 2.0, 4.0]) == 9.0 and gs._part([None, None]) is None
+
+

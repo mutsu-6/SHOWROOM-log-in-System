@@ -154,3 +154,15 @@ def test_unknown_fans_do_not_make_someone_gone():
     out = _quiet_last3([None, None, None])
     assert out["phase"] == "分からない" and out["outlook"]["appear"] == "分からない" and out["outlook"]["low"] == 0
     assert _quiet_last3([5, 5, 5])["phase"] == "休止 (お金の事情か潜伏)"
+
+
+def test_months_still_being_collected_are_not_a_change():
+    """集め終わっていない古い月が少なく見えても、急にハマった・やめて戻るにしない (gather が 0 にして unknown を付ける)。"""
+    money = [0] * 6 + [10_000] * 18  # 前の 6 か月は集めていない (0 に見える)
+    lines = _lines({1: money}, fans={1: [5] * N})
+    plain = psyche.judge(lines)
+    lines["unknown"] = [True] * 6 + [False] * 18
+    fixed = psyche.judge(lines)
+    assert _types(plain) == ["急にハマった"]  # 前は、集めていない月から急に増えたように見えていた
+    assert _types(fixed) == [] and fixed["phase"] == "安定"
+    assert any("集めている途中" in w for w in fixed["warnings"])

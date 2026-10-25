@@ -13,6 +13,7 @@
 - ルームがイベントに出ていない月は、ギフターの変化と数えない
 - 貢献ランキングは上位 100 人まで。壁ぎわの人は「減った」が見えなくなっただけかもしれないので、確からしさを下げる
 - SHOWROOM 全体の波 (月ごとの中堅の下限の動き) で割ってから見る
+- 貢献ランキングを集め終わっていない月 (集まり具合。gifter_analysis.unknown_months) は、0 や少ない月と数えない (2026-10-25)
 - 根拠の線が 2 本そろった時だけ「高」。型はどれも仮説で、本当の理由 (喧嘩・病気・転職) はデータからは分からない
 
 judge() は数字の列だけで決める (表は読まない)。表から列を作るのは gifter_status.compute() の中で、その人の行をもう読んでいる時。
@@ -26,7 +27,7 @@ from datetime import datetime
 from statistics import median
 from typing import Any
 
-from .gifter_analysis import _add, month_cuts
+from .gifter_analysis import _add, month_cuts, unknown_months
 from .status import JST
 
 MONTHS = 24  # 並べる月数
@@ -171,6 +172,14 @@ def gather(s: Any, month: str, rows: list[Any], totals: dict[str, int], fan_rows
                 "SELECT e.end FROM room_events re JOIN events e USING(event_id) WHERE re.room_id=? AND e.end >= ?", (rid, since))
                 if r[0]}
         active[rid] = [m in cache[key] for m in months]
+    if ("unknown",) not in cache:
+        cache[("unknown",)] = unknown_months(s)
+    unknown = [m in cache[("unknown",)] for m in months]
+    for i, u in enumerate(unknown):  # 集め終わっていない月は、量を数に入れない (その月だけ少なく見えるため)
+        if u:
+            total[i] = 0
+            for line in rooms.values():
+                line[i] = 0
     mids = []
     for m in months:
         key = ("mid", m)
@@ -180,7 +189,7 @@ def gather(s: Any, month: str, rows: list[Any], totals: dict[str, int], fan_rows
     base = median([x for x in mids if x]) if any(mids) else None
     season = [min(2.0, max(0.5, x / base)) if x and base else 1.0 for x in mids]
     return {"months": months, "total": total, "rooms": rooms, "fans": fans, "active": active, "season": season,
-            "events": events, "fire": fire, "career": career}
+            "events": events, "fire": fire, "career": career, "unknown": unknown}
 
 
 # ------------------------------------------------------------------ 決める
@@ -201,10 +210,11 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     mains = [r for r in sorted(room_sum, key=lambda r: -room_sum[r]) if room_sum[r] >= 0.2 * sum(room_sum.values())][:4]
 
     # SHOWROOM 全体の波で割り、ふだんの量でそろえる。推しのルームがどれもイベントに出ていない月は分からない (None)
+    unk = lines.get("unknown") or [False] * n  # 集め終わっていない月 (分からない)
     norm: list[float | None] = []
     for i in range(n):
         off = mains and not total[i] and not any(act.get(r, [True] * n)[i] for r in mains)
-        norm.append(None if off else total[i] / (season[i] or 1) / usual)
+        norm.append(None if off or unk[i] else total[i] / (season[i] or 1) / usual)
     # 関心の線: どのルームのでも、いちばん高いファンレベル (見えず、分からないルームがある月は None)
     fan_line: list[float | None] = list(fan_line_of(fans, n))
     fan_base = median([v for v in fan_line if v]) if any(fan_line) else 0
@@ -322,6 +332,8 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
             if st["ratio"] > 1 / STEP or st["final"] or st["after"] > GONE * st["before"]:
                 continue
             ra = act.get(rid, [True] * n)
+            if any(unk[max(0, k - 6):k + 3]):
+                continue  # 集め終わっていない月をまたぐ (減ったように見えるだけかもしれない)
             if not any(ra[k:min(n, k + 3)]):
                 continue  # ルームがイベントに出ていない (ルームの側の事情)
             if len(line[k:k + 3]) < 2 or max(line[k:k + 3]) > GONE * st["before"]:
@@ -346,7 +358,7 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     for a, b in ((n - 12, n - 6), (n - 6, n)):
         tot = sum(sum(v[a:b]) for v in rooms.values())
         share[a] = {r: sum(v[a:b]) / tot for r, v in rooms.items()} if tot else {}
-    moved = (old_main is not None and new_main is not None and old_main != new_main
+    moved = (old_main is not None and new_main is not None and old_main != new_main and not any(unk[n - 12:])
              and share[n - 12].get(old_main, 0) - share[n - 6].get(old_main, 0) >= SHIFT)
     if moved and not any(t["type"] in ("推しが移った", "喧嘩して離れた") for t in timeline):
         a, b = share[n - 12].get(old_main, 0), share[n - 6].get(old_main, 0)
@@ -377,7 +389,7 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
         others = [total[i] - line[i] for i in range(n)]
         o_before, o_now = _mean(others[n - 9:n - 3]), _mean(others[n - 3:])
         fl = fans.get(old_main, [None] * n)
-        if (before and now3 <= 0.5 * before and sum(1 for v in line[n - 3:] if v) >= 2 and any(fl[n - 3:]) and all(act.get(old_main, [True] * n)[n - 3:])
+        if (not any(unk[n - 9:]) and before and now3 <= 0.5 * before and sum(1 for v in line[n - 3:] if v) >= 2 and any(fl[n - 3:]) and all(act.get(old_main, [True] * n)[n - 3:])
                 and o_before and o_now >= 0.8 * o_before):  # ほかのルームには前と同じくらい出している (財布の事情ではない)
             add(n - 3, "冷めかけ", ["このルームに来ている (ファンレベルが残る)", f"このルームのお金だけ、前の {pct(now3 / before)} に"], 2,
                 old_main)
@@ -407,7 +419,7 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     records = sum(1 for k in range(3, len(pts)) if pts[k] > max(pts[:k]))
     old_max = max((e["point"] for e in events if e["i"] < n - 12), default=0)
     new_max = max((e["point"] for e in events if e["i"] >= n - 12), default=0)
-    if records >= 3 and old_max and new_max >= 1.3 * old_max:
+    if records >= 3 and old_max and new_max >= 1.3 * old_max and not any(unk[:n - 12]):  # 前の 12 か月に抜けがあると、前の上限が小さく見える
         signs.append({"sign": "だんだん増える", "value": records,
                       "note": f"1 イベントの上限を {records} 回更新し、直近 12 か月の上限はその前の {new_max / old_max:.1f} 倍", "score": 20})
     # やめて戻る: 2 か月以上どこにも出さない → 戻る
@@ -435,9 +447,11 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     # ---- 今の時期
     last3 = total[-3:]
     gap_then_back = (total[-1] or (n >= 2 and total[-2])) and n >= 5 and any(
-        all(v == 0 for v in total[k:k + 2]) for k in range(n - 5, n - 2))
+        all(v == 0 for v in total[k:k + 2]) and not any(unk[k:k + 2]) for k in range(n - 5, n - 2))
     fan_now = any(_known(fan_line[-3:]))
-    if not any(last3) and not fan_now and fan_gone(fans, n):
+    if any(unk[-3:]) and not any(last3):
+        phase, why = "分からない", "直近の月の貢献ランキングを、まだ集めている途中"
+    elif not any(last3) and not fan_now and fan_gone(fans, n):
         phase, why = "離脱", "3 か月、どこにも出さず、ファンレベルも無い"
     elif not any(last3) and not fan_now:
         phase, why = "分からない", "3 か月、どこにも出していない。ファンの名簿が全員分でない (または読んでいない) 月があり、離れたかは分からない"
@@ -504,6 +518,9 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
         warnings.append("貢献ランキングの順位が上位 100 人の壁ぎわ。「減った」は、100 位より下に下がって見えなくなっただけかもしれない")
     if history < 6:
         warnings.append(f"出した月が {history} か月しかない。型の確からしさは低い")
+    if any(unk):
+        gap = [months[i] for i in range(n) if unk[i]]
+        warnings.append(f"{gap[0]}〜{gap[-1]} のうち {len(gap)} か月は貢献ランキングを集めている途中なので、数に入れていない")
     if fan_base == 0:
         warnings.append("ファンレベルの記録が無いので、関心の線と重ねられない (お金の事情か、熱が冷めたかを見分けにくい)")
 
