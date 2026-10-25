@@ -1,5 +1,6 @@
 import json
 import time
+import urllib.error
 
 from showroom_keeper import gifter_analysis, gifter_status as gs, research
 from showroom_keeper.research_store import Store
@@ -138,6 +139,27 @@ def test_recent_90_days_leave_out_guessed_and_unfinished_rows(tmp_path):
         st = gs.compute(s, 7, NOW)
     assert st["recent90"] == 120_000 and st["recent90_rounds"] == 2
     assert st["prev90"] == 180_000 and st["prev90_rounds"] == 3
+
+
+def test_recent_90_days_keep_a_partial_value_left_by_a_404(tmp_path):
+    """開催中に 300 pt を取り、終わったあと 404 で final が付いた回: 途中の値のまま残り、最近 90 日に入る。
+    だから最近 90 日は「保存済みの貢献 pt」で、最終の確定値とは呼ばない (Codex の受入例)。"""
+    d = _db(tmp_path)
+    with Store(d) as s:
+        s.upsert_events([{"event_id": 94, "name": "途中で 404", "start": NOW - 12 * DAY, "end": NOW - 10 * DAY, "show_ranking": 1}])
+        s.set_event_rooms(94, [{"room_id": 4, "point": 10_000, "rank": 1}], NOW - 11 * DAY)
+        s.set_contributions(94, 4, [{"user_id": 7, "name": "u7", "point": 300, "rank": 1}], NOW - 11 * DAY, final=False)
+    def gone(path):
+        raise urllib.error.HTTPError("https://www.showroom-live.com/api", 404, "error", {}, None)
+
+    c = research.Collector(d, get=gone, throttle=research.Throttle(0, sleep=lambda s: None), clock=lambda: NOW)
+    assert c.fetch_ranking(94, 4, final=True)
+    c.close()
+    with Store(d) as s:
+        assert s.one("SELECT final, try_status FROM room_events WHERE event_id=94 AND room_id=4")["try_status"] == "404"
+        gs.build_rounds(s, NOW)
+        st = gs.compute(s, 7, NOW)
+    assert st["recent90"] == 120_300 and st["recent90_rounds"] == 3
     assert st["formula"] == gs.FORMULA
     assert st["rooms"][0]["cap"] == 60_000
 

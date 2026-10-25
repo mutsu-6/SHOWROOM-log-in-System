@@ -178,8 +178,9 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
     fire_pool = battle12 if fire_basis == "battle" else d12
     fire = _second([r["point"] for r in fire_pool])
     max_out = max((r["point"] for r in d12), default=0)
-    # 最近 90 日と、その前の 90 日に確認できた貢献 pt (イベントの終わりの日で切る。SHOWROOM の取得値で、倍率は掛けない)。
-    # 両方の期間で同じ条件: 終わったあとのランキングを取り終えた回 (final) で、名前で推測した行 (guessed) は入れない。
+    # 最近 90 日と、その前の 90 日の保存済みの貢献 pt (イベントの終わりの日で切る。SHOWROOM の取得値で、倍率は掛けない)。
+    # 両方の期間で同じ条件: final の印がある回で、名前で推測した行 (guessed) は入れない。final は「もう取り直さない」印で、
+    # 最終の結果を取れた証拠ではない (終わって 1 時間後の取得や、404 で途中の値が残った回にも付く)。なので最終の確定値とは呼ばない。
     # 上位 100 人に入らなかった回は入らない (0 ではなく分からない)。回数も出す
     seen = [r for r in rows if r["final"] and not r["guessed"]]
     p90 = [r for r in seen if now - 90 * 86400 <= (r["end"] or 0) <= now]
