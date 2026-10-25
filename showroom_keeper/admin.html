@@ -238,6 +238,8 @@ details.more > summary { cursor: pointer; color: var(--muted); font-size: 13px; 
 .heat-scale span { margin-left: auto; }
 #chart-tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre-line; max-width: 280px; padding: 7px 10px; border-radius: 8px;
   background: var(--text); color: var(--panel); font-size: 12px; line-height: 1.5; box-shadow: 0 4px 14px rgba(0,0,0,.18); font-variant-numeric: tabular-nums; }
+/* スマホ (マウスの無い端末) では、説明の付いた印・言葉に点線を付ける (押すと説明が出る) */
+@media (hover: none) { .tag[title]:not([title=""]), b[title]:not([title=""]) { text-decoration: underline dotted; text-underline-offset: 3px; } }
 /* 入力欄の下に出る候補 */
 .suggest { position: fixed; z-index: 15; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18);
   max-height: min(460px, 60vh); display: flex; flex-direction: column; overflow: hidden; }
@@ -439,7 +441,7 @@ td a.name-link, td a { word-break: break-word; }
   <div class="bar">
     <div class="brand"><span class="dot"></span>SHOWROOM Analytics</div>
     <div class="gsearch" id="gsearch">
-      <input type="search" id="q" placeholder="ルーム・ギフター・イベントを探す (名前・URL・ID)" autocomplete="off" aria-label="探す">
+      <input type="search" id="q" placeholder="ルーム・ギフター・イベント・言葉を探す (名前・URL・ID)" autocomplete="off" aria-label="探す">
       <div class="gresults" id="q-results" hidden></div>
     </div>
     <div class="badges" id="badges"><span class="pill">読み込み中…</span></div>
@@ -523,7 +525,8 @@ td a.name-link, td a { word-break: break-word; }
       <a href="#gifters" data-sub="list">一覧</a>
       <a href="#gifters/trend" data-sub="trend">離れつつある・伸びている</a>
       <a href="#gifters/watch" data-sub="watch">気になる</a>
-      <a href="#gifters/power" data-sub="power">戦力ランキング</a>
+      <a href="#gifters/power" data-sub="power">見込み量の順位</a>
+      <a href="#gifters/words" data-sub="words">言葉</a>
       <a href="#gifters/heat" data-sub="heat">ヒートマップ</a>
     </nav>
     <div class="hint" id="r-analyzed" style="margin:-6px 0 10px"></div>
@@ -822,7 +825,19 @@ const tile = (label, value, sub = "", cls = "", href = "") => `<${href ? `a href
 /* 予測の当たり方 (サーバーの外で過去に戻って採点した backtest.json。置いていなければ、どれも未検証。showroom_keeper/backtest.py) */
 let ACC = null;
 const loadAcc = () => ACC ? Promise.resolve(ACC) : api("/api/backtest").then((d) => (ACC = d)).catch(() => (ACC = { predictions: {} }));
-const accP = (key) => (ACC && ACC.predictions ? ACC.predictions[key] : null) || null;
+// 答え合わせの結果は、作った時の名前のまま残っているので、前の名前を使っていた予測は画面で名前を置き換える (再設計の ③)
+const ACC_NAMES = {
+  status_fire: ["本気の 1 回の量 (前: ステータスの火力)"], status_overall: ["次の勝負の見込み量 (前: ステータスの総合力)"],
+  status_order: ["見込み量の並び (前: 総合力の並び)", "見込み量の多い人ほど、次の 30 日に多く出すか (2 人を選んだ時に、多い方が当たる割合。でたらめなら 50%)"],
+  status_state: ["最近の様子 (前: ステータスの状態)", "上り調子・安定・送らずファンのまま・送らずファンからも外れた・3 か月見えない が、次の 3 か月に言ったとおりになるか"],
+  power_forecast: ["出せる量の今月の予想 (前: 戦力の今月の予想)"], power_upper: ["出せる量の「大きな勝負なら」 (前: 戦力の「大きな勝負なら」)"],
+  psyche_range: ["気持ちの移り変わりの見込みの幅 (前: 心のカルテ)"], psyche_appear: ["気持ちの移り変わりの出てくる見込み (前: 心のカルテ)"],
+  psyche_phase: ["気持ちの移り変わりの時期 (前: 心のカルテ)"],
+  room_power: ["ルームが集められる量 (前: ルームの地力)", "同じイベントの 2 ルームで、集められる量の大きい方が多く取るか (でたらめなら 50%)"],
+  room_power_size: ["集められる量の大きさ (前: 地力の大きさ)", "次の 30 日のいちばん大きいイベントのポイントが、集められる量の半分〜2 倍か"],
+};
+const accP = (key) => { const p = (ACC && ACC.predictions ? ACC.predictions[key] : null) || null, n = ACC_NAMES[key];
+  return p && n ? { ...p, label: n[0], claim: n[1] || p.claim } : p; };
 const accRate = (hit, n) => `過去 ${num(n)} 件で <b>${Math.round(hit / n * 100)}%</b>${n < ((ACC && ACC.min_n) || 20) ? " (件数が少ない)" : ""}`;
 function accText(key) {
   const p = accP(key);
@@ -830,10 +845,10 @@ function accText(key) {
   return `当たり方: ${accRate(p.hit, p.n)}${ACC.current === false ? " ・ 前の線での採点" : ""} ・ ${esc(p.claim)}`;
 }
 // 種類ごと (「上り調子」と言った人など)。base = 同じ線をだれにでも当てはめた時に当たる割合 (これより高くないと、言う意味が無い)
-function accKind(key, kind) {
+function accKind(key, kind, label = kind) {
   const p = accP(key), b = p && p.by ? p.by[kind] : null;
-  if (!b || !b.n) return `「${esc(kind || "—")}」の当たり方: <b>未検証</b>`;
-  return `「${esc(kind)}」の当たり方: ${accRate(b.hit, b.n)}${b.base != null ? ` (だれにでも言った時 ${Math.round(b.base * 100)}%)` : ""}`;
+  if (!b || !b.n) return `「${esc(label || "—")}」の当たり方: <b>未検証</b>`;
+  return `「${esc(label)}」の当たり方: ${accRate(b.hit, b.n)}${b.base != null ? ` (だれにでも言った時 ${Math.round(b.base * 100)}%)` : ""}`;
 }
 const accTag = (...keys) => `<div class="hint acc" style="margin-top:2px">${keys.map(accText).join("<br>")}</div>`;
 const ago = (sec) => { if (!sec) return "—"; const s = Date.now() / 1000 - sec; return s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分前` : s < 86400 ? `${Math.round(s / 3600)} 時間前` : `${Math.round(s / 86400)} 日前`; };
@@ -1723,6 +1738,24 @@ document.addEventListener("mousemove", (ev) => {
   chartTip.style.top = `${ev.clientY + 16 + r.height > window.innerHeight ? ev.clientY - r.height - 10 : ev.clientY + 16}px`;
 });
 
+// 押すと出る説明: スマホ (マウスの無い端末) では title が出ないので、印・役割・言葉など説明の付いた所を押すと、同じ吹き出しに出す。
+// 表の行を押すとページが開く所でも、印を押した時は説明を出すだけにする (先に受け取って止める)
+const noHover = !!(window.matchMedia && window.matchMedia("(hover: none)").matches);
+let tapTip = false;  // 押して出した説明か (グラフの吹き出しは、押した所に出たままにする)
+document.addEventListener("click", (ev) => {
+  if (!noHover) return;
+  const t = ev.target.closest && ev.target.closest(".tag[title], b[title]");
+  if (!t || !t.title) { if (tapTip) { chartTip.hidden = true; tapTip = false; } return; }
+  ev.preventDefault(); ev.stopPropagation();
+  tapTip = true;
+  chartTip.textContent = t.title;
+  chartTip.hidden = false;
+  const r = chartTip.getBoundingClientRect(), b = t.getBoundingClientRect();
+  chartTip.style.left = `${Math.max(8, Math.min(b.left, window.innerWidth - r.width - 8))}px`;
+  chartTip.style.top = `${b.bottom + 8 + r.height > window.innerHeight ? b.top - r.height - 8 : b.bottom + 8}px`;
+}, true);
+window.addEventListener("scroll", () => { if (tapTip) { chartTip.hidden = true; tapTip = false; } }, { passive: true });
+
 /* ------------------------------------------------------------ 分析の部品 */
 const durationText = (s) => s >= 86400 ? `約 ${Math.round(s / 86400)} 日` : s >= 3600 ? `約 ${Math.round(s / 3600)} 時間` : `約 ${Math.max(1, Math.round(s / 60))} 分`;
 function formerNames(name, rec, d) {
@@ -1810,38 +1843,94 @@ const STATE_NOTE = {
 const TIER_NOTE = "その月にどこかの貢献ランキングに出た全員の中で、上から 0.1% (少ない月でも 1 人) までが頂点・1% までが大口・10% までが中堅・それより下が少額 (月ごとに区切るので、時期や規模でずれない)";
 const WALL_NOTE = "見えた回 = 貢献ランキング (各ルームの上位 100 人) に出たイベント×ルーム。壁ぎわ = 100 人に届いた回で、ポイントが 100 位の 1.2 倍まで (見えない回にも送っていたかもしれない)。壁ぎわの回が半分以上の人は、見えている額が下限 (全体では大口でも、ルームごとには壁ぎわのことがある)。どの線も仮の値です";
 /* ------------------------------------------------------------ ギフターのステータス (gifter_status.py。docs/分析の見方.md の「ステータス」) */
+// 名前の辞書 (再設計の ③。docs/報告/Claudeの作業_2026-10-25_名前の辞書の案.md)。ゲーム風の名前をやめ、何を数えたかが分かる名前にした (2026-10-25)。
+// キーは前の名前 (サーバーが返す値・保存してある値は前の名前のまま。画面に出す時だけ置き換える)。[名前, 短い列名, 説明]。前の名前でも「言葉」から探せる
+const TERMS = {
+  "ステータス": ["数字のまとめ", "まとめ", "ギフター 1 人の、出せる量・勝負の選び方・最近の様子・これまでの記録の数字"],
+  "戦力ランキング": ["見込み量の順位", "見込み順位", "次の勝負で 1 人が出せる量の見込み (次の勝負の見込み量) の多い順。上位 10% の人だけ"],
+  "パワーギフター": ["上位 10% の人", "上位の人", "直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。数字のまとめを作るのはこの人たちだけ"],
+  "心のカルテ": ["気持ちの移り変わり (推測)", "移り変わり", "送った量とファンレベルの線のずれ方から読んだ、時期ごとの様子。どれも推測で、本当の理由はデータからは分からない"],
+  "財布": ["出せる量", "量", "どれだけ出せるか"],
+  "腕": ["勝負の選び方", "選び方", "目標に届く勝負に出しているか"],
+  "心": ["最近の様子", "最近", "最近増えているか・出しすぎていないか"],
+  "経歴": ["これまでの記録", "記録", "どれだけ長く・何回勝負に出てきたか"],
+  "相性": ["場面ごとの違い", "場面", "大会などの場面で、ふだんとどう違うか"],
+  "総合力": ["次の勝負の見込み量", "見込み量", "本気の 1 回の量と今月の残りの小さい方 × 最近の様子の係数 × 選び方の係数 (pt)"],
+  "ランク": ["見込み量の段階", "段階", "見込み量の上から 1% が S・5% が A・20% が B・50% が C、それより下が D"],
+  "今撃てる量": ["今出せる量", "今出せる", "本気の 1 回の量と今月の残りの小さい方"],
+  "HP (月の予算)": ["月のふつうの量", "月の量", "直近 12 か月の、送った月の量の中ほど"],
+  "残弾": ["今月の残り", "今月の残り", "月のふつうの量 − 今月に終わる (予定の) イベントで今までに見えた量。0 より下は 0"],
+  "火力": ["本気の 1 回の量", "本気の量", "終わった回の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く)"],
+  "最大出力": ["いちばん多かった 1 回", "最多の回", "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)"],
+  "持久力": ["月に本気で出る回数", "本気の回数", "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
+  "回復力": ["使い切ったあと戻るまで", "戻るまで", "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
+  "知性": ["届いた勝負に出した量の割合", "届いた量", "勝負になった回に出した量のうち、ルームが目標 (特典の順位) に届いた回の分の割合"],
+  "命中": ["本気の回の達成率", "本気の達成", "本気の量の半分以上を出した回のうち、ルームが目標に届いた割合"],
+  "勢い": ["3 か月の伸び", "伸び", "直近 3 か月の量 ÷ その前の 3 か月 (倍)"],
+  "疲労": ["出しすぎの度合い", "出しすぎ", "直近 30 日ほどのイベントの量 ÷ 月のふつうの量。1 を超えると出しすぎ"],
+  "実績": ["目標に届いた回の上位 3 入り", "上位入り", "直近 2 年で、ルームが目標に届いた回に、そのルームの貢献の 3 位までだった回数"],
+  "経験値": ["勝負に出た回数", "勝負の回数", "直近 2 年で、勝負になった回に出た数"],
+  "キャリア": ["見えてからの期間", "期間", "初めて貢献ランキングに見えてから"],
+  "掛け持ちの広さ": ["実際に送っているルームの数", "ルーム数", "直近 12 か月の量の分け方から出した、実際のルームの数"],
+  "大会での強さ": ["大会の後半の量", "大会の後半", "大会の 2 段階目より後の 1 イベントの量 (中ほど) ÷ ふつうのイベント (倍)"],
+  "クラス": ["このルームでの役割", "役割", "1 人で決められる人・数人で決められる人・よく出てくる人・付き合いの人"],
+  "主砲": ["1 人で決められる人", "1 人で", "このルームに出せる量が、このルームの順位の決め手の量 (隣の順位と分かれた差の中ほど) 以上。1 人で順位を動かせる"],
+  "主力": ["数人で決められる人", "数人で", "決め手の量の 3 分の 1 以上。2〜3 人そろえば決められる"],
+  "支え": ["よく出てくる人", "よく出る", "それより下で、勝負の回に半分以上出てくる"],
+  "付き合い": ["付き合いの人", "付き合い", "付き合い投げか、勝負の回にあまり出てこない。このルームの量には数えない"],
+  "ルームでの戦力": ["このルームに出せる量", "出せる量", "次の勝負の見込み量 × このルームへの割合 × 勝負に出る割合"],
+  "忠誠心": ["このルームへの割合", "割合", "直近 12 か月の量のうち、このルームに送った割合"],
+  "出動率": ["勝負に出る割合", "出る割合", "このルームが勝負になった回 (3 回以上) のうち、このルームでの上限の半分以上を出した割合 (分からない時は 0.5 で数える)"],
+  "士気": ["このルームでの伸び", "ここでの伸び", "このルームでの直近 3 か月 ÷ その前の 3 か月 (倍)"],
+  "友好度": ["ファンレベル", "ファン", "直近 12 か月のアクティブファンのレベル (いちばん高い月) と月の数・累計ランキングの来場"],
+  "地力": ["ルームが勝負で集められる量", "集められる量", "1 人で決められる人・数人で決められる人・よく出てくる人が、勝負の時にこのルームに出せる量の合計"],
+  "戦力": ["出せる量", "出せる量", "勝負の時に出せる量"],
+  "上り調子": ["上り調子", "上り調子", "直近 3 か月が、その前の 3 か月の 1.5 倍以上"],
+  "安定": ["安定", "安定", "大きな増え減りがない"],
+  "温存中": ["送らずファンのまま", "ファンのまま", "直近 3 か月が多かった 3 か月の 3 割以下なのに、アクティブファンに残っている (出せるのに今は出していない)"],
+  "枯渇": ["送らずファンからも外れた", "ファン外れ", "直近 3 か月が少なくなり、アクティブファンからも消えた"],
+  "枯れている": ["送らずファンからも外れた", "ファン外れ", "直近 3 か月が、いちばん多かった 3 か月の 3 割以下で、アクティブファンからも消えた"],
+  "離脱": ["3 か月見えない", "見えない", "3 か月どこの貢献ランキングにもアクティブファンにも出ていない (ファンの名簿が全員分で、居ないと分かっている)"],
+  "不明": ["不明", "不明", "直近 3 か月が少ないか出ておらず、アクティブファンに見えないが、ファンの名簿が全員分でない (上位しか読まない・月の途中で読んだ・読んでいない) ので、離れたか・出せないのか・出さずにいるのかは分からない。見込み量・集められる量には仮に × 0.5 を掛けている (確かめた値ではない)"],
+  "新顔": ["新しく見えた人", "新しい人", "初めて見えてから 3 か月以内"],
+};
+TERMS["疲労 (印)"] = ["出しすぎ", "出しすぎ", "直近 30 日に、月のふつうの量より多く出した"];
+const term = (old) => (TERMS[old] || [old])[0];  // 前の名前 → 画面の名前
+const termShort = (old) => (TERMS[old] || [old, old])[1];
+const termNote = (old, note) => { const t = TERMS[old]; const n = note ?? (t ? t[2] : ""); return t && t[0] !== old ? `${n}${n ? "。" : ""}前の名前: ${old}` : n; };
+const markName = (m) => term(m === "疲労" ? "疲労 (印)" : m);
 const ptYen = (v) => v ? `${shortNum(v)} <small>pt</small>` : "—";
 const yenOf = (v) => v ? `およそ ${shortNum(Math.round(v / 3))} 円` : "";
-// [キー, 名前, 値の出し方, 説明]
+// [キー, 前の名前 (TERMS のキー), 値の出し方, 説明]
 const STATUS_FORMULA = 2;  // gifter_status.FORMULA と同じ (式を変えた版)
 const STATUS_GROUPS = [
-  ["財布", "どれだけ撃てるか", [
+  ["財布", [
     ["hp", "HP (月の予算)", (st) => ptYen(st.hp), "直近 12 か月の、送った月の量の中ほど"],
-    ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月の予算 − 今月の分 (${shortNum(st.spent)} pt。終わる予定の月が今月のイベントの、今までに見えた貢献。開催中のイベントの途中の値も入る)。0 より下は 0`],
+    ["mp", "残弾", (st) => ptYen(st.mp), (st) => `月のふつうの量 − 今月の分 (${shortNum(st.spent)} pt。終わる予定の月が今月のイベントの、今までに見えた貢献。開催中のイベントの途中の値も入る)。0 より下は 0`],
     ["fire", "火力", (st) => st.fire_rounds === 0 ? '<span class="uid">比べるデータなし</span>' : `${ptYen(st.fire)} <span class="uid">${esc(st.scale)}${st.fire_rounds === 1 ? " ・ 1 件だけの参考値" : ""}</span>`, (st) => `終わった回 (終わって 2 日たち、終わったあとの貢献ランキングを取り終えた回) のうち、${st.fire_basis === "battle" ? "勝負になった回" : "勝負になった回が少ないので、すべての回"} の、1 イベント × 1 ルームの量の上から 2 番目 (1 回だけの無理を除く。1 回だけならその値)${st.fire_rounds != null ? ` ・ くらべた回 ${num(st.fire_rounds)}` : ""}`],
     ["max_out", "最大出力", (st) => ptYen(st.max_out), "直近 12 か月の終わった回の、1 イベント × 1 ルームの最大 (無理をした時の天井)。開催中の途中の値は入れない"],
-    ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、火力の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
-    ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (予算の 3 割以下) のあと、予算に戻るまでの月数。短いほど上"],
+    ["stamina", "持久力", (st) => st.stamina == null ? "—" : `${st.stamina} <small>回/月</small>`, "1 か月に、本気の量の半分以上を出した終わったイベントの数 (送った月の中ほど)"],
+    ["recovery", "回復力", (st) => st.recovery == null ? "—" : `${st.recovery} <small>か月</small>`, "使い切った月 (月の量の 3 割以下) のあと、月の量に戻るまでの月数。短いほど上"],
   ]],
-  ["腕", "どう撃つか", [
-    ["intel", "知性", (st) => st.intel == null ? "—" : pctText(st.intel), (st) => `勝負になった回に出した量のうち、ルームが目標 (特典の順位) に届いた回の割合。届かない勝負に弾を捨てないほど上 (${num(st.intel_rounds)} 回)`],
-    ["hit", "命中", (st) => st.hit == null ? "—" : pctText(st.hit), (st) => `火力の半分以上を出した回のうち、ルームが目標に届いた割合 (${num(st.hit_rounds)} 回)`],
+  ["腕", [
+    ["intel", "知性", (st) => st.intel == null ? "—" : pctText(st.intel), (st) => `勝負になった回に出した量のうち、ルームが目標 (特典の順位) に届いた回の分の割合。届かない勝負に出さないほど上 (${num(st.intel_rounds)} 回)`],
+    ["hit", "命中", (st) => st.hit == null ? "—" : pctText(st.hit), (st) => `本気の量の半分以上を出した回のうち、ルームが目標に届いた割合 (${num(st.hit_rounds)} 回)`],
   ]],
-  ["心", "撃つ気があるか", [
-    ["momentum", "勢い", (st) => st.momentum == null ? "—" : `${st.momentum.toFixed(2)} <small>倍</small>${st.new_high ? ' <span class="tag live">上限を更新</span>' : ""}`, "直近 3 か月の量 ÷ その前の 3 か月"],
-    ["fatigue", "疲労", (st) => st.fatigue == null ? "—" : `${st.fatigue.toFixed(2)}`, "終わる予定の日が 30 日前より後のイベントの貢献 (先月に終わった分・開催中の分・来月以降に終わる予定の分も入る) ÷ 月の予算。予算が 0 なら分からない。1 を超えると疲労 (少ないほど上)"],
+  ["心", [
+    ["momentum", "勢い", (st) => st.momentum == null ? "—" : `${st.momentum.toFixed(2)} <small>倍</small>${st.new_high ? ' <span class="tag live">いちばん多い回を更新</span>' : ""}`, "直近 3 か月の量 ÷ その前の 3 か月"],
+    ["fatigue", "疲労", (st) => st.fatigue == null ? "—" : `${st.fatigue.toFixed(2)}`, "終わる予定の日が 30 日前より後のイベントの貢献 (先月に終わった分・開催中の分・来月以降に終わる予定の分も入る) ÷ 月のふつうの量。月の量が 0 なら分からない。1 を超えると出しすぎ (少ないほど上)"],
   ]],
-  ["経歴", "どれだけ戦ってきたか", [
+  ["経歴", [
     ["achievements", "実績", (st) => `${num(st.achievements)} <small>回</small>`, (st) => `直近 2 年で、ルームが目標に届いた回に、そのルームの貢献の 3 位までだった回数 (うち 1 位 ${num(st.tops)} 回)`],
-    ["exp", "経験値", (st) => `Lv ${st.level} <small>(${num(st.exp)} 回)</small>`, "直近 2 年で、勝負になった回に出た数。1・3・10・30・100・300 回でレベルが上がる"],
+    ["exp", "経験値", (st) => `${num(st.exp)} <small>回</small>`, "直近 2 年で、勝負になった回に出た数"],
     ["career", "キャリア", (st) => `${Math.floor(st.career / 12)} <small>年</small> ${Math.round(st.career % 12)} <small>か月</small>`, "初めて貢献ランキングに見えてから"],
-    ["spread", "掛け持ちの広さ", (st) => st.spread == null ? "—" : `${st.spread.toFixed(1)} <small>ルーム</small>`, (st) => `直近 12 か月の量の分け方から出した、実際のルームの数 (火力の半分以上を出したルームは ${num(st.main_rooms)})`],
+    ["spread", "掛け持ちの広さ", (st) => st.spread == null ? "—" : `${st.spread.toFixed(1)} <small>ルーム</small>`, (st) => `直近 12 か月の量の分け方から出した、実際のルームの数 (本気の量の半分以上を出したルームは ${num(st.main_rooms)})`],
   ]],
-  ["相性", "どの戦場で強いか", [
+  ["相性", [
     ["contest", "大会での強さ", (st) => st.contest == null ? "—" : `${st.contest.toFixed(2)} <small>倍</small>`, "大会の 2 段階目より後の 1 イベントの量 (中ほど) ÷ ふつうのイベント"],
   ]],
 ];
-const RADAR = [["fire", "火力"], ["stamina", "持久力"], ["intel", "知性"], ["hit", "命中"], ["momentum", "勢い"], ["exp", "経験値"]];
+const RADAR = ["fire", "stamina", "intel", "hit", "momentum", "exp"].map((k) => [k, termShort(STATUS_GROUPS.flatMap((g) => g[1]).find((it) => it[0] === k)[1])]);
 function radarSvg(scores) {
   const W = 260, H = 230, cx = W / 2, cy = H / 2 + 4, R = 82;
   const pt = (i, r) => { const a = -Math.PI / 2 + i * 2 * Math.PI / RADAR.length; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
@@ -1853,52 +1942,51 @@ function radarSvg(scores) {
     ${RADAR.map((_, i) => `<line class="ring" x1="${cx}" y1="${cy}" x2="${pt(i, R)[0]}" y2="${pt(i, R)[1]}"/>`).join("")}
     <polygon class="shape" points="${shape}"/>${labels}</svg>`;
 }
-const MARK_NOTE = { "上り調子": "直近 3 か月が、その前の 3 か月の 1.5 倍以上", "安定": "大きな増え減りがない", "温存中": "直近 3 か月が多かった 3 か月の 3 割以下なのに、アクティブファンに残っている (見えない戦力)",
-  "枯渇": "直近 3 か月が少なくなり、アクティブファンからも消えた (今は弾が無い)", "離脱": "3 か月どこの貢献ランキングにもアクティブファンにも出ていない (ファンの名簿が全員分で、居ないと分かっている)",
-  "不明": "直近 3 か月が少ないか出ておらず、アクティブファンに見えないが、ファンの名簿が全員分でない (上位しか読まない・月の途中で読んだ・読んでいない) ので、離れたか・弾が無いか・温存かは分からない。総合力・地力には仮に × 0.5 を掛けている (確かめた値ではない。当たっているかは、あとで本番の外で確かめる)",
-  "疲労": "直近 30 日に、月の予算より多く出した", "新顔": "初めて見えてから 3 か月以内" };
-const markTag = (m) => `<span class="tag ${["枯渇", "離脱", "疲労"].includes(m) ? "warn" : ["上り調子", "温存中"].includes(m) ? "live" : ""}" title="${esc(MARK_NOTE[m] || "")}">${esc(m)}</span>`;
-const CLASS_NOTE = { "主砲": "ルームでの戦力が、このルームの決め手の量 (隣の順位と分かれた差の中ほど) 以上。一人で順位を動かせる",
-  "主力": "決め手の量の 3 分の 1 以上。2〜3 人そろえば決められる", "支え": "それより下で、勝負の回に半分以上出てくる", "付き合い": "付き合い投げか、勝負の回にあまり出てこない。このルームの戦力には数えない" };
+const MARK_KIND = (m) => ["枯渇", "離脱", "疲労", "枯れている"].includes(m) ? "warn" : ["上り調子", "温存中"].includes(m) ? "live" : "";
+// 説明は title (マウスを乗せると出る)。スマホでは押すと出る (下の「押すと出る説明」)
+const markTip = (m) => { const t = TERMS[m === "疲労" ? "疲労 (印)" : m]; return t ? `${t[2]}${t[0] !== m ? `。前の名前: ${m}` : ""}` : ""; };
+const markTag = (m) => `<span class="tag ${MARK_KIND(m)}" title="${esc(markTip(m))}">${esc(markName(m))}</span>`;
+const CLASS_KIND = { "主砲": "live", "主力": "warn", "支え": "ok" };
+const classTag = (c) => `<span class="tag ${CLASS_KIND[c] || ""}" title="${esc(termNote(c))}">${esc(term(c))}</span>`;
 function gifterStatus(st, uid) {
   const runNote = (r) => r.queued ? `今の回は、あと ${num(r.queued)} 人を作っています` : r.done ? `${tm(r.done, true)} に作り終えました` : "まだ 1 回も作り終えていません";
-  let h = `<h3>ステータス <small class="muted">戦力を、ゲームのキャラクターのように項目ごとの数字にしたもの。1 日 1 回、サーバーが空いている時に作ります</small></h3>`;
+  let h = `<h3>${term("ステータス")} <small class="muted">${esc(TERMS["ステータス"][2])}。1 日 1 回、サーバーが空いている時に作ります</small></h3>`;
   if (!st.found) {
-    return h + `<div class="hint" style="margin-top:0">この人のステータスはまだありません。作るのは、直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人 (パワーギフター) だけです。${esc(runNote(st.run))}。</div>`;
+    return h + `<div class="hint" style="margin-top:0">この人の数字のまとめはまだありません。作るのは、直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人 (上位 10% の人) だけです。${esc(runNote(st.run))}。</div>`;
   }
   const sc = st.scores || {};
   const bar = (v) => v == null ? '<span class="uid">—</span>' : `<span class="sbar"><i style="width:${v}%"></i></span>${v}`;
   h += `<div class="st-head"><div><div class="tiles" style="margin-bottom:8px">
-      ${tile("総合力", `<span class="st-grade ${esc(st.grade || "")}">${esc(st.grade || "—")}</span> ${shortNum(st.overall)} <small>pt</small>`, `全体 ${num(st.rank)} 位${st.people ? ` / ${num(st.people)} 人` : ""} ・ 評価 ${sc.overall ?? "—"}`)}
-      ${tile("今撃てる量", ptYen(st.ready), `火力と残弾の小さい方。状態と腕で ×${st.factor}`)}
-      ${tile("火力", ptYen(st.fire), `${esc(st.scale)} ・ ${yenOf(st.fire)}`)}
-      ${tile("状態", st.marks.map(markTag).join(" "), st.fan ? "直近 3 か月のアクティブファンにいる" : st.state === "不明" ? "直近 3 か月のアクティブファンに見えない (名簿が全員分でないので、居ないとは言えない)" : "直近 3 か月のアクティブファンにいない")}
-    </div><div class="hint" style="margin-top:0">総合力 = 次の勝負で、一人で動かせる量の見込み (火力と残弾の小さい方 × 状態 × 腕)。ランクは、パワーギフターの中で上から 1% が S・5% が A・20% が B・50% が C、それより下が D。
-      評価 (1〜100) は、パワーギフターの中で上から何番目くらいか。${esc(st.month.replace("-", "/"))} までの集め終わった月と、今月ここまでの分から。${esc(runNote(st.run))}。どの線も仮の値です${(st.formula || 1) < STATUS_FORMULA ? "。<b>この人の値は前の式のまま。新しい式での作り直しが全員分終わった時に、値・順位・ランクが全員そろって入れ替わります</b>" : ""}</div></div>
-    ${accTag("status_overall", "status_order")}<div class="hint acc" style="margin-top:2px">${accKind("status_state", st.state)}</div></div>
+      ${tile(term("総合力"), `<span class="st-grade ${esc(st.grade || "")}">${esc(st.grade || "—")}</span> ${shortNum(st.overall)} <small>pt</small>`, `全体 ${num(st.rank)} 位${st.people ? ` / ${num(st.people)} 人` : ""} ・ 評価 ${sc.overall ?? "—"}`)}
+      ${tile(term("今撃てる量"), ptYen(st.ready), `本気の量と今月の残りの小さい方。最近の様子と選び方で ×${st.factor}`)}
+      ${tile(term("火力"), ptYen(st.fire), `${esc(st.scale)} ・ ${yenOf(st.fire)}`)}
+      ${tile("最近の様子", st.marks.map(markTag).join(" "), st.fan ? "直近 3 か月のアクティブファンにいる" : st.state === "不明" ? "直近 3 か月のアクティブファンに見えない (名簿が全員分でないので、居ないとは言えない)" : "直近 3 か月のアクティブファンにいない")}
+    </div><div class="hint" style="margin-top:0">次の勝負の見込み量 = 1 人で動かせる量の見込み (本気の量と今月の残りの小さい方 × 最近の様子 × 選び方)。S〜D は見込み量の段階で、上位 10% の人の中で上から 1% が S・5% が A・20% が B・50% が C、それより下が D。
+      評価 (1〜100) は、上位 10% の人の中で上から何番目くらいか。前の名前: 総合力・今撃てる量・火力・ランク。${esc(st.month.replace("-", "/"))} までの集め終わった月と、今月ここまでの分から。${esc(runNote(st.run))}。どの線も仮の値です${(st.formula || 1) < STATUS_FORMULA ? "。<b>この人の値は前の式のまま。新しい式での作り直しが全員分終わった時に、値・順位・段階が全員そろって入れ替わります</b>" : ""}</div></div>
+    ${accTag("status_overall", "status_order")}<div class="hint acc" style="margin-top:2px">${accKind("status_state", st.state, markName(st.state))}</div></div>
     <div>${radarSvg(sc)}</div></div>`;
   const rows = [];
-  for (const [g, gl, items] of STATUS_GROUPS) for (const [k, l, val, note] of items) rows.push({ g, gl, k, l, val: val(st), raw: st[k], sc: sc[k], note: typeof note === "function" ? note(st) : note });
+  for (const [g, items] of STATUS_GROUPS) for (const [k, old, val, note] of items) rows.push({ g: term(g), gl: TERMS[g][2], k, l: term(old), old, val: val(st), raw: st[k], sc: sc[k], note: typeof note === "function" ? note(st) : note });
   h += dataTable("gp-status", [
     { label: "分類", value: (r) => r.g, html: (r) => `<b>${esc(r.g)}</b><div class="uid">${esc(r.gl)}</div>`, sort: false },
-    { label: "項目", value: (r) => r.l, html: (r) => `<b>${esc(r.l)}</b>`, cls: "name", sort: false },
+    { label: "項目", value: (r) => r.l, html: (r) => `<b>${esc(r.l)}</b>${r.l !== r.old ? `<div class="uid">前: ${esc(r.old)}</div>` : ""}`, cls: "name", sort: false },
     { label: "値", value: (r) => r.raw, html: (r) => r.val, sort: false },
     { label: "評価", num: true, value: (r) => r.sc, html: (r) => bar(r.sc) },
     { label: "決め方", sort: false, value: (r) => r.note, html: (r) => `<span class="uid">${esc(r.note)}</span>` },
-  ], rows, { limit: 30, phone: [1, 2, 3], csvName: `ギフター_${uid}_ステータス`,
+  ], rows, { limit: 30, phone: [1, 2, 3], csvName: `ギフター_${uid}_数字のまとめ`,
     note: "戦術・速さ・隠密 (潜伏)・誘発・1 手の大きさは、記録しているルームのギフトから、あとで足します。貢献ランキングは各ルームの上位 100 人までなので、どの量も「少なくとも」の量です" });
   if (st.rooms.length) {
-    h += `<h3>ルームとの関係 <small class="muted">ルームでの戦力 = 総合力 × 忠誠心 × 出動率。いちばん多く送ったルームから ${num(st.rooms.length)} ルーム</small></h3>` + dataTable("gp-status-rooms", [
+    h += `<h3>ルームとの関係 <small class="muted">このルームに出せる量 = 次の勝負の見込み量 × このルームへの割合 × 勝負に出る割合。いちばん多く送ったルームから ${num(st.rooms.length)} ルーム</small></h3>` + dataTable("gp-status-rooms", [
       { label: "ルーム", value: (r) => r.name, html: (r) => r.key ? roomLink(r.key, r.name) : esc(r.name), cls: "name" },
-      { label: "クラス", value: (r) => r.class, html: (r) => `<span class="tag ${r.class === "主砲" ? "live" : r.class === "主力" ? "warn" : r.class === "支え" ? "ok" : ""}" title="${esc(CLASS_NOTE[r.class] || "")}">${esc(r.class)}</span> <span class="uid">${esc(r.kind)}</span>` },
-      { label: "ルームでの戦力", num: true, value: (r) => r.power, html: (r) => `<b>${shortNum(r.power)}</b><div class="uid">決め手 ${shortNum(r.edge)}</div>` },
-      { label: "忠誠心", num: true, value: (r) => r.share, html: (r) => `${pctText(r.share)}<div class="uid">${shortNum(r.points)} pt</div>` },
-      { label: "出動率", num: true, value: (r) => r.sortie, html: (r) => r.sortie == null ? `<span class="uid">勝負 ${num(r.fights)} 回</span>` : `${pctText(r.sortie)}<div class="uid">勝負 ${num(r.fights)} 回</div>` },
-      { label: "士気", num: true, value: (r) => r.morale, html: (r) => r.morale == null ? "-" : `${r.morale.toFixed(2)} <small>倍</small>` },
-      { label: "友好度", num: true, value: (r) => r.fan_level || 0, html: (r) => `${r.fan_level ? `Lv ${num(r.fan_level)} ・ ${num(r.fan_months)} か月` : "-"}${r.visits ? `<div class="uid">来場 ${num(r.visits)} 回</div>` : ""}` },
-      { label: "実績", num: true, value: (r) => r.wins, html: (r) => r.wins ? `${num(r.wins)} 回` : "-" },
+      { label: termShort("クラス"), value: (r) => term(r.class), html: (r) => `${classTag(r.class)} <span class="uid">${esc(r.kind)}</span>` },
+      { label: term("ルームでの戦力"), num: true, value: (r) => r.power, html: (r) => `<b>${shortNum(r.power)}</b><div class="uid">決め手 ${shortNum(r.edge)}</div>` },
+      { label: term("忠誠心"), num: true, value: (r) => r.share, html: (r) => `${pctText(r.share)}<div class="uid">${shortNum(r.points)} pt</div>` },
+      { label: term("出動率"), num: true, value: (r) => r.sortie, html: (r) => r.sortie == null ? `<span class="uid">勝負 ${num(r.fights)} 回</span>` : `${pctText(r.sortie)}<div class="uid">勝負 ${num(r.fights)} 回</div>` },
+      { label: term("士気"), num: true, value: (r) => r.morale, html: (r) => r.morale == null ? "-" : `${r.morale.toFixed(2)} <small>倍</small>` },
+      { label: term("友好度"), num: true, value: (r) => r.fan_level || 0, html: (r) => `${r.fan_level ? `Lv ${num(r.fan_level)} ・ ${num(r.fan_months)} か月` : "-"}${r.visits ? `<div class="uid">来場 ${num(r.visits)} 回</div>` : ""}` },
+      { label: termShort("実績"), num: true, value: (r) => r.wins, html: (r) => r.wins ? `${num(r.wins)} 回` : "-" },
     ], st.rooms, { sort: 2, phone: [0, 1, 2], csvName: `ギフター_${uid}_ルームとの関係`,
-      note: "忠誠心 = 直近 12 か月の量のうち、このルームの割合。出動率 = このルームが勝負になった回 (3 回以上) のうち、このルームでの上限の半分以上を出した割合 (分からない時は 0.5 で数える)。士気 = このルームでの直近 3 か月 ÷ その前の 3 か月。友好度 = 直近 12 か月のアクティブファンのレベル (いちばん高い月) と月の数・累計ランキングの来場。実績 = 直近 2 年で、このルームが目標に届いた回に貢献の 3 位までだった回数" });
+      note: ["クラス", "忠誠心", "出動率", "士気", "友好度"].map((k) => `${term(k)} (前: ${k}) = ${TERMS[k][2]}`).join("。") + "。上位入り (前: 実績) = 直近 2 年で、このルームが目標に届いた回に貢献の 3 位までだった回数" });
   }
   return h;
 }
@@ -1940,9 +2028,9 @@ function mindChart(m) {
   return s + "</svg>";
 }
 function gifterPsyche(st, uid) {
-  let h = `<h3>心のカルテ <small class="muted">お金 (送った量) と関心 (ファンレベル) の線のずれ方から、心の変化を読んだもの。どれも仮説で、本当の理由はデータからは分かりません</small></h3>`;
+  let h = `<h3>${term("心のカルテ")} <small class="muted">お金 (送った量) と関心 (ファンレベル) の線のずれ方から、気持ちの変化を読んだもの。どれも仮説で、本当の理由はデータからは分かりません (前の名前: 心のカルテ)</small></h3>`;
   const m = st.psyche;
-  if (!m) return h + `<div class="hint" style="margin-top:0">まだありません。ステータスを作る 1 日 1 回の計算で、次に作り直す時に出ます (送った月が 3 か月より少ない人は出しません)。</div>`;
+  if (!m) return h + `<div class="hint" style="margin-top:0">まだありません。数字のまとめを作る 1 日 1 回の計算で、次に作り直す時に出ます (送った月が 3 か月より少ない人は出しません)。</div>`;
   const tr = m.traits, o = m.outlook;
   const roomOf = (name) => name ? esc(name) : "—";
   h += `<div class="tiles">
@@ -1960,16 +2048,32 @@ function gifterPsyche(st, uid) {
       { label: "変化", value: (r) => r.type, html: (r) => `<b title="${esc(MIND_NOTE[r.type] || "")}">${esc(r.type)}</b>${r.room_name ? `<div class="uid">${esc(r.room_name)}${r.to_name ? ` → ${esc(r.to_name)}` : ""}</div>` : ""}`, cls: "name" },
       { label: "確からしさ", value: (r) => r.conf, html: (r) => `<span class="tag ${CONF_TAG[r.conf] || ""}">${esc(r.conf)}</span>` },
       { label: "根拠", sort: false, value: (r) => r.evidence.join(" / "), html: (r) => `<span class="uid">${r.evidence.map(esc).join("<br>")}</span>` },
-    ], m.timeline, { sort: 0, desc: true, phone: [0, 1, 2], csvName: `ギフター_${uid}_心のカルテ`,
+    ], m.timeline, { sort: 0, desc: true, phone: [0, 1, 2], csvName: `ギフター_${uid}_気持ちの移り変わり`,
       note: "確からしさ: 根拠の線 (お金・関心・行き先) が 2 本そろうと高、1 本なら中。上位 100 人の壁ぎわの人や、送った月が少ない人は 1 つ下げます。ルームがイベントに出ていない月は、変化と数えません" });
   } else h += `<div class="hint">直近 24 か月に、大きな心の変化は見つかりませんでした。</div>`;
   if (tr.signs.length) h += `<div class="hint"><b>のめり込みのしるし:</b> ${tr.signs.map((x) => esc(x.note)).join(" / ")}</div>`;
   if (m.warnings.length) h += `<div class="hint"><b>気をつける点:</b> ${m.warnings.map(esc).join(" / ")}</div>`;
   return h;
 }
+// 言葉 (#gifters/words?q=…): 名前の辞書の一覧。前の名前でも探せる (上の検索欄からも開く)
+const normWord = (x) => String(x).toLowerCase().replace(/\s+/g, "");
+const termRows = () => Object.entries(TERMS).map(([old, [name, short, note]]) => ({ old: old.replace(" (印)", ""), name, short, note }));
+const wordHit = (q) => { const n = normWord(q); return n ? termRows().filter((r) => [r.old, r.name, r.short].some((x) => normWord(x).includes(n))) : []; };
+function wordsSection() {
+  const q = new URLSearchParams((location.hash.split("?")[1] || "")).get("q") || "";
+  const rows = q ? wordHit(q) : termRows();
+  return `<div class="hint" style="margin-top:0">ギフターの分析で使う言葉です。2026-10-25 に、ゲームのような名前 (火力・残弾・主砲など) をやめ、何を数えたかが分かる名前にしました。
+      数え方は変えていません。前の名前でも、上の検索欄やこの一覧で探せます${q ? `。「${esc(q)}」に当てはまる言葉だけを出しています (<a href="#gifters/words">すべて見る</a>)` : ""}</div>`
+    + dataTable("words", [
+      { label: "名前", value: (r) => r.name, html: (r) => `<b>${esc(r.name)}</b>`, cls: "name" },
+      { label: "短い名前", value: (r) => r.short, html: (r) => esc(r.short) },
+      { label: "前の名前", value: (r) => r.old, html: (r) => r.old === r.name ? '<span class="uid">(同じ)</span>' : esc(r.old) },
+      { label: "何を数えたか", sort: false, value: (r) => r.note, html: (r) => `<span class="uid">${esc(r.note)}</span>` },
+    ], rows, { sort: null, limit: 100, phone: [0, 2, 3], csvName: "言葉" });
+}
 const power = { grade: "all", data: null, byGrade: {} };  // byGrade: ランクで絞った分 (サーバーがランクの境目で絞って返す)
 async function showPowerRanking(box) {
-  if (!power.data) box.innerHTML = loadingHtml("戦力ランキングを読み込んでいます…");
+  if (!power.data) box.innerHTML = loadingHtml("見込み量の順位を読み込んでいます…");
   try { power.data = await api("/api/research/power?limit=500"); power.byGrade = {}; } catch (e) { box.innerHTML = errorHtml(e); return; }
   if (page.name !== "gifters") return;
   drawPowerRanking(box);
@@ -1977,25 +2081,25 @@ async function showPowerRanking(box) {
 function drawPowerRanking(box) {
   const d = power.data;
   if (!d.rows.length) {
-    box.innerHTML = `<div class="empty">まだありません。ギフターのステータスは、1 日 1 回、サーバーが空いている時に作ります${d.run && d.run.started && !d.run.done ? " (今作っています)" : ""}。</div>`;
+    box.innerHTML = `<div class="empty">まだありません。ギフターの数字のまとめは、1 日 1 回、サーバーが空いている時に作ります${d.run && d.run.started && !d.run.done ? " (今作っています)" : ""}。</div>`;
     return;
   }
   const gd = power.grade === "all" ? null : power.byGrade[power.grade];
   const rows = power.grade === "all" ? d.rows : gd ? gd.rows : [];
-  box.innerHTML = `<div class="summary">${stat(num(d.people || d.rows.length), "パワーギフター (人)")}${["S", "A", "B"].map((g) => stat(num(d.rows.filter((r) => r.grade === g).length), `上位 ${num(d.rows.length)} 人のうち ${g}`)).join("")}</div>
-    <div class="hint">SHOWROOM 全体で、次の勝負で一人で動かせる量の見込み (総合力) の多い順。パワーギフター = 直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。${d.at ? `${tm(d.at, true)} に作り終えた分` : ""}。どの線も仮の値です</div>
+  box.innerHTML = `<div class="summary">${stat(num(d.people || d.rows.length), "上位 10% の人 (人)")}${["S", "A", "B"].map((g) => stat(num(d.rows.filter((r) => r.grade === g).length), `上位 ${num(d.rows.length)} 人のうち ${g}`)).join("")}</div>
+    <div class="hint">SHOWROOM 全体で、次の勝負で 1 人で動かせる量の見込み (次の勝負の見込み量) の多い順。上位 10% の人 = 直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。S〜D は見込み量の段階。前の名前: 戦力ランキング・総合力・パワーギフター・ランク。${d.at ? `${tm(d.at, true)} に作り終えた分` : ""}。どの線も仮の値です</div>
     <div class="row" style="margin:8px 0"><div class="filters grow">${[["all", "すべて"], ["S", "S"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"]].map(([g, l]) => `<button type="button" class="fchip ${power.grade === g ? "active" : ""}" data-pg="${g}">${l}</button>`).join("")}</div></div>`
     + dataTable("power-rank", [
       { label: "順位", num: true, value: (r) => r.rank, html: (r) => `<b>${num(r.rank)}</b>` },
       { label: "ギフター", value: (r) => r.name || String(r.user_id), html: (r) => `${gifterLink(r.user_id, r.name || `ID ${r.user_id}`)} <span class="uid uid-id">ID ${esc(r.user_id)}</span>`, cls: "name" },
-      { label: "総合力", num: true, value: (r) => r.overall, html: (r) => powerCell({ grade: r.grade, overall: r.overall, scale: "" }) },
-      { label: "火力", num: true, value: (r) => r.firepower, html: (r) => `${shortNum(r.firepower)}<div class="uid">${esc(r.scale)}</div>` },
-      { label: "HP (月の予算)", num: true, value: (r) => r.budget, html: (r) => shortNum(r.budget) },
-      { label: "残弾", num: true, value: (r) => r.left_pt, html: (r) => shortNum(r.left_pt) },
-      { label: "状態", value: (r) => r.state, html: (r) => markTag(r.state) },
-      { label: "主なルーム", value: (r) => r.top_name || "", html: (r) => r.top_key ? `${roomLink(r.top_key, r.top_name)}<div class="uid">忠誠心 ${pctText(r.top_share)}</div>` : "-" },
-    ], rows, { sort: 0, desc: false, phone: [1, 2, 3], csvName: "戦力ランキング", rowAttr: (r) => `class="clickable" data-go="#gifter/${esc(r.user_id)}"`,
-      note: `${power.grade === "all" ? "上位 500 人まで" : gd ? `ランク ${power.grade} の人の上から 500 人まで (全体の中から絞っています)` : "読み込んでいます…"}。順位は全体での順位で、総合力が同じなら同じ順位。くわしくは、名前を押すと出るギフターのページの「ステータス」` });
+      { label: termShort("総合力"), num: true, value: (r) => r.overall, html: (r) => powerCell({ grade: r.grade, overall: r.overall, scale: "" }) },
+      { label: termShort("火力"), num: true, value: (r) => r.firepower, html: (r) => `${shortNum(r.firepower)}<div class="uid">${esc(r.scale)}</div>` },
+      { label: termShort("HP (月の予算)"), num: true, value: (r) => r.budget, html: (r) => shortNum(r.budget) },
+      { label: termShort("残弾"), num: true, value: (r) => r.left_pt, html: (r) => shortNum(r.left_pt) },
+      { label: "最近の様子", value: (r) => markName(r.state), html: (r) => markTag(r.state) },
+      { label: "主なルーム", value: (r) => r.top_name || "", html: (r) => r.top_key ? `${roomLink(r.top_key, r.top_name)}<div class="uid">このルームへ ${pctText(r.top_share)}</div>` : "-" },
+    ], rows, { sort: 0, desc: false, phone: [1, 2, 3], csvName: "見込み量の順位", rowAttr: (r) => `class="clickable" data-go="#gifter/${esc(r.user_id)}"`,
+      note: `${power.grade === "all" ? "上位 500 人まで" : gd ? `段階 ${power.grade} の人の上から 500 人まで (全体の中から絞っています)` : "読み込んでいます…"}。順位は全体での順位で、見込み量が同じなら同じ順位。くわしくは、名前を押すと出るギフターのページの「数字のまとめ」` });
 }
 $("#gf-body").addEventListener("click", (ev) => {
   const g = ev.target.closest("[data-pg]");
@@ -2078,14 +2182,14 @@ function gifterStates(st) {
   const pw = st.power;
   if (pw) {
     const POWER_NOTE = { "上り調子": "直近 3 か月が、その前の 3 か月の 1.5 倍以上", "安定": "大きく増えても減ってもいない",
-      "温存中": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下なのに、アクティブファンには残っている (出せるのに今は出していない)",
-      "枯れている": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下で、アクティブファンからも消えた" };
+      "温存中": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下なのに、アクティブファンには残っている (出せるのに今は出していない)。前の名前: 温存中",
+      "枯れている": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下で、アクティブファンからも消えた。前の名前: 枯れている" };
     const yen = (pt) => `約 ${shortNum(Math.round(pt * pw.yen_per_pt))} 円`;
-    h += `<h3>戦力 <small class="muted">次の勝負でいくら出せるか。直近 12 か月の貢献ランキングから (上位 100 人までなので「少なくとも」の量)</small></h3>
+    h += `<h3>出せる量 <small class="muted">次の勝負でいくら出せるか。直近 12 か月の貢献ランキングから (上位 100 人までなので「少なくとも」の量)</small></h3>
       <div class="tiles">
         ${tile("1 イベントの上限", `${shortNum(pw.cap)} <small>pt</small>`, `${yen(pw.cap)}${pw.cap2 ? ` ・ 2 番目 ${shortNum(pw.cap2)} pt` : ""} ・ ${num(pw.events)} 回出た`)}
         ${tile("月の予算", `${shortNum(pw.budget)} <small>pt</small>`, `送った ${num(pw.active_months)} か月の中ほど ・ ${yen(pw.budget)}`)}
-        ${tile("状態", `<b title="${esc(POWER_NOTE[pw.state])}">${esc(pw.state)}</b>`, `直近 3 か月 ${shortNum(pw.recent)} pt ・ その前 ${shortNum(pw.before)} pt`, pw.state === "温存中" ? "warn" : "")}
+        ${tile("最近の様子", `<b title="${esc(POWER_NOTE[pw.state])}">${esc(markName(pw.state))}</b>`, `直近 3 か月 ${shortNum(pw.recent)} pt ・ その前 ${shortNum(pw.before)} pt`, pw.state === "温存中" ? "warn" : "")}
         ${tile(`${ym(pw.month)} ここまで`, `${shortNum(pw.spent)} <small>pt</small>`, `${pw.now_tier ? `今月のクラス <b>${esc(pw.now_tier)}</b> ・ ` : ""}残り (予算から) ${shortNum(pw.left)} pt`)}
         ${tile("今月の予想", `${shortNum(pw.forecast)} <small>pt</small>`, `${pw.forecast_tier ? `<b>${esc(pw.forecast_tier)}</b> の見込み ・ ` : ""}先月 ${pw.last_tier ? esc(pw.last_tier) : "—"} ・ 大きな勝負なら ${shortNum(pw.upper)} pt まで`)}
       </div>
@@ -2442,10 +2546,11 @@ async function loadRecorded(days) {
   return (recorded[days] = { at: Date.now(), rows: r.listeners, catalog: r.catalog });
 }
 async function showGifters(sub) {
-  sub = ["list", "trend", "watch", "power", "heat"].includes(sub) ? sub : "list";
+  sub = ["list", "trend", "watch", "power", "heat", "words"].includes(sub) ? sub : "list";
   setSub("#gf-tabs", sub);
   const box = $("#gf-body");
   if (sub === "power") { showPowerRanking(box); return; }
+  if (sub === "words") { box.innerHTML = wordsSection(); return; }
   if (sub === "heat") { showHeat("gifters", box); return; }
   if (!research.data) box.innerHTML = loadingHtml("集計しています (全ルーム分だと、初めは数十秒かかることがあります)…");
   let d, rec = null;
@@ -2464,7 +2569,7 @@ async function showGifters(sub) {
   box.innerHTML = gifterList(d, rec);
   loadPowerFor(d);
 }
-// 一覧の「戦力」の列: 一覧を出してから、出した人の分だけ読んで描き直す (一覧を開くのを待たせない)
+// 一覧の「見込み量」の列: 一覧を出してから、出した人の分だけ読んで描き直す (一覧を開くのを待たせない)
 async function loadPowerFor(d) {
   if (research.powerOf === d) return;
   research.powerOf = d;
@@ -2520,7 +2625,7 @@ function gifterList(d, rec) {
     { label: "ギフター", value: (u) => u.name, html: (u) => `${gifterLink(u.user_id, u.name)} <span class="uid uid-id">ID ${esc(u.user_id)}</span>${u.rec_only ? ' <span class="tag info" title="集めたランキング (上位 30 人・100 人) には出ていない、または上位に入っていない人">記録だけ</span>' : ""}`, cls: "name" },
     ...(all ? [{ label: "分かった pt", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]
       : [{ label: "ほかのルームへ", num: true, value: (u) => u.other_points, html: (u) => `<b>${num(u.other_points)}</b>` }]),
-    { label: "戦力", num: true, value: (u) => ((research.power || {})[u.user_id] || {}).overall ?? null,
+    { label: termShort("総合力"), num: true, value: (u) => ((research.power || {})[u.user_id] || {}).overall ?? null,
       csv: (u) => { const p = (research.power || {})[u.user_id]; return p ? `${p.grade || ""} ${p.overall}` : ""; }, html: (u) => powerCell((research.power || {})[u.user_id]) },
     { label: "主なルーム", sort: false, value: (u) => u.top_rooms.map((r) => r.name).join(" / "), html: (u) => u.top_rooms.map((r) => roomLink(r.key, r.name)).join("、") || "-" },
     { label: "ルーム", num: true, value: (u) => u.room_count, html: (u) => num(u.room_count) },
@@ -2764,7 +2869,7 @@ async function showRooms(sub) {
 
 /* ------------------------------------------------------------ ヒートマップ (ルーム・ギフター) */
 // 四角の大きさ = 今の期間のポイント (落ちた人・ルームは前の期間の値)、色 = 前の期間からの増え減り。箱 = 配信ジャンル (かタイプ) / 最推しのルーム
-// ルームは、大きさを地力 (勝負の時に出せる量)、色を残弾 (今月まだ撃てる割合)、箱をリーグにもできる
+// ルームは、大きさを集められる量 (前の名前: 地力。勝負の時に出せる量)、色を今月の残りの割合 (前: 残弾)、箱をリーグにもできる
 const heatState = { rooms: { span: "12h", compare: "week", slot: "", group: "genre", size: "point", color: "change", zoom: 1, focus: "" }, gifters: { month: "", zoom: 1, focus: "" } };
 const HEAT_ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];
 const HEAT_NEW = "#2f6fd6";
@@ -2776,9 +2881,9 @@ function heatColor(c) {
   return `rgb(${r},${g},${b})`;
 }
 const heatChange = (c) => c == null ? "新しく" : `${c > 0 ? "+" : ""}${Math.round(c * 100)}%`;
-// 残弾の割合 (0〜1) を色の値 (-1〜1) にする: まだ撃てるほど緑 (増えた側)、使い切ったほど赤
+// 今月の残りの割合 (0〜1) を色の値 (-1〜1) にする: まだ出せるほど緑 (増えた側)、使い切ったほど赤
 const ammoShade = (r) => r == null ? 0 : r * 2 - 1;
-const ammoText = (r) => r == null ? "残弾 —" : `残弾 ${Math.round(r * 100)}%`;
+const ammoText = (r) => r == null ? "今月の残り —" : `今月の残り ${Math.round(r * 100)}%`;
 // 四角の色と、四角に書く文字 (cell.color・cell.text が無ければ、前の期間からの増え減り)
 const cellShade = (cell, x) => cell.color ? cell.color(x) : x.change;
 const cellText = (cell, x) => cell.text ? cell.text(x) : heatChange(x.change);
@@ -2834,7 +2939,7 @@ function heatmapHtml(groups, width, height, cell, zoom = 1) {
   return html;
 }
 const ammoLegend = () => `<div class="hm-legend">使い切った ${[-1, -0.6, -0.2].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")}
-  <i style="background:${heatColor(0)}"></i> ${[0.2, 0.6, 1].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")} まだ撃てる (今月の残弾)</div>`;
+  <i style="background:${heatColor(0)}"></i> ${[0.2, 0.6, 1].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")} まだ出せる (今月の残り)</div>`;
 const heatLegend = () => `<div class="hm-legend">減った ${[-1, -0.5, -0.2, -0.05].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")}
   <i style="background:${heatColor(0)}"></i> ${[0.05, 0.2, 0.5, 1].map((c) => `<i style="background:${heatColor(c)}"></i>`).join("")} 増えた
   <span style="margin-left:10px"><i style="background:${HEAT_NEW}"></i> 新しく (前の期間は 0)</span></div>`;
@@ -2856,20 +2961,20 @@ async function showHeat(kind, box) {
     head = `<label>期間 <select data-heat="span">${opt("12h", "12 時間", d.span)}${opt("week", "1 週間 (14 区切り)", d.span)}</select></label>
       ${d.span === "12h" ? `<label>くらべる <select data-heat="compare">${opt("week", "先週の同じ区切り", d.compare)}${opt("prev", "すぐ前の 12 時間", d.compare)}</select></label>` : ""}
       <label>箱 <select data-heat="group">${opt("genre", "配信ジャンル", d.group)}${opt("type", "ルームのタイプ", d.group)}${opt("league", "リーグ", d.group)}</select></label>
-      <label>大きさ <select data-heat="size">${opt("point", "期間のポイント", d.size)}${opt("power", "地力 (勝負の時に出せる量)", d.size)}</select></label>
-      <label>色 <select data-heat="color">${opt("change", "ポイントの増え減り", st.color)}${opt("left", "残弾 (今月まだ撃てる割合)", st.color)}</select></label>
+      <label>大きさ <select data-heat="size">${opt("point", "期間のポイント", d.size)}${opt("power", "集められる量 (勝負の時に出せる量。前: 地力)", d.size)}</select></label>
+      <label>色 <select data-heat="color">${opt("change", "ポイントの増え減り", st.color)}${opt("left", "今月の残り (今月まだ出せる割合。前: 残弾)", st.color)}</select></label>
       <label>${d.span === "week" ? "最後の区切り" : "区切り"} <select data-heat="slot">${d.slots.map((x) => opt(x.slot, `${slotText(x.start)}〜`, d.slot)).join("")}</select></label>`;
     note = `${slotText(d.from)} 〜 ${slotText(d.to)} にイベントで増えたポイント (くらべる期間: ${slotText(d.base_from)} 〜 ${slotText(d.base_to)})。
       区切りは月曜 3:00 から 12 時間ごと (毎日 3:00 と 15:00)。1 時間ごとに残している開催中のイベントのポイントの推移の差で、同時に出ているイベントは足しています。箱は${d.group === "type" ? "ルームのタイプ" : d.group === "league" ? "リーグ (同じイベントに出られる相手)" : "配信ジャンル (最後の配信のジャンル)"}。${d.size === "power"
-        ? `大きさは地力 (主砲・主力・支えの人が、勝負の時にこのルームに出せる量の合計。地力の多い上位 ${num(300)} ルーム)`
+        ? `大きさは集められる量 (1 人で決められる人・数人で決められる人・よく出てくる人が、勝負の時にこのルームに出せる量の合計。多い上位 ${num(300)} ルーム。前の名前: 地力)`
         : `今と前の期間の上位 ${num(300)} ルームずつを出します`}${d.size === "power" || st.color === "left"
-        ? `。地力と残弾は、ギフターのステータス (パワーギフターだけ) から${d.power_at ? `${ago(d.power_at)}に` : ""}作った分です (1 日 1 回、サーバーが暇な時に作り直します)` : ""}`;
+        ? `。集められる量と今月の残りは、ギフターの数字のまとめ (上位 10% の人だけ) から${d.power_at ? `${ago(d.power_at)}に` : ""}作った分です (1 日 1 回、サーバーが暇な時に作り直します)` : ""}`;
     const left = (x) => x.power ? x.left_pt / x.power : null;
     cell = { name: (x) => x.name, go: (x) => x.key ? `#room/${encodeURIComponent(x.key)}` : "",
-      tip: (x) => `今 ${num(x.now)} pt ・ 前 ${num(x.before)} pt ・ ${heatChange(x.change)}${x.power ? `\n地力 ${shortNum(x.power)} pt ・ ${ammoText(left(x))} ・ 主砲 ${num(x.guns)} 人 ・ 主力 ${num(x.mains)} 人` : "\n地力: まだ分かりません"}` };
+      tip: (x) => `今 ${num(x.now)} pt ・ 前 ${num(x.before)} pt ・ ${heatChange(x.change)}${x.power ? `\n集められる量 ${shortNum(x.power)} pt ・ ${ammoText(left(x))} ・ 1 人で決められる人 ${num(x.guns)} 人 ・ 数人で決められる人 ${num(x.mains)} 人` : "\n集められる量: まだ分かりません"}` };
     if (st.color === "left") {
       Object.assign(cell, { color: (x) => ammoShade(left(x)), text: (x) => ammoText(left(x)),
-        groupText: (g) => ammoText(g.power ? g.left_pt / g.power : null), groupTip: (g) => `地力 ${shortNum(g.power || 0)} pt ・ ${ammoText(g.power ? g.left_pt / g.power : null)}` });
+        groupText: (g) => ammoText(g.power ? g.left_pt / g.power : null), groupTip: (g) => `集められる量 ${shortNum(g.power || 0)} pt ・ ${ammoText(g.power ? g.left_pt / g.power : null)}` });
     }
   } else {
     if (!d.month) { box.innerHTML = `<div class="empty">月ごとの集計がまだありません。</div>`; return; }
@@ -2884,7 +2989,7 @@ async function showHeat(kind, box) {
         <button type="button" class="btn small" data-hz="in" title="大きく">＋</button><button type="button" class="btn small" data-hz="reset">元の大きさ</button>
         <button type="button" class="btn small" data-hz="all" hidden>← 全部の箱</button></span>${kind === "rooms" && st.color === "left" ? ammoLegend() : heatLegend()}</div>
     <div class="hint" style="margin-top:0">${note}。「＋」・トラックパッドのピンチ (⌘ + ホイール) で拡大すると、小さな四角にも名前が出ます。箱の名前を押すと、その箱だけを広げます</div>
-    ${d.groups.length ? `<div class="hm-wrap"><div class="hm"></div></div>` : `<div class="empty">${kind === "rooms" && d.size === "power" ? "地力はまだ作っていません。ギフターのステータスを作り終えたあと、サーバーが暇な時に作ります" : "この期間のポイントはありません"}</div>`}`;
+    ${d.groups.length ? `<div class="hm-wrap"><div class="hm"></div></div>` : `<div class="empty">${kind === "rooms" && d.size === "power" ? "集められる量はまだ作っていません。ギフターの数字のまとめを作り終えたあと、サーバーが暇な時に作ります" : "この期間のポイントはありません"}</div>`}`;
   box.querySelectorAll("select[data-heat]").forEach((el) => el.addEventListener("change", () => {
     st[el.dataset.heat] = el.value;
     if (el.dataset.heat === "span") st.slot = "";
@@ -2936,7 +3041,7 @@ async function showHeat(kind, box) {
   }, { passive: false });
 }
 
-// ルームのページの、中のギフターのマップ (heat.py が作っておいた分を読むだけ)。大きさ = このルームに出せる量、色 = 今月の残弾
+// ルームのページの、中のギフターのマップ (heat.py が作っておいた分を読むだけ)。大きさ = このルームに出せる量、色 = 今月の残り
 async function loadRoomPower(rid, key) {
   const box = $("#rp-power");
   if (!box) return;
@@ -2944,26 +3049,26 @@ async function loadRoomPower(rid, key) {
   try { d = await api(`/api/heat?kind=room_power&room=${encodeURIComponent(rid)}`); } catch (e) { return; }
   if (page.name !== "room" || page.arg !== key || !$("#rp-power")) return;
   if (!d.found) {
-    box.innerHTML = d.built ? "" : `<h3>このルームの戦力</h3><div class="empty">まだ作っていません。ギフターのステータスを作り終えたあと、サーバーが暇な時に作ります</div>`;
+    box.innerHTML = d.built ? "" : `<h3>このルームが集められる量</h3><div class="empty">まだ作っていません。ギフターの数字のまとめを作り終えたあと、サーバーが暇な時に作ります</div>`;
     return;
   }
   const left = d.power ? d.left_pt / d.power : null;
-  const groups = ["主砲", "主力", "支え"].map((c) => ({ name: c, items: d.gifters.filter((g) => g.class === c).map((g) => ({ ...g, size: g.power })) }))
+  const groups = ["主砲", "主力", "支え"].map((c) => ({ name: term(c), items: d.gifters.filter((g) => g.class === c).map((g) => ({ ...g, size: g.power })) }))
     .filter((g) => g.items.length).map((g) => ({ ...g, size: g.items.reduce((a, x) => a + x.size, 0), power: g.items.reduce((a, x) => a + x.power, 0),
       left_pt: g.items.reduce((a, x) => a + x.power * x.left, 0) }));
   const cell = { name: (x) => x.name || `ID ${x.user_id}`, go: (x) => `#gifter/${encodeURIComponent(x.user_id)}`,
     color: (x) => ammoShade(x.left), text: (x) => ammoText(x.left),
-    tip: (x) => `このルームに出せる量 ${shortNum(x.power)} pt ・ ${ammoText(x.left)}\n${x.class}${x.state ? ` ・ 状態: ${x.state}` : ""}`,
+    tip: (x) => `このルームに出せる量 ${shortNum(x.power)} pt ・ ${ammoText(x.left)}\n${term(x.class)}${x.state ? ` ・ 最近の様子: ${markName(x.state)}` : ""}`,
     groupText: (g) => `${num(g.items.length)} 人 ・ ${ammoText(g.power ? g.left_pt / g.power : null)}`,
     groupTip: (g) => `出せる量 ${shortNum(g.power)} pt ・ ${ammoText(g.power ? g.left_pt / g.power : null)}` };
-  box.innerHTML = `<h3>このルームの戦力 <small class="muted">勝負の時に出せる量と、今月の残弾</small></h3>
+  box.innerHTML = `<h3>このルームが集められる量 <small class="muted">勝負の時に出せる量と、今月の残り (前の名前: このルームの戦力・地力・残弾)</small></h3>
     <div class="tiles">
-      ${tile("地力", `${shortNum(d.power)} <small>pt</small>`, `全 ${num(d.rooms)} ルームで ${num(d.rank)} 位`)}
-      ${tile("今月の残弾", ammoText(left).replace("残弾 ", ""), `${shortNum(d.left_pt)} pt`)}
-      ${tile("主砲・主力", `${num(d.guns)} <small>人</small> ・ ${num(d.mains)} <small>人</small>`, `支えも入れて ${num(d.people)} 人`)}
+      ${tile(term("地力"), `${shortNum(d.power)} <small>pt</small>`, `全 ${num(d.rooms)} ルームで ${num(d.rank)} 位`)}
+      ${tile("今月の残り", ammoText(left).replace("今月の残り ", ""), `${shortNum(d.left_pt)} pt`)}
+      ${tile("1 人で・数人で決められる人", `${num(d.guns)} <small>人</small> ・ ${num(d.mains)} <small>人</small>`, `よく出てくる人も入れて ${num(d.people)} 人`)}
     </div>
     <div class="row" style="margin:8px 0">${ammoLegend()}</div>
-    <div class="hint" style="margin-top:0">大きさ = その人がこのルームに勝負の時に出せる量 (このルームでの本気の上限 × 出動率)、色 = その人の今月の残弾。
+    <div class="hint" style="margin-top:0">大きさ = その人がこのルームに勝負の時に出せる量 (このルームでの本気の上限 × 勝負に出る割合)、色 = その人の今月の残り。
       大きくて緑の人は、終盤にまだ来られる人です。付き合い投げの人は数えません。出せる量の多い ${num(d.gifters.length)} 人まで。${ago(d.at)}に作った分 (1 日 1 回、サーバーが暇な時に作り直します)</div>
     ${accTag("room_power", "room_power_size")}
     <div class="hm-wrap"><div class="hm"></div></div>`;
@@ -3952,12 +4057,12 @@ async function showCollect() {
 function renderAcc() {
   const box = $("#c-acc");
   if (!box || !ACC) return;
-  const rows = Object.entries(ACC.predictions || {}).map(([k, p]) => ({ k, ...p }));
+  const rows = Object.keys(ACC.predictions || {}).map((k) => ({ k, ...accP(k) }));
   box.innerHTML = (ACC.found ? `<div class="hint" style="margin-top:0">${tm(ACC.at, true)} に数えた分 (${(ACC.months || []).map((m) => esc(m.replace("-", "/"))).join("・")} の初めの時点から${ACC.sample ? `。ギフターは ${num(ACC.sample)} 人を選んで` : ""})${ACC.current === false ? "。<b>前の線で数えた結果です</b>" : ""}</div>` : "")
     + dataTable("acc", [
       { label: "予測", value: (r) => r.label, html: (r) => `<b>${esc(r.label)}</b>`, cls: "name" },
       { label: "当たり", num: true, value: (r) => r.checked && r.n ? r.rate : -1, html: (r) => r.checked && r.n ? accRate(r.hit, r.n) : '<span class="tag warn">未検証</span>' },
-      { label: "種類ごと", sort: false, value: (r) => "", html: (r) => r.by ? Object.entries(r.by).map(([kind, b]) => `${esc(kind)} ${b.n ? Math.round(b.rate * 100) : "—"}%${b.base != null ? ` <span class="uid">(だれにでも ${Math.round(b.base * 100)}%)</span>` : ""} <span class="uid">${num(b.n)} 件</span>`).join("<br>") : "" },
+      { label: "種類ごと", sort: false, value: (r) => "", html: (r) => r.by ? Object.entries(r.by).map(([kind, b]) => `${esc(r.k === "status_state" ? markName(kind) : kind)} ${b.n ? Math.round(b.rate * 100) : "—"}%${b.base != null ? ` <span class="uid">(だれにでも ${Math.round(b.base * 100)}%)</span>` : ""} <span class="uid">${num(b.n)} 件</span>`).join("<br>") : "" },
       { label: "実際 ÷ 予測", num: true, value: (r) => r.ratio_median, html: (r) => r.ratio_median != null ? `${r.ratio_median.toFixed(2)} <small>倍</small>` : "-" },
       { label: "何を確かめたか", sort: false, value: (r) => r.claim, html: (r) => `<span class="uid">${esc(r.claim)}</span>` },
     ], rows, { sort: null, phone: [0, 1], limit: 30, csvName: "予測の当たり方",
@@ -4045,7 +4150,7 @@ async function showHome() {
 /* ------------------------------------------------------------ 上の検索欄 */
 const qs = { seq: 0, timer: null, items: [], hl: -1, kind: "all", last: null };
 try { qs.kind = localStorage.getItem("searchKind") || "all"; } catch (e) { /* 使えない時は「すべて」 */ }
-const SEARCH_GROUPS = ["ルーム", "ギフター", "イベント"];
+const SEARCH_GROUPS = ["ルーム", "ギフター", "イベント", "言葉"];
 function closeSearch() { $("#q-results").hidden = true; qs.hl = -1; }
 async function runSearch() {
   const q = $("#q").value.trim(), seq = ++qs.seq, box = $("#q-results");
@@ -4077,16 +4182,19 @@ function renderSearch() {
       : !x.collected_at ? "まだ情報を集めていません (これから集めます)" : "" }));
   r.events.forEach((e) => items.push({ grp: "イベント", href: `#event/${e.event_id}`, t: e.name, s: e.state === "ongoing" ? "開催中" : e.end ? ymd(e.end) : "",
     note: e.named === false ? "名前はまだ分かっていません (参加ルームを集めると分かります)" : "" }));
+  // 分析の言葉 (前の名前でも見つかる)。サーバーには問い合わせない
+  wordHit(q).slice(0, 5).forEach((w) => items.push({ grp: "言葉", href: `#gifters/words?q=${encodeURIComponent(w.old)}`, t: w.name,
+    s: w.old !== w.name ? `前: ${w.old}` : "", note: w.note }));
   // ルーム → ギフター → イベントの順に並べ、上のボタンで種類を絞る
   const count = Object.fromEntries(SEARCH_GROUPS.map((g) => [g, items.filter((it) => it.grp === g && !it.t.startsWith("ユーザー ID")).length]));
   const shown = items.filter((it) => qs.kind === "all" || it.grp === qs.kind)
     .sort((a, b) => SEARCH_GROUPS.indexOf(a.grp) - SEARCH_GROUPS.indexOf(b.grp));
   qs.items = shown; qs.hl = shown.length ? 0 : -1;
-  const chips = `<div class="chips">${[["all", "すべて", items.length], ...SEARCH_GROUPS.map((g) => [g, g, count[g]])]
+  const chips = `<div class="chips">${[["all", "すべて", items.length], ...SEARCH_GROUPS.filter((g) => g !== "言葉" || count[g] || qs.kind === g).map((g) => [g, g, count[g]])]
     .map(([k, label, n]) => `<button type="button" data-kind="${k}" class="${qs.kind === k ? "on" : ""}">${label} ${num(n)}</button>`).join("")}</div>`;
   let grp = "";
   const list = shown.map((it, i) => `${it.grp !== grp ? `<div class="grp">${(grp = it.grp)}<span class="n">${num(count[it.grp])} 件</span></div>` : ""}<a href="${esc(it.href)}" class="${i === qs.hl ? "hl" : ""}" data-i="${i}"><span>${esc(it.t)}${it.t2 ? ` <small class="uid">${esc(it.t2)}</small>` : ""}${it.note ? `<small class="via">${esc(it.note)}</small>` : ""}</span><span class="s">${esc(it.s)}</span></a>`).join("");
-  const missing = (qs.kind === "all" ? SEARCH_GROUPS : [qs.kind]).filter((g) => !count[g]);
+  const missing = (qs.kind === "all" ? SEARCH_GROUPS : [qs.kind]).filter((g) => !count[g] && g !== "言葉");
   box.innerHTML = chips + list + (missing.length && shown.length ? `<div class="none">${missing.join("・")}は見つかりません</div>` : "")
     + (!shown.length ? `<div class="none">「${esc(q)}」に当てはまる${qs.kind === "all" ? "もの" : qs.kind}は見つかりません。名前の一部や、URL の名前・ID でも探せます (空白・全角半角・ひらがなカタカナのちがいは気にしません)。</div>` : "");
 }
