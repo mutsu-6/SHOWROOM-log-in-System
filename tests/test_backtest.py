@@ -98,3 +98,31 @@ def test_claims_have_a_baseline():
     assert r["上り調子"]["rate"] == 0.5 and r["上り調子"]["base"] == 0.75  # 全員に「上り調子」と言えば 4 人中 3 人当たる (言う意味が無い)
     assert r["安定"]["rate"] == 0.5
     assert backtest.pairs_agree({1: 3, 2: 2, 3: 1}, {1: 30, 2: 10, 3: 20}) == (2, 3)
+
+
+def test_candidates_put_one_big_round_below_steady_givers():
+    once = {"overall": 1_000_000, "fire": 1_000_000, "hp": 1_000_000}  # 1 回だけ大きく出した人 (半年に 1 か月、最後は 150 日前)
+    steady = {"overall": 200_000, "fire": 200_000, "hp": 300_000}  # 毎月出している人
+    a = backtest.candidates(once, 0, 0, 1 / 6, 150)
+    b = backtest.candidates(steady, 250_000, 600_000, 1.0, 5)
+    assert a["current"] > b["current"]  # 今の式では、1 回だけの人が上
+    assert a["freq"] < b["freq"] and a["freq_recent"] < b["freq_recent"] and a["freq_recent_budget"] < b["freq_recent_budget"]
+    assert backtest.candidates(once, 0, 0, None, None)["freq_recent"] == 0
+
+
+def test_candidate_scores():
+    assert backtest.auc_counts({1: 3, 2: 2, 3: 1, 4: 1}, {1: True, 2: False, 3: True, 4: False}) == (2.5, 4)
+    assert backtest.top_overlap({1: 3, 2: 2, 3: 1}, {1: 0, 2: 5, 3: 9}, 2) == 1
+    c = backtest.Cands()
+    c.add([(1, {k: 3.0 for k in backtest.CANDIDATES}, 30.0, 5), (2, {k: 1.0 for k in backtest.CANDIDATES}, 0.0, 1),
+           (3, {k: 2.0 for k in backtest.CANDIDATES}, 10.0, 1)], seed=1)
+    r = c.result()["current"]
+    assert r["order"] == 1.0 and r["appear"] == 1.0 and r["came_order"] == 1.0
+
+
+def test_run_reports_candidates(tmp_path):
+    with Store(tmp_path) as s:
+        _fill(s)
+    out = backtest.run(tmp_path, MONTHS)
+    assert set(out["candidates"]) == set(backtest.CANDIDATES)
+    assert out["candidates"]["freq"]["n_pairs"] >= 1
