@@ -504,6 +504,19 @@ def test_event_backtest_reads_rooms_by_event_and_by_room(traced):
     assert full_scans(state_dir, seen) == []
 
 
+def test_pair_backtest_reads_rooms_and_rankings_by_key(traced):
+    from datetime import datetime
+
+    from showroom_keeper import backtest_pair
+    from showroom_keeper.status import JST
+    month = datetime.fromtimestamp(NOW - 17 * DAY, JST).strftime("%Y-%m")  # イベント 1 の始まった月
+    state_dir, seen = traced
+    seen.clear()
+    out = backtest_pair.run(state_dir, [month], [])
+    assert out["periods"]["dev"]["all"]["cases"] and any("FROM contributions WHERE event_id=? AND room_id=?" in q for q, _ in seen)
+    assert full_scans(state_dir, seen) == []
+
+
 def test_multiplier_check_reads_gifts_by_room_and_time(traced):
     import json
 

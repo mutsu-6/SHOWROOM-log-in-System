@@ -2777,6 +2777,26 @@ async function saveWatch(uid, watched, memo) {
 }
 
 /* ------------------------------------------------------------ ギフターのページ */
+// ルームごとの支援の記録 (過去の事実: 最大・ふつう・直近と回の数。予測ではない)。support_card.by_room
+function supportCard(sp, uid) {
+  const relTag = (r) => `<span class="tag ${r.reliability === "参考" ? "warn" : r.reliability === "低" ? "" : "live"}">${esc(r.reliability)}</span>`;
+  return `<h3>ルームごとの支援の記録 <small class="muted">過去の事実で、予測ではありません ・ イベントの貢献 pt (倍率は入っている) ・ 365 日に多く送った順に ${num(sp.rooms.length)} ルーム${sp.room_total > sp.rooms.length ? ` (全 ${num(sp.room_total)} ルーム)` : ""}</small></h3>` + dataTable("gp-support", [
+    { label: "ルーム", value: (r) => r.name, html: (r) => r.key ? roomLink(r.key, r.name) : esc(r.name), cls: "name" },
+    { label: "過去の最大", num: true, value: (r) => r.max.point, html: (r) => `<b>${shortNum(r.max.point)}</b> <small>pt</small><div class="uid">${eventLink(r.max.event_id, r.max.event)} ・ ${ymd(r.max.end)} ・ 載った ${num(r.max.rounds)} 回の中</div>` },
+    { label: "ふつう (365 日)", num: true, value: (r) => r.normal.point, html: (r) => r.normal.point == null ? `<span class="uid">365 日は載っていない</span>`
+      : `<b>${shortNum(r.normal.point)}</b> <small>pt</small><div class="uid">${r.normal.low != null ? `幅 ${shortNum(r.normal.low)}〜${shortNum(r.normal.high)} ・ ` : ""}${num(r.normal.rounds)} 回の中ほど</div>` },
+    { label: "信頼度", value: (r) => ({ 高: 4, 中: 3, 低: 2, 参考: 1 })[r.reliability] || 0, html: (r) => `${relTag(r)}<div class="uid">365 日に ${num(r.normal.rounds)} 回</div>` },
+    { label: "直近 90 日", num: true, value: (r) => r.recent.ratio, html: (r) => !r.recent.rounds ? `<span class="uid">載っていない</span>`
+      : `${shortNum(r.recent.point)} <small>pt</small><div class="uid">${num(r.recent.rounds)} 回${r.recent.ratio != null ? ` ・ ふつうの ${r.recent.ratio.toFixed(2)} 倍だった` : ""}</div>` },
+    { label: "出てきた割合 (180 日)", num: true, value: (r) => r.share180.usable ? r.share180.listed / r.share180.usable : null,
+      html: (r) => r.share180.usable ? `${pctText(r.share180.listed / r.share180.usable)}<div class="uid">${num(r.share180.listed)} / ${num(r.share180.usable)} 回</div>` : `<span class="uid">使える回が無い</span>` },
+    { label: "見えていない回 (365 日)", num: true, value: (r) => r.year.outside_top100 + r.year.unknown,
+      html: (r) => `<span class="uid">ルームの回 ${num(r.year.ran)} ・ 100 位の外 ${num(r.year.outside_top100)} ・ 読めていない ${num(r.year.unknown)} ・ 送っていない ${num(r.year.zero)}</span>` },
+  ], sp.rooms, { sort: null, phone: [0, 1, 2], csvName: `ギフター_${uid}_ルームごとの支援の記録`,
+    note: "使う回は、イベントが終わったあとに読んだ貢献ランキングで、名前で推測した行が無いものだけ (開催中の途中の値は使わない)。"
+      + "100 位の外 = 100 人の一覧に載っていない回 (0 ではなく、分からない)。送っていない = 100 人に届かない一覧に載っていない回 (全員が載るので 0 pt)。読めていない回は、出てきた割合の分母に入れない。"
+      + "ふつうの幅は、4 回以上の時だけ (下から 4 分の 1〜上から 4 分の 1)。次のイベントの見込みは、採点で何も考えない予測に勝ってから出します" });
+}
 async function showGifter(uid) {
   const box = $("#gp");
   research.selected = uid;
@@ -2816,6 +2836,7 @@ async function showGifter(uid) {
   if (rec) tiles.push(tile("記録したギフト", `${shortNum(rec.total.points)} <small>pt</small>`, `有料 ${shortNum(rec.total.paid_points)} ・ ${num(rec.total.times)} 回 ・ 最後 ${ago(rec.last_at)}`));
   html += `<div class="tiles">${tiles.join("")}</div>`;
   if (s && (s.total_points || s.event_count)) html += SCOPE_NOTE;
+  if (d.found && d.support && d.support.rooms.length) html += supportCard(d.support, uid);
   if (d.found && d.status) html += gifterStatus(d.status, uid) + (d.status.found ? gifterPsyche(d.status, uid) : "");
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
