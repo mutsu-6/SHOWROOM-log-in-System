@@ -1,8 +1,9 @@
-"""ギフター × ルームの、過去の支援の記録 (4 つの量のうち、事実の 3 つ)。ギフターのページの「ルームごとの支援の記録」。
+"""ギフター × ルームの、過去の支援の記録と次のイベントの見込み (4 つの量)。ギフターのページの「ルームごとの支援の記録」。
 
 全体の見直し (2026-10-27、project の資料「全体見直し_2026-10-27」の 4 章の ④) で M さんが選んだ。
 システムの目的「だれが、どのルームに、何 pt 投げる実力があるか」の、過去の最大・ふつう・直近を、ルームごとに出す。
-**予測ではない** (次のイベントの見込みは、採点 backtest_pair で何も考えない予測に勝ってから出す)。
+最大・ふつう・直近は過去の事実。次のイベントの見込み (next) だけが予測で、採点 (backtest_pair) で何も考えない予測に勝った式を使い、
+その採点の数字 (NEXT_SCORE) を一緒に出す (M さんが 2026-10-27 に「マージして見込みも足す」を選んだ)。
 
 - 量は、イベントの貢献 pt (SHOWROOM の取得値。イベントの倍率はもう入っている。掛け直さない)
 - 使う回 = 貢献ランキングを、イベントが終わったあとに読んだ回 (開催中の途中の値は使わない)・名前で推測した行が無い・1 人以上
@@ -24,6 +25,10 @@ YEAR = 365 * DAY
 RATE_DAYS = 180 * DAY
 RECENT_DAYS = 90 * DAY
 ROOMS = 8  # 出すルームの数 (365 日に多く送った順)
+# 次のイベントの見込みの採点 (backtest_pair。Cursor が 2026-10-27 に Mac の写しの全 5,359 ルームで動かした。確かめる期間 2026-07・08。
+# 遡及の比較で、ルームがそのイベントに出ることは分かっているとした)。式か採点の線を変えたら、動かし直して書き直す
+NEXT_SCORE = {"period": "2026-07・08", "rooms": 5359, "mae": 346, "naive_mae": 411, "order": 0.785, "naive_order": 0.785,
+              "appear_auc": 0.902, "band_inside": 0.758, "newcomers": 0.26}
 
 # この人の、推測でない貢献ランキングの行 (contributions_user_pt の索引で 1 人分を読み、ルームの回は主キーで引く)
 MINE_SQL = """SELECT c.event_id, c.room_id, c.point, e.name, e.end, e.show_ranking, r.ranking_at, r.c_count
@@ -67,6 +72,8 @@ def by_room(s: Any, uid: int, now: float, label: Any = None, limit: int = ROOMS)
         use = [r for r in ran if usable(r)]
         absent = [r for r in use if r["event_id"] not in listed]
         use180 = [r for r in use if r["end"] > now - RATE_DAYS]
+        use90 = [r for r in use if r["end"] > now - RECENT_DAYS]
+        last6 = y[:6]  # 365 日に載った直近 6 回 (新しい順)
         normal = median(y)
         q = _quartiles(y)
         key, name = label(rid) if label else (str(rid), str(rid))
@@ -86,5 +93,10 @@ def by_room(s: Any, uid: int, now: float, label: Any = None, limit: int = ROOMS)
             # 出てきた割合 (180 日。分母は使える回だけ)
             "share180": {"listed": sum(1 for r in use180 if r["event_id"] in listed), "usable": len(use180)},
             "reliability": reliability(len(y), None) if y else "参考",
+            # 次のイベントの見込み (ルームがそのイベントに出たら。上位 100 人に載る量): 直近 90 日の中ほど × 直近 90 日の出てくる割合。
+            # backtest_pair で、何も考えない予測より外れが小さかった式 (NEXT_SCORE)。幅は、出てきた時の過去 6 回の最小〜最大 (3 回以上の時)
+            "next": {"point": round(median(recent) * len(recent) / len(use90)) if recent and use90 else 0,
+                     "listed90": len(recent), "usable90": len(use90), "when_came": median(recent),
+                     "low": min(last6) if len(last6) >= 3 else None, "high": max(last6) if len(last6) >= 3 else None},
         })
-    return {"rooms": rooms, "room_total": len(by), "unit": "イベントの貢献 pt (SHOWROOM の取得値。倍率は入っている)"}
+    return {"rooms": rooms, "room_total": len(by), "unit": "イベントの貢献 pt (SHOWROOM の取得値。倍率は入っている)", "next_score": NEXT_SCORE}

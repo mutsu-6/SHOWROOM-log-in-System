@@ -46,6 +46,9 @@ def test_support_record_by_room(tmp_path):
     assert r1["share180"] == {"listed": 4, "usable": 6}
     assert r1["reliability"] == "中" and r2["reliability"] == "参考"
     assert r2["normal"]["low"] is None and r2["year"]["listed"] == 1
+    # 次のイベントの見込み: 直近 90 日に載った 2 回の中ほど 4500 × 使える 4 回 (13・14・21・22) のうち 2 回 = 2250。幅は 1000〜5000
+    assert r1["next"] == {"point": 2250, "listed90": 2, "usable90": 4, "when_came": 4500, "low": 1000, "high": 5000}
+    assert r2["next"]["point"] == 300 and r2["next"]["low"] is None and out["next_score"]["mae"] < out["next_score"]["naive_mae"]
 
 
 def test_gifter_page_has_support_record(tmp_path):
