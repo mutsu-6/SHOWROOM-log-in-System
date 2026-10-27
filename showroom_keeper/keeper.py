@@ -487,6 +487,7 @@ class Keeper:
             log.warning("情報を集める予定が正しくありません (%s)。%s に集めます", e, describe(slots))
         state_dir = Path(self.cfg.state_file).parent
         research.THROTTLE.set_base(self.cfg.research_gap)
+        research.THROTTLE.keep(state_dir)  # 起動し直す前の休みと止めた回数を続ける
         if self.cfg.research_all:
             from . import sweep
 

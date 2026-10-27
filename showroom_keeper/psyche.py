@@ -505,10 +505,10 @@ def judge(lines: dict[str, Any]) -> dict[str, Any] | None:
     # ---- 相手の名簿として見る時の注意
     notes = []
     if saver >= 2 or phase == "潜伏の疑い":
-        notes.append(f"今は静かでも、休んだ分を貯めて最後に出してくることがある (休んだ分の見込み: およそ {stored:,} pt)"
+        notes.append(f"前に、休んだあとにまとめて出したことがある (休んだ月数 × ふだんの月の量 = {stored:,} pt。貯めたお金の額ではない)"
                      if stored else "休んでから、貯めた分をまとめて出す過去がある")
     if addiction >= 40:
-        notes.append("のめり込みが強い。負けそうになると、予算を超えてでも出してくる見込み (残弾を多めに見る)")
+        notes.append("のめり込みの印が多い (ふだんを大きく超えた月・負けのあとの取り返し・だんだん増える など。くわしくは性質の欄)。これから超えて出すかは確かめていない")
     if phase == "冷却中":
         notes.append("熱が下がっている。大きな勝負でも、前ほどは出さない見込み")
     if burnout:
