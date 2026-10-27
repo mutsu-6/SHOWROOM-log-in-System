@@ -23,6 +23,7 @@ import heapq
 import json
 import logging
 import math
+import os
 import threading
 import sqlite3
 import time
@@ -47,6 +48,7 @@ PAUSE = 3600.0  # 1 回目に止める時間 (秒)。続けて止めるたびに
 MAX_PAUSE = 24 * 3600.0  # 止める時間の上限 (秒)
 RECOVER_AFTER = 200  # 再開したあと、続けてこの回数成功したら、止める時間を 1 回目の長さに戻す
 PAUSE_LOG = 20  # 覚えておく、止めた記録の数
+THROTTLE_FILE = "throttle.json"  # 止めた回数・止める時刻・止めた記録を残すファイル (state のフォルダ。起動し直しても、休みを消さないため)
 PAST_EVENT_PAGES = 100  # 過去のイベント一覧を読むページ数の上限 (1 ページ約 30 件)
 ROOM_REFRESH = 20 * 3600  # 累計ランキングなどを取り直すまでの時間 (秒)
 HOLD_RANKINGS = 30  # 全ルームの収集で、貢献ランキングをこの件数までためてから、まとめて保存する (書く量を減らすため)
@@ -85,6 +87,45 @@ class Throttle:
         self.pauses = 0  # 続けて止めた回数 (RECOVER_AFTER 回成功すると 0 に戻る)
         self.ok_streak = 0
         self.pause_log: list[dict[str, Any]] = []  # 止めた記録 (新しい順。管理画面に出す)
+        self._file: Path | None = None  # 止めた回数と休みを残すファイル (keep で決める。None なら残さない)
+
+    def keep(self, state_dir: Path) -> None:
+        """止めた回数・休みの終わり・止めた記録を state_dir に残し、前に残した分を読む (keeper の起動の時に 1 回)。
+
+        前は止めた回数と休みがメモリの中だけで、起動し直すと 0 に戻った。マージのたびに自動で起動し直すので、
+        SHOWROOM に止められて休んでいる時に起動し直すと、休みが消えてすぐに問い合わせ、止められる時間を延ばすおそれがあった
+        (全体の見直し 2026-10-27 の S2)。休みの終わりは時計の時刻で残し、読む時に今の時計からの残りに直す。"""
+        self._file = Path(state_dir) / THROTTLE_FILE
+        try:
+            saved = json.loads(self._file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(saved, dict):
+            return
+        with self._lock:
+            try:
+                self.pauses = max(self.pauses, int(saved.get("pauses") or 0))
+                self.pause_log = [p for p in saved.get("pause_log") or [] if isinstance(p, dict)][:PAUSE_LOG] or self.pause_log
+                left = float(saved.get("until") or 0) - self._wall()
+            except (TypeError, ValueError):
+                return
+            if left > 0:
+                self.paused_until = max(self.paused_until, self._clock() + min(left, MAX_PAUSE))
+                log.warning("起動し直す前に始めた SHOWROOM への問い合わせの休みを続けます (あと %.0f 分。続けて %d 回目)",
+                            left / 60, self.pauses)
+
+    def _save(self) -> None:
+        """止めた回数と休みをファイルに残す (止めた時と、止める時間を戻した時だけ。ふだんの問い合わせでは書かない)。"""
+        if self._file is None:
+            return
+        left = self.paused_until - self._clock()
+        data = {"pauses": self.pauses, "until": self._wall() + left if left > 0 else 0, "pause_log": self.pause_log}
+        try:
+            tmp = self._file.with_name(self._file.name + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self._file)
+        except OSError as e:  # 残せなくても、問い合わせは止めない
+            log.warning("問い合わせの休みをファイルに残せませんでした: %s", e)
 
     def set_base(self, gap: float) -> None:
         self.base = max(float(gap), 0.2)
@@ -143,6 +184,7 @@ class Throttle:
         if self.pauses and self.ok_streak >= RECOVER_AFTER:
             log.info("SHOWROOM への問い合わせが続けて成功したので、次に止める時間を %d 分に戻します", PAUSE // 60)
             self.pauses = 0
+            self._save()
 
     def _failed(self, why: str) -> None:
         self.errors += 1
@@ -156,6 +198,7 @@ class Throttle:
             now = self._wall()
             self.pause_log = [{"at": now, "until": now + length, "seconds": length, "count": self.pauses, "why": why},
                               *self.pause_log][:PAUSE_LOG]
+            self._save()
             text = f"{length / 3600:g} 時間" if length >= 3600 else f"{length / 60:.0f} 分"
             if self.name == "SHOWROOM":
                 log.warning("SHOWROOM への問い合わせが続けて失敗したので、全ルームの収集などを %s止めます (続けて %d 回目。%s)。"

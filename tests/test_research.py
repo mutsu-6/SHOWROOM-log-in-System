@@ -199,6 +199,52 @@ def test_throttle_pauses_longer_each_time_and_recovers(tmp_path):
     assert th.state()["pauses"] == 0 and th.state()["next_pause"] == research.PAUSE
 
 
+def test_throttle_keeps_pause_across_restart(tmp_path):
+    """止めた回数と休みは、起動し直しても消えない (休んでいる時にマージで起動し直しても、すぐに問い合わせない)。"""
+    wall = {"now": 1_000_000.0}
+    t = FakeTime()
+    th = research.Throttle(1.0, sleep=t.sleep, clock=t.clock, wall=lambda: wall["now"])
+    th.keep(tmp_path)  # 残したものが無い時は何もしない
+    assert th.state()["pauses"] == 0 and th.state()["paused"] == 0
+
+    def busy(path):
+        raise http_error(403)
+
+    for _ in range(research.PAUSE_AFTER):
+        with pytest.raises(urllib.error.HTTPError):
+            th.call(busy, "/x")
+    assert th.state()["paused"] == pytest.approx(research.PAUSE, abs=60)
+
+    # 10 分後に起動し直した: 新しい Throttle (時計は 0 から) でも、残り約 50 分休み、次に止める時間は倍
+    wall["now"] += 600
+    t2 = FakeTime()
+    th2 = research.Throttle(1.0, sleep=t2.sleep, clock=t2.clock, wall=lambda: wall["now"])
+    th2.keep(tmp_path)
+    st = th2.state()
+    assert st["paused"] == pytest.approx(research.PAUSE - 600, abs=60)
+    assert st["pauses"] == 1 and st["next_pause"] == 2 * research.PAUSE and st["pause_log"][0]["why"] == "HTTP 403"
+    th2.call(lambda p: {}, "/x")
+    assert t2.waits[0] == pytest.approx(research.PAUSE - 600, abs=60)  # 休みの残りを待ってから問い合わせる
+
+    # 続けて成功して止める時間を戻したことも残る。休みの終わりを過ぎてから起動し直しても、休まない
+    for _ in range(research.RECOVER_AFTER):
+        th2.call(lambda p: {}, "/x")
+    wall["now"] += 2 * research.PAUSE
+    th3 = research.Throttle(1.0, sleep=lambda s: None, clock=lambda: 0.0, wall=lambda: wall["now"])
+    th3.keep(tmp_path)
+    assert th3.state()["pauses"] == 0 and th3.state()["paused"] == 0
+
+
+def test_throttle_keep_ignores_broken_file(tmp_path):
+    (tmp_path / research.THROTTLE_FILE).write_text("{こわれた", encoding="utf-8")
+    th = research.Throttle(0, sleep=lambda s: None)
+    th.keep(tmp_path)  # 読めなくても起動を止めない
+    assert th.state()["pauses"] == 0 and th.state()["paused"] == 0
+    (tmp_path / research.THROTTLE_FILE).write_text('{"pauses": "x", "until": []}', encoding="utf-8")
+    th.keep(tmp_path)
+    assert th.state()["paused"] == 0
+
+
 def test_analyze_candidates_fans_and_similar_rooms(collected):
     tmp_path, _, _, _ = collected
     record_gift(tmp_path, "other", 9, {"t": 2, "u": 20, "ac": "大口", "g": 5, "n": 3, "created_at": NOW - 3600})
