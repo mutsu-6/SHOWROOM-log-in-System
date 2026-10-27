@@ -1915,7 +1915,7 @@ def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[st
         recorded = _recorded_types(s, rooms, rec, uid, gifts)
         involve = _involvement(state_dir, s, rooms, rec, uid)
     cov = coverage(state_dir)
-    from . import gifter_status
+    from . import gifter_status, support_card
 
     with Store(state_dir) as s:
         rooms.store = s  # 最初の接続は閉じたので、名前を引く接続を替える (多くのルームに出た人で、閉じた接続を使って止まっていた)
@@ -1929,7 +1929,8 @@ def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[st
                                     _signup(s, rec).guess(uid)),
                 "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "recorded_types": recorded, "involvement": involve, "timeline": _timeline(s, rooms, gifts, uid),
                 "visits": visits, "overlap": overlap,
-                "states": _states(s, rooms, uid), "status": gifter_status.read(s, uid)}
+                "states": _states(s, rooms, uid), "status": gifter_status.read(s, uid),
+                "support": support_card.by_room(s, uid, time.time(), rooms.label)}
 
 
 def _visits_of(state_dir: Path, s: Store, uid: int) -> list[tuple[int, str, int]]:
