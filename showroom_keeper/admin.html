@@ -2791,10 +2791,10 @@ function supportCard(sp, uid) {
     { label: "出てきた割合 (180 日)", num: true, value: (r) => r.share180.usable ? r.share180.listed / r.share180.usable : null,
       html: (r) => r.share180.usable ? `${pctText(r.share180.listed / r.share180.usable)}<div class="uid">${num(r.share180.listed)} / ${num(r.share180.usable)} 回</div>` : `<span class="uid">使える回が無い</span>` },
     { label: "見えていない回 (365 日)", num: true, value: (r) => r.year.outside_top100 + r.year.unknown,
-      html: (r) => `<span class="uid">ルームの回 ${num(r.year.ran)} ・ 100 位の外 ${num(r.year.outside_top100)} ・ 読めていない ${num(r.year.unknown)} ・ 0 ${num(r.year.zero)}</span>` },
+      html: (r) => `<span class="uid">ルームの回 ${num(r.year.ran)} ・ 100 位の外 ${num(r.year.outside_top100)} ・ 読めていない ${num(r.year.unknown)} ・ 送っていない ${num(r.year.zero)}</span>` },
   ], sp.rooms, { sort: null, phone: [0, 1, 2], csvName: `ギフター_${uid}_ルームごとの支援の記録`,
     note: "使う回は、イベントが終わったあとに読んだ貢献ランキングで、名前で推測した行が無いものだけ (開催中の途中の値は使わない)。"
-      + "100 位の外 = 100 人の一覧に載っていない回 (0 ではなく、分からない)。0 = 100 人に届かない一覧に載っていない回。読めていない回は、出てきた割合の分母に入れない。"
+      + "100 位の外 = 100 人の一覧に載っていない回 (0 ではなく、分からない)。送っていない = 100 人に届かない一覧に載っていない回 (全員が載るので 0 pt)。読めていない回は、出てきた割合の分母に入れない。"
       + "ふつうの幅は、4 回以上の時だけ (下から 4 分の 1〜上から 4 分の 1)。次のイベントの見込みは、採点で何も考えない予測に勝ってから出します" });
 }
 async function showGifter(uid) {
