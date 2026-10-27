@@ -1156,7 +1156,7 @@ const legend = `<div class="legend"><span><i style="background:var(--accent)"></
 function rankingTable(rows, opts = {}) {
   if (!rows.length) return `<div class="empty">ギフトはありません</div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt</th><th class="num ph-hide">有料</th><th class="num ph-hide">無料</th><th class="num ph-hide">個数</th><th class="num ph-hide">回数</th><th class="ph-hide">${opts.rooms ? "ルーム" : "内訳"}</th></tr></thead>
+    <thead><tr><th>#</th><th>リスナー</th><th class="num">合計 pt ${RAW_PT}</th><th class="num ph-hide">有料</th><th class="num ph-hide">無料</th><th class="num ph-hide">個数</th><th class="num ph-hide">回数</th><th class="ph-hide">${opts.rooms ? "ルーム" : "内訳"}</th></tr></thead>
     <tbody>${rows.map((u, i) => `<tr>
       <td class="rank">${i + 1}</td>${userCell(u)}
       <td class="num"><b>${num(u.points)}</b>${splitBar(u)}</td><td class="num ph-hide">${num(u.paid_points)}</td><td class="num ph-hide">${num(u.free_points)}</td>
@@ -1174,7 +1174,7 @@ function userBlock(users, official) {
     html += `<div class="card" style="margin-top:14px">
       <div class="card-head"><div><div class="card-title">${esc(u.names.join(" / "))}</div><div class="card-key">ユーザー ID ${esc(u.user_id)}</div></div></div>
       <div class="summary">
-        <div class="stat"><div class="v">${num(t.points)} pt</div><div class="l">合計 (有料 ${num(t.paid_points)} / 無料 ${num(t.free_points)})</div></div>
+        <div class="stat"><div class="v">${num(t.points)} pt</div><div class="l">合計 ${RAW_PT} (有料 ${num(t.paid_points)} / 無料 ${num(t.free_points)})</div></div>
         <div class="stat"><div class="v">${num(t.count)}</div><div class="l">個数</div></div>
         <div class="stat"><div class="v">${num(t.times)}</div><div class="l">回数</div></div>
       </div>
@@ -1260,7 +1260,7 @@ function renderEventGifts(r) {
   }
   if (r.recorded) {
     html += `<div class="row"><h3 style="flex:1">ルーム別 (記録)</h3>${legend}</div><div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>ルーム</th><th class="num">合計 pt</th><th class="num ph-hide">有料</th><th class="num ph-hide">無料</th><th class="num">リスナー</th></tr></thead>
+      <thead><tr><th>#</th><th>ルーム</th><th class="num">合計 pt ${RAW_PT}</th><th class="num ph-hide">有料</th><th class="num ph-hide">無料</th><th class="num">リスナー</th></tr></thead>
       <tbody>${r.room_ranking.slice(0, 100).map((x, i) => `<tr><td class="rank">${i + 1}</td><td class="name">${esc(x.room)}</td><td class="num"><b>${num(x.points)}</b>${splitBar(x)}</td><td class="num ph-hide">${num(x.paid_points)}</td><td class="num ph-hide">${num(x.free_points)}</td><td class="num">${num(x.listeners)}</td></tr>`).join("")}</tbody></table></div>${colsBtn}`;
     html += `<h3>リスナー別 (記録・イベント全体)</h3>` + rankingTable(r.listener_ranking.slice(0, 100), { rooms: true });
   } else if (!r.official_enabled) {
@@ -2252,7 +2252,7 @@ function gifterStates(st) {
   const pw = st.power;
   if (pw) {
     const POWER_NOTE = { "上り調子": "直近 3 か月が、その前の 3 か月の 1.5 倍以上", "安定": "大きく増えても減ってもいない",
-      "温存中": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下なのに、アクティブファンには残っている (出せるのに今は出していない)。前の名前: 温存中",
+      "温存中": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下なのに、アクティブファンには残っている (送ってはいないが、関心は残っている。お金があるかは分からない)。前の名前: 温存中",
       "枯れている": "直近 3 か月が、いちばん多かった 3 か月の 3 割以下で、アクティブファンからも消えた。前の名前: 枯れている" };
     const yen = (pt) => `約 ${shortNum(Math.round(pt * pw.yen_per_pt))} 円`;
     h += `<h3>出せる量 <small class="muted">次の勝負でいくら出せるか。直近 12 か月の貢献ランキングから (上位 100 人までなので「少なくとも」の量)</small></h3>
