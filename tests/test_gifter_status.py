@@ -76,6 +76,15 @@ def test_ranking_and_lookup(tmp_path):
         got = gs.lookup(s, [7, 8, 12345])
     assert [r["user_id"] for r in rk["rows"]][:1] == [7] and rk["rows"][0]["top_name"] == "ルーム1"
     assert set(got) <= {7, 8, 9} and 7 in got and got[7]["fire"] == 60_000
+    top = rk["rows"][0]  # 5 回・5 か月送った人: 回数と最大の回を、見込み量と並べて出す
+    assert top["rounds"] == 5 and top["active_months"] == 5 and top["max_out"] == 60_000 and top["reliability"] == "中"
+
+
+def test_one_big_round_is_marked_as_reference_only():
+    """1 回・1 か月だけの人は、その 1 回がそのまま火力・月の量になるので「参考」(見込み量の順位の上に来ても、そうと分かる)。"""
+    assert gs.reliability(1, 1) == "参考" and gs.reliability(5, 1) == "参考"
+    assert gs.reliability(3, 4) == "低" and gs.reliability(6, 6) == "中" and gs.reliability(12, 8) == "高"
+    assert gs.reliability(None, None) is None  # この欄ができる前に作った人
 
 
 def test_runs_once_a_day_and_drops_people_who_left(tmp_path):

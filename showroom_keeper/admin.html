@@ -2131,7 +2131,7 @@ function wordsSection() {
       { label: "何を数えたか", sort: false, value: (r) => r.note, html: (r) => `<span class="uid">${esc(r.note)}</span>` },
     ], rows, { sort: null, limit: 100, phone: [0, 2, 3], csvName: "言葉" });
 }
-const power = { grade: "all", data: null, byGrade: {} };  // byGrade: ランクで絞った分 (サーバーがランクの境目で絞って返す)
+const power = { grade: "all", data: null, byGrade: {}, steady: false };  // steady: 回数の少ない人 (信頼度が「参考」) を除く  // byGrade: ランクで絞った分 (サーバーがランクの境目で絞って返す)
 async function showPowerRanking(box) {
   if (!power.data) box.innerHTML = loadingHtml("見込み量の順位を読み込んでいます…");
   try { power.data = await api("/api/research/power?limit=500"); power.byGrade = {}; } catch (e) { box.innerHTML = errorHtml(e); return; }
@@ -2145,15 +2145,21 @@ function drawPowerRanking(box) {
     return;
   }
   const gd = power.grade === "all" ? null : power.byGrade[power.grade];
-  const rows = power.grade === "all" ? d.rows : gd ? gd.rows : [];
+  const all = power.grade === "all" ? d.rows : gd ? gd.rows : [];
+  const rows = power.steady ? all.filter((r) => r.reliability !== "参考") : all;
   box.innerHTML = `<div class="summary">${stat(num(d.people || d.rows.length), "上位 10% の人 (人)")}${["S", "A", "B"].map((g) => stat(num(d.rows.filter((r) => r.grade === g).length), `上位 ${num(d.rows.length)} 人のうち ${g}`)).join("")}</div>
     <div class="hint">SHOWROOM 全体で、次の勝負で 1 人で動かせる量の見込み (次の勝負の見込み量) の多い順。上位 10% の人 = 直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。S〜D は見込み量の段階。前の名前: 戦力ランキング・総合力・パワーギフター・ランク。${d.at ? `${tm(d.at, true)} に作り終えた分` : ""}。どの線も仮の値です</div>
-    <div class="row" style="margin:8px 0"><div class="filters grow">${[["all", "すべて"], ["S", "S"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"]].map(([g, l]) => `<button type="button" class="fchip ${power.grade === g ? "active" : ""}" data-pg="${g}">${l}</button>`).join("")}</div></div>`
+    <div class="row" style="margin:8px 0"><div class="filters grow">${[["all", "すべて"], ["S", "S"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"]].map(([g, l]) => `<button type="button" class="fchip ${power.grade === g ? "active" : ""}" data-pg="${g}">${l}</button>`).join("")}
+      <button type="button" class="fchip ${power.steady ? "active" : ""}" data-psteady="1" title="くらべた回が 1 回・送った月が 1 か月だけの人は、その 1 回がそのまま見込み量になるので除く">1 回だけの人を除く</button></div></div>
+    <div class="hint">見込み量は「次に出てきて、全力を出したら」の量です。出てくるかどうかは入っていません。くらべた回が少ない人ほど当てになりません (信頼度: 参考 = 1 回か 1 か月だけ・低 = 3 回以下か 2 か月以下・中 = 9 回以下・高 = 10 回以上)</div>`
     + dataTable("power-rank", [
       { label: "順位", num: true, value: (r) => r.rank, html: (r) => `<b>${num(r.rank)}</b>` },
       { label: "ギフター", value: (r) => r.name || String(r.user_id), html: (r) => `${gifterLink(r.user_id, r.name || `ID ${r.user_id}`)} <span class="uid uid-id">ID ${esc(r.user_id)}</span>`, cls: "name" },
       { label: termShort("総合力"), num: true, value: (r) => r.overall, html: (r) => powerCell({ grade: r.grade, overall: r.overall, scale: "" }) },
+      { label: "信頼度", value: (r) => ({ 高: 4, 中: 3, 低: 2, 参考: 1 })[r.reliability] || 0, html: (r) => r.reliability ? `<span class="tag ${r.reliability === "参考" ? "warn" : r.reliability === "低" ? "" : "live"}">${esc(r.reliability)}</span><div class="uid">${r.rounds != null ? `${num(r.rounds)} 回・${num(r.active_months ?? 0)} か月` : ""}</div>` : '<span class="uid">次の作り直しから</span>' },
+      { label: "最大の回", num: true, value: (r) => r.max_out || 0, html: (r) => r.max_out != null ? shortNum(r.max_out) : "-" },
       { label: termShort("火力"), num: true, value: (r) => r.firepower, html: (r) => `${shortNum(r.firepower)}<div class="uid">${esc(r.scale)}</div>` },
+      { label: "最近 90 日", num: true, value: (r) => r.recent90 || 0, html: (r) => r.recent90 != null ? shortNum(r.recent90) : "-" },
       { label: termShort("HP (月の予算)"), num: true, value: (r) => r.budget, html: (r) => shortNum(r.budget) },
       { label: termShort("残弾"), num: true, value: (r) => r.left_pt, html: (r) => shortNum(r.left_pt) },
       { label: "最近の様子", value: (r) => markName(r.state), html: (r) => markTag(r.state) },
@@ -2162,6 +2168,10 @@ function drawPowerRanking(box) {
       note: `${power.grade === "all" ? "上位 500 人まで" : gd ? `段階 ${power.grade} の人の上から 500 人まで (全体の中から絞っています)` : "読み込んでいます…"}。順位は全体での順位で、見込み量が同じなら同じ順位。くわしくは、名前を押すと出るギフターのページの「数字のまとめ」` });
 }
 $("#gf-body").addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-psteady]") && power.data) {
+    power.steady = !power.steady; delete DT["power-rank"]; drawPowerRanking($("#gf-body"));
+    return;
+  }
   const g = ev.target.closest("[data-pg]");
   if (g && power.data) {
     const pg = g.dataset.pg;

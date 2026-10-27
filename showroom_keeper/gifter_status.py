@@ -339,7 +339,7 @@ def compute(s: Any, uid: int, now: float, edges: dict[int, int] | None = None,
             "stamina": stamina, "recovery": recovery, "intel": intel, "intel_rounds": len(b_judged), "hit": hit, "hit_rounds": len(shots),
             "momentum": momentum, "new_high": new_high, "fatigue": fatigue, "achievements": achievements, "tops": tops,
             "exp": exp, "level": level, "career": round(career, 1), "first_seen": first_seen, "spread": spread, "main_rooms": main_rooms,
-            "contest": contest, "state": state, "formula": FORMULA, "gaps": sum(1 for v in months if v is None), "fire_rounds": len(fire_pool), "marks": marks, "fan": fan, "overall": overall, "ready": ready,
+            "contest": contest, "state": state, "formula": FORMULA, "gaps": sum(1 for v in months if v is None), "fire_rounds": len(fire_pool), "active_months": len(active), "marks": marks, "fan": fan, "overall": overall, "ready": ready,
             "factor": round(factor * skill, 3), "scale": scale(fire), "rooms": rooms, "psyche": mind,
             "_top_room": top["room_id"] if top else None, "_top_share": top["share"] if top else None}
 
@@ -566,6 +566,18 @@ def _grade_of_score(sc: int) -> str:
     return "D"
 
 
+def reliability(rounds: int | None, months: int | None) -> str | None:
+    """見込み量の信頼度 (くらべた回の数と、送った月の数から)。1 回・1 か月だけの人は、その 1 回がそのまま火力・月の量になるので「参考」。
+    分からない (この欄ができる前に作った人) は None。"""
+    if rounds is None:
+        return None
+    if rounds <= 1 or (months is not None and months <= 1):
+        return "参考"
+    if rounds <= 3 or (months is not None and months <= 2):
+        return "低"
+    return "中" if rounds <= 9 else "高"
+
+
 def ranking(s: Any, limit: int = 500, grade_of: str | None = None) -> dict[str, Any]:
     """SHOWROOM 全体の戦力ランキング (総合力の多い順。総合力の索引を上から読む)。順位は同点なら同じ順位 (詳しいページと同じ)。
     grade_of を付けると、そのランクの人を、ランクの境目の総合力で絞ってから上から読む (上位 limit 人の中から絞るのではない)。"""
@@ -584,7 +596,12 @@ def _ranking(s: Any, limit: int, grade_of: str | None) -> dict[str, Any]:
             where, args = where + " AND g.overall >= ?", args + [b[0]]
         if b[1] is not None:
             where, args = where + " AND g.overall < ?", args + [b[1]]
+    # 回数・最大の回・最近 90 日は data の中から読む (表の列は足さない)。見込み量だけでは、1 回だけ爆投げした人が上に来るので並べて出す
     rows = [dict(r) for r in s.all(f"""SELECT g.user_id, g.overall, g.firepower, g.budget, g.left_pt, g.state, g.top_room, g.top_share,
+                                              json_extract(g.data, '$.max_out') AS max_out,
+                                              json_extract(g.data, '$.max_out_rounds') AS rounds,
+                                              json_extract(g.data, '$.active_months') AS active_months,
+                                              json_extract(g.data, '$.recent90') AS recent90,
                                               u.name FROM gifter_status g INDEXED BY gifter_status_overall
                                        LEFT JOIN users u USING(user_id) WHERE {where}
                                        ORDER BY g.overall DESC LIMIT ?""", (*args, int(limit)))]
@@ -596,6 +613,7 @@ def _ranking(s: Any, limit: int, grade_of: str | None) -> dict[str, Any]:
         if i and r["overall"] != rows[i - 1]["overall"]:
             first = i
         r["rank"], r["grade"], r["scale"] = base + first + 1, grade(cuts, r["overall"]), scale(r["firepower"] or 0)
+        r["reliability"] = reliability(r["rounds"], r["active_months"])
         r["top_key"], r["top_name"] = names.get(r["top_room"], (None, None))
     if grade_of:
         rows = [r for r in rows if r["grade"] == grade_of]  # 念のため (境目の値ちょうどの扱いは score() と同じ)
