@@ -56,6 +56,8 @@ YEAR = 365 * DAY  # だれを当てるか (この間に載った人)・2 番目�
 RATE_DAYS = 180 * DAY  # 出てくる割合を見る日数
 RECENT_DAYS = 90 * DAY  # 「直近」の日数
 TOP = 10  # ルームの上の何人を当てるか
+PAIR_ALL = 60  # ルームの中の並びは、当てる人がこれ以下なら全部の組、多ければ PAIRS 組を選んでくらべる
+PAIRS = 1000
 HISTORY_BANDS = ((1, 1, "1 回"), (2, 3, "2〜3 回"), (4, 10**9, "4 回以上"))  # 載った回の数の区分 (前から決めたもの。結果を見て変えない)
 
 APPEAR = {"naive_last": "何も考えない予測: 直前の回に載ったか", "flag90": "直近 90 日に載ったか",
@@ -275,7 +277,7 @@ class Tally:
             self.within[0] += backtest.within(amount, f["came"]["med3"])
             self.within[1] += 1
 
-    def add_group(self, rows: list[tuple[int, dict[str, Any], float | None]], actual: dict[int, float], newcomers: int) -> None:
+    def add_group(self, event_id: int, rows: list[tuple[int, dict[str, Any], float | None]], actual: dict[int, float], newcomers: int) -> None:
         """1 つのルーム × イベント: ルームの中の 2 人の並びと、ルームの上の人を当てたか。"""
         self.n["room_events"] += 1
         self.n["newcomers"] += newcomers
@@ -284,8 +286,12 @@ class Tally:
             return
         known = [(u, f, a) for u, f, a in rows if a is not None]
         k_top = min(TOP, len(actual))
+        actual_k = {u: x for u, _, x in known}
         for k in EXPECTED:
-            a, t = backtest.pairs_agree({u: f["expected"][k] for u, f, _ in known}, {u: x for u, _, x in known})
+            pred = {u: f["expected"][k] for u, f, _ in known}
+            # 人が多いルームは、2 人の組を PAIRS 組だけ選ぶ (全部の組は人数の 2 乗になり、数百万件では終わらない)
+            a, t = (backtest.pairs_agree(pred, actual_k) if len(known) <= PAIR_ALL
+                    else backtest._pairs_sampled(pred, actual_k, event_id, PAIRS))
             self.order[k][0] += a
             self.order[k][1] += t
             if k_top:  # ルームの上の k_top 人 (新顔も入れた実際) のうち、予測の上の k_top 人に入っていた人
@@ -347,7 +353,7 @@ def score_room(rounds: list[_Round], targets: list[int], tallies: list[Tally]) -
                 t.add(f, listed, amount, e.confirmed)
         newcomers = sum(1 for u in e.rows if u not in seen)
         for t in tallies:
-            t.add_group(rows, e.rows, newcomers)
+            t.add_group(eid, rows, e.rows, newcomers)
 
 
 def targets_in(conn: Any, month: str) -> list[tuple[int, int]]:
