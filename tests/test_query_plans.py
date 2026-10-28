@@ -33,6 +33,8 @@ ALLOWED = [
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
     ("SCAN gifter_status_next", "SELECT data FROM gifter_status_next", "ステータスの評価の区切りを作る。1 日 1 回、回し終えた時だけ (パワーギフターの分だけ)"),
     ("SCAN gifter_status_next", "SELECT user_id, version", "作り直した全員を一覧に入れ替える。1 日 1 回、回し終えた時だけ"),
+    ("SCAN a", "WHERE a.user_id IS NULL AND a.checked IS NULL",
+     "Internet Archive の、あとから突き合わせられる分を探す。することが無い時に 1 時間に 1 回と、ページを 200 読むごと (前からの読み方)"),
 ]
 
 
@@ -539,3 +541,25 @@ def test_multiplier_check_reads_gifts_by_room_and_time(traced):
     out = multiplier_check.run(d)
     assert out["events"] and any("FROM gift_events WHERE room_key" in " ".join(q.split()) for q, _ in seen)  # 本当に読んでいる
     assert full_scans(d, seen) == []
+
+
+def test_archive_match_and_recheck_read_by_key(traced, monkeypatch):
+    """Internet Archive の突き合わせと見直し: ページはイベント・ルームの主キーで、推測する人は人の索引で読む (表を全部読まない)。"""
+    from showroom_keeper import archive
+
+    with Store(traced[0]) as s:
+        s.conn.executemany("INSERT INTO archive_contributions(event_id, room_id, rank, name, point, at) VALUES (?, ?, ?, ?, ?, ?)",
+                           [(1, 1, 1, "前の名前", 10, NOW), (1, 9, 1, "だれか", 5, NOW)])
+        s.conn.execute("INSERT INTO user_names(user_id, name, at, source) VALUES (100, '前の名前', 0, 'archive')")
+    monkeypatch.setattr(archive, "RECHECK_PAUSE", 0)
+    c = archive.ArchiveCollector(traced[0])
+
+    def run(d):
+        c._match(1, 1)
+        c._match(1, 9)
+        c.rematch()
+        while c.recheck_step():
+            pass
+
+    check(traced, run)
+    c.close()

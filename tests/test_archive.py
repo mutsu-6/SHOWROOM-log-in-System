@@ -5,6 +5,7 @@ from showroom_keeper import archive, research, research_store
 from showroom_keeper.research_store import Store
 
 NOW = 1_800_000_000.0
+END = 1_577_880_000.0  # 2020-01-01 12:00 (UTC)
 
 EVENT_PAGE = """<html><script>var event_id = 26419;</script><h2 class="title">もこもこ冬祭り</h2>
 <div class="contentlist-link"><div class="label-ranking listcard-ranking is-rank-1">1</div>
@@ -80,7 +81,10 @@ def test_parse_pages():
 def test_recovers_gone_room_and_former_names(tmp_path):
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": 100, "key": "alive_room", "name": "いるルーム"}], "list", NOW)
-        s.upsert_events([{"event_id": 26419, "key": None, "name": None}])
+        # イベントは、貢献ランキングのページが保存された 2020-01-02 より前に終わっている (途中の保存ではない)
+        s.upsert_events([{"event_id": 26419, "key": None, "name": None, "end": END}, {"event_id": 26000, "key": "old", "end": END - 30 * 86400}])
+        # 名前で推測する人は、前後 180 日に SHOWROOM の貢献ランキングに出ている
+        s.set_contributions(26000, 300, [{"user_id": 3, "name": "ひとりだけの名前", "point": 10, "rank": 1}], NOW - 7200, final=True)
         # 生きているルームは SHOWROOM から取ってある (退会した人は名前が「退会済みユーザー」)
         s.set_contributions(26419, 100, [{"user_id": 1, "name": "退会済みユーザー", "point": 500, "rank": 1},
                                          {"user_id": 2, "name": "今の名前", "point": 300, "rank": 2}], NOW - 3600, final=True)
@@ -111,7 +115,7 @@ def test_recovers_gone_room_and_former_names(tmp_path):
         got = {r["user_id"]: r["point"] for r in s.all("SELECT * FROM contributions WHERE room_id=200")}
         assert got == {3: 900}
         # 名前で決めた分には「名前で推測」の印を付ける (SHOWROOM から取った分には付けない)。合計には入れる
-        assert {r["room_id"]: r["guessed"] for r in s.all("SELECT room_id, guessed FROM contributions")} == {100: None, 200: 1}
+        assert {r["room_id"]: r["guessed"] for r in s.all("SELECT room_id, guessed FROM contributions")} == {100: None, 200: 1, 300: None}
         assert s.one("SELECT c_count FROM room_events WHERE room_id=200 AND event_id=26419")[0] is None  # タイプ分けに使わない
         assert s.one("SELECT c_count FROM room_events WHERE room_id=100 AND event_id=26419")[0] == 2
         assert s.one("SELECT events FROM user_room WHERE user_id=3 AND room_id=200")[0] == 900
@@ -121,14 +125,14 @@ def test_recovers_gone_room_and_former_names(tmp_path):
         assert research._user_names(s, research._Recorded(tmp_path), [1])[1] == "退会済みユーザー (前の名前: あぐまる)"
     assert not any("event/search" in u for u in fake.asked)
     d = research.gifter_detail(tmp_path, 3, [])
-    assert d["guessed"] == {"events": 1, "points": 900} and [e["guessed"] for e in d["events"]] == [1]
+    assert d["guessed"] == {"events": 1, "points": 900} and sorted(e["guessed"] for e in d["events"]) == [0, 1]
     # 前の版で足した分 (印が無い) にも、起動した時に 1 回だけ印を付ける
     with Store(tmp_path) as s:
         s.conn.execute("UPDATE contributions SET guessed=NULL")
         s.conn.execute("DELETE FROM meta WHERE k='guessed_marked'")
     research_store._ready.clear()
     with Store(tmp_path) as s:
-        assert {r["room_id"]: r["guessed"] for r in s.all("SELECT room_id, guessed FROM contributions")} == {100: None, 200: 1}
+        assert {r["room_id"]: r["guessed"] for r in s.all("SELECT room_id, guessed FROM contributions")} == {100: None, 200: 1, 300: None}
 
 
 def test_tries_older_snapshot_then_gives_up(tmp_path):
@@ -259,3 +263,65 @@ def test_pages_lost_to_refusals_are_read_again_once(tmp_path):
     with Store(tmp_path) as s:
         assert s.one("SELECT tries FROM archive_pages WHERE page='event:lost'")[0] == 3
     c.close()
+
+
+def _page(s, eid, rid, rows, at):
+    s.conn.executemany("INSERT INTO archive_contributions(event_id, room_id, rank, name, point, at) VALUES (?, ?, ?, ?, ?, ?)",
+                       [(eid, rid, r, n, p, at) for r, n, p in rows])
+
+
+def test_match_links_only_sure_rows(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 1, "key": "a", "end": END}, {"event_id": 2, "key": "b", "end": END},
+                         {"event_id": 3, "key": "c", "end": END}, {"event_id": 9, "key": "z", "end": END - 86400}])
+        # SHOWROOM の分: 2 位と 3 位が同点 (同じ順位・ポイントの人が 2 人)
+        s.set_contributions(1, 10, [{"user_id": 1, "name": "今1", "point": 500, "rank": 1},
+                                    {"user_id": 2, "name": "今2", "point": 300, "rank": 2},
+                                    {"user_id": 3, "name": "今3", "point": 300, "rank": 2}], NOW, final=True)
+        s.set_contributions(2, 10, [{"user_id": 1, "name": "今1", "point": 500, "rank": 1}], NOW, final=True)
+        s.set_contributions(9, 99, [{"user_id": 4, "name": "ひとり", "point": 5, "rank": 1},
+                                    {"user_id": 5, "name": "ふたご", "point": 5, "rank": 2}], NOW, final=True)
+        _page(s, 1, 10, [(1, "前1", 500), (2, "前2", 300)], END + 60)
+        _page(s, 2, 10, [(1, "途中の名前", 500)], END - 3600)  # イベントの途中の保存
+        # 消えたルーム: 同じ名前が 2 行 (別の 2 人)・1 人に決まる名前・前後 180 日に出ていない人
+        s.set_cumulative(300, [{"user_id": 6, "name": "見えない人", "point": 1, "visits": None}], NOW)
+        _page(s, 3, 20, [(1, "ふたご", 90), (2, "ふたご", 80), (3, "ひとり", 70), (4, "見えない人", 60)], END + 60)
+    c, _ = collector(tmp_path, {})
+    for eid, rid in ((1, 10), (2, 10), (3, 20)):
+        c._match(eid, rid)
+    c.close()
+    with Store(tmp_path) as s:
+        links = {(r["event_id"], r["rank"], r["name"]): r["user_id"] for r in s.all("SELECT * FROM archive_contributions")}
+        assert links == {(1, 1, "前1"): 1, (1, 2, "前2"): None, (2, 1, "途中の名前"): None,
+                         (3, 1, "ふたご"): None, (3, 2, "ふたご"): None, (3, 3, "ひとり"): 4, (3, 4, "見えない人"): None}
+        assert {(r["user_id"], r["name"]) for r in s.all("SELECT * FROM user_names WHERE source='archive'")} == {(1, "前1")}
+        assert {r["user_id"]: r["point"] for r in s.all("SELECT * FROM contributions WHERE event_id=3")} == {4: 70}
+        assert s.scalar("SELECT COUNT(*) FROM archive_contributions WHERE checked IS NULL") == 0
+
+
+def test_recheck_removes_unsure_links_made_before(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 1, "key": "a", "end": END}, {"event_id": 3, "key": "c", "end": END}])
+        s.set_contributions(1, 10, [{"user_id": 1, "name": "今1", "point": 500, "rank": 1}], NOW, final=True)
+        # 前の決まりで足した分: 途中の保存から付けた前の名前と、同じ名前が 2 行のページから「名前で推測」した貢献
+        _page(s, 1, 10, [(1, "途中の名前", 500)], END - 3600)
+        _page(s, 3, 20, [(1, "今1", 90), (2, "今1", 80)], END + 60)
+        s.conn.execute("UPDATE archive_contributions SET user_id=1")
+        s.conn.execute("INSERT INTO user_names(user_id, name, at, source) VALUES (1, '途中の名前', 0, 'archive'), (1, '本当の前', 0, 'showroom')")
+        s.set_contributions(3, 20, [{"user_id": 1, "name": None, "point": 90, "rank": 1, "guessed": True}], NOW, final=True)
+        assert s.one("SELECT events FROM user_room WHERE user_id=1 AND room_id=20")[0] == 90
+    c, _ = collector(tmp_path, {})
+    archive.RECHECK_PAUSE, pause = 0, archive.RECHECK_PAUSE
+    try:
+        while c.recheck_step():
+            pass
+    finally:
+        archive.RECHECK_PAUSE = pause
+    c.close()
+    with Store(tmp_path) as s:
+        assert s.meta("archive_recheck") == "done"
+        assert s.scalar("SELECT COUNT(*) FROM archive_contributions WHERE user_id IS NOT NULL") == 0
+        assert {(r["name"], r["source"]) for r in s.all("SELECT * FROM user_names")} == {("本当の前", "showroom")}
+        assert s.scalar("SELECT COUNT(*) FROM contributions WHERE event_id=3") == 0
+        assert s.one("SELECT events FROM user_room WHERE user_id=1 AND room_id=20")[0] == 0
+        assert s.one("SELECT c_count FROM room_events WHERE room_id=20 AND event_id=3")[0] is None

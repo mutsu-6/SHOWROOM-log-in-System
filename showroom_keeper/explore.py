@@ -17,6 +17,9 @@ from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store, unpack_text
 
 SEARCH_LIMIT = 20  # 検索で種類ごとに返す数
+# 名前の索引で当たった人のうち、ポイントを数えて並べる人数の上限 (2 文字などで何千人も当たると、全員のポイントを数えて遅くなるため。
+# 1 文字は search_index.SHORT_LIMIT)
+SEARCH_CANDIDATES = 1000
 ROOM_GIFTERS = 200  # ルームのページに出すギフターの数
 ROOM_EVENTS = 300  # ルームのページに出すイベントの数
 OVERLAP_GIFTERS = 300  # 重なるルームを調べる、このルームのギフターの数 (多い順)
@@ -397,9 +400,11 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
         points = "(SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id)"
         if indexed:
             sub, args = ids("search_users", ("folded",))
-            users_sql, users_args = f"u.user_id IN ({sub})", args
+            users_sql, users_args = f"u.user_id IN ({sub} LIMIT {SEARCH_CANDIDATES})", args
             src, cond, args = search_index.where("search_former", ("folded",), folded, two)
-            former_sql, former_args = f"(SELECT user_id, name FROM {src} WHERE {cond}) n", args
+            # 索引に残っていても、前の名前の表から消した名前 (Internet Archive の見直しで確かでなかったもの) は出さない
+            former_sql, former_args = (f"""(SELECT f.user_id, f.name FROM (SELECT user_id, name FROM {src} WHERE {cond} LIMIT {SEARCH_CANDIDATES}) f
+                                           WHERE EXISTS (SELECT 1 FROM user_names x WHERE x.user_id=f.user_id AND x.name=f.name)) n""", args)
         else:
             users_sql, users_args = name_match("u.name"), likes
             former_sql, former_args = f"user_names n WHERE {name_match('n.name')}", likes
@@ -449,21 +454,10 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
                 rooms.append({"room_id": rid, "key": key, "name": name, "followers": None, "live_at": None, "source": "known"})
                 if len(rooms) >= SEARCH_LIMIT * 2:
                     break
-        # SHOWROOM のルーム検索 (集めた情報で少ししか見つからない時。見つけたルームは集める対象に足す)
+        # SHOWROOM のルーム検索 (集めた情報で少ししか見つからない時。見つけたルームは集める対象に足す)。
+        # 管理画面は、集めた情報の分を先に出してから search_showroom で別に聞く (SHOWROOM の返事を待つと、検索の全部が遅くなるため)
         if showroom and len(rooms) < SEARCH_LIMIT and len(q) >= 2 and not digits:
-            from .listing import search_showroom_rooms
-
-            try:
-                hits = search_showroom_rooms(q)
-            except Exception:  # noqa: BLE001 - SHOWROOM に聞けなくても、集めた情報の分は返す
-                hits = []
-            new = [h for h in hits if h.get("key") and h["key"] not in known and h.get("room_id")]
-            if new:
-                s.upsert_rooms([{"room_id": h["room_id"], "key": h["key"], "name": h["name"], "followers": h.get("followers")}
-                                for h in new], "search", now)
-            for h in new[:SEARCH_LIMIT * 2 - len(rooms)]:
-                rooms.append({"room_id": h["room_id"], "key": h["key"], "name": h["name"], "followers": h.get("followers"),
-                              "live_at": now if h.get("is_live") else None, "source": "showroom", "is_live": h.get("is_live")})
+            rooms.extend(_showroom_rooms(s, q, known, SEARCH_LIMIT * 2 - len(rooms), now))
         # 名前がそのまま合うものを先に (そのあとはフォロワーの多い順のまま)
         rooms.sort(key=lambda r: _fold(r["name"]) != folded)
 
@@ -477,6 +471,31 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
                 ORDER BY event_id = ? DESC, COALESCE(end, 0) DESC LIMIT ?""",
             (num, q, *events_args, num, SEARCH_LIMIT))]
     return {"gifters": gifters, "rooms": rooms, "events": events}
+
+
+def _showroom_rooms(s: Store, q: str, known: set[str], limit: int, now: float) -> list[dict[str, Any]]:
+    """SHOWROOM のルーム検索で見つかった、known に無いルーム (見つけたルームは集める対象に足す)。"""
+    from .listing import search_showroom_rooms
+
+    try:
+        hits = search_showroom_rooms(q)
+    except Exception:  # noqa: BLE001 - SHOWROOM に聞けなくても、集めた情報の分は返す
+        hits = []
+    new = [h for h in hits if h.get("key") and h["key"] not in known and h.get("room_id")]
+    if new:
+        s.upsert_rooms([{"room_id": h["room_id"], "key": h["key"], "name": h["name"], "followers": h.get("followers")}
+                        for h in new], "search", now)
+    return [{"room_id": h["room_id"], "key": h["key"], "name": h["name"], "followers": h.get("followers"),
+             "live_at": now if h.get("is_live") else None, "source": "showroom", "is_live": h.get("is_live")} for h in new[:max(limit, 0)]]
+
+
+def search_showroom(state_dir: Path, q: str, known: list[str]) -> dict[str, Any]:
+    """上の検索欄の後半: SHOWROOM のルーム検索だけ (known は、前半の検索で出したルームの URL キーと room_id)。"""
+    q = str(q or "").strip()[:100]
+    if len(q) < 2 or q.isdigit():
+        return {"rooms": []}
+    with Store(state_dir) as s:
+        return {"rooms": _showroom_rooms(s, q, {str(k) for k in known}, SEARCH_LIMIT, time.time())}
 
 
 # ------------------------------------------------------------------ ルーム

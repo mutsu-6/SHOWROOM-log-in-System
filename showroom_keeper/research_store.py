@@ -347,7 +347,7 @@ class Store:
                                    ("events", "median_point INTEGER"), ("events", "style_at REAL"),
                                    ("room_events", "c_count INTEGER"), ("room_events", "c_sum INTEGER"),
                                    ("room_events", "c_top1 INTEGER"), ("room_events", "c_top3 INTEGER"),
-                                   ("room_events", "c_top10 INTEGER"), ("contributions", "guessed INTEGER"),
+                                   ("room_events", "c_top10 INTEGER"), ("contributions", "guessed INTEGER"), ("archive_contributions", "checked INTEGER"),
                                    ("room_events", "c_p100 INTEGER"), ("room_profile", "depth_pt REAL"),
                                    ("room_profile", "depth_rel REAL"), ("room_profile", "depth TEXT"),
                                    ("room_profile", "below_pt REAL"), ("room_profile", "below_share REAL"),
@@ -613,6 +613,21 @@ class Store:
         with self.tx() as c:
             for event_id, room_id, rows, final in items:
                 self._set_contributions(c, int(event_id), int(room_id), rows, now, final)
+
+    def drop_guessed(self, event_id: int, room_id: int) -> None:
+        """名前で推測した貢献ランキング (guessed) を、user_room・user_month の足した分ごと消す (Internet Archive の見直しで、
+        確かでなくなった時)。SHOWROOM から取った分のあるイベント・ルームには何もしない。"""
+        event_id, room_id = int(event_id), int(room_id)
+        with self.tx() as c:
+            if c.execute("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? AND guessed IS NULL LIMIT 1",
+                         (event_id, room_id)).fetchone():
+                return
+            if not c.execute("SELECT 1 FROM contributions WHERE event_id=? AND room_id=? LIMIT 1", (event_id, room_id)).fetchone():
+                return
+            at = c.execute("SELECT ranking_at, final FROM room_events WHERE room_id=? AND event_id=?", (room_id, event_id)).fetchone()
+            self._set_contributions(c, event_id, room_id, [], at[0] if at else 0.0, bool(at[1]) if at else True)
+            c.execute("""UPDATE room_events SET c_count=NULL, c_sum=NULL, c_top1=NULL, c_top3=NULL, c_top10=NULL, c_p100=NULL
+                         WHERE room_id=? AND event_id=?""", (room_id, event_id))
 
     def _set_contributions(self, c: sqlite3.Connection, event_id: int, room_id: int, rows: list[dict[str, Any]],
                            now: float, final: bool) -> None:

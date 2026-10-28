@@ -443,8 +443,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                 from . import explore
 
                 state_dir = self._state_dir()
-                if url.path == "/api/search":
-                    self._json(explore.search(state_dir, q.get("q", ""), showroom=True))
+                if url.path == "/api/search" and q.get("part") == "showroom":
+                    self._json(explore.search_showroom(state_dir, q.get("q", ""), [k for k in q.get("known", "").split(",") if k]))
+                elif url.path == "/api/search":
+                    self._json(explore.search(state_dir, q.get("q", ""), showroom=q.get("showroom", "1") != "0"))
                 elif url.path == "/api/room_profiles":
                     self._json(explore.room_profiles(state_dir, q.get("type"), q.get("style"), q.get("order", "momentum"),
                                                     q.get("depth")))

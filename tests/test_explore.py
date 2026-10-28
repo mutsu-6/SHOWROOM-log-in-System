@@ -104,6 +104,10 @@ def test_search_finds_former_names_recorded_gifters_and_known_rooms(db, search_m
         s.set_cumulative(1, [{"user_id": 8, "name": "まったく別", "point": 2000, "visits": 5, "rank": 2}], NOW + 2)
     g = {x["user_id"]: x for x in explore.search(db, "中堅")["gifters"]}
     assert g[8]["match"] == {"kind": "former", "name": "中堅"} and g[8]["name"] == "まったく別"
+    # 前の名前の表から消した名前 (Internet Archive の見直しで確かでなかったもの) は、索引に残っていても出さない
+    with Store(db) as s:
+        s.conn.execute("DELETE FROM user_names WHERE user_id=8")
+    assert 8 not in {x["user_id"] for x in explore.search(db, "中堅")["gifters"]}
     # 記録したギフトにしか出ていない人も、名前で見つかる
     # (送り主の表は、収集の合間に、記録のファイルの新しい分だけ足す。検索はファイルを読まない)
     record_gift(db, "rec_room", 1, {"u": 55, "ac": "少額さん", "g": 1, "n": 1, "created_at": NOW})
@@ -332,3 +336,15 @@ def test_gift_records_keep_the_looks_seen_on_the_stream(tmp_path):
     with Store(tmp_path) as s:
         explore.update_gift_senders(tmp_path, s, "rec_room")
         assert s.looks([55])[55]["avatar_id"] == 1002 and s.looks([55])[55]["class_level"] == 4  # 新しい方が残る
+
+
+def test_search_asks_showroom_separately(db, monkeypatch):
+    asked = []
+    monkeypatch.setattr(listing, "search_showroom_rooms", lambda q: asked.append(q) or [
+        {"key": "aaa", "name": "ルームA", "room_id": 1}, {"key": "new_room", "name": "新しいルーム", "room_id": 77, "is_live": True}])
+    assert explore.search(db, "ルーム", showroom=False)["rooms"] and asked == []  # 前半は SHOWROOM を待たない
+    got = explore.search_showroom(db, "ルーム", ["aaa", "1"])["rooms"]
+    assert [(r["key"], r["source"]) for r in got] == [("new_room", "showroom")] and asked == ["ルーム"]
+    with Store(db) as s:
+        assert s.one("SELECT key FROM rooms WHERE room_id=77")["key"] == "new_room"  # 集める対象に足す
+    assert explore.search_showroom(db, "1", []) == {"rooms": []}

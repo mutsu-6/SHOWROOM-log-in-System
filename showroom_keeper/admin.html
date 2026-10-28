@@ -4262,9 +4262,17 @@ async function runSearch() {
   box.hidden = false;
   box.innerHTML = `<div class="none"><span class="spinner" style="display:inline-block;vertical-align:-4px;width:14px;height:14px"></span> 探しています…</div>`;
   let r;
-  try { r = await api(`/api/search?q=${encodeURIComponent(q)}`); } catch (e) { if (seq === qs.seq) box.innerHTML = `<div class="none">探せませんでした: ${esc(e.message)}</div>`; return; }
+  // 集めた情報の分を先に出し、SHOWROOM のルーム検索はあとから足す (SHOWROOM の返事を待つと、検索の全部が遅くなるため)
+  try { r = await api(`/api/search?q=${encodeURIComponent(q)}&showroom=0`); } catch (e) { if (seq === qs.seq) box.innerHTML = `<div class="none">探せませんでした: ${esc(e.message)}</div>`; return; }
   if (seq !== qs.seq) return;
   qs.last = { q, r };
+  renderSearch();
+  if (r.rooms.length >= 20 || q.length < 2 || /^\d+$/.test(q)) return;
+  const known = r.rooms.flatMap((x) => [x.key, x.room_id]).filter((k) => k != null && k !== "").join(",");
+  let more;
+  try { more = await api(`/api/search?part=showroom&q=${encodeURIComponent(q)}&known=${encodeURIComponent(known)}`); } catch (e) { return; }
+  if (seq !== qs.seq || !more.rooms.length) return;
+  r.rooms = r.rooms.concat(more.rooms);
   renderSearch();
 }
 function renderSearch() {
