@@ -5,10 +5,11 @@ SHOWROOM は、消えたルームを参加ルームの一覧から外し、退�
 
 - イベントのページ (/event/<key>): 参加ルームの順位・ルーム番号・URL・名前 → 消えたルームを rooms と room_events に足す
 - 貢献ランキングのページ (/event/contribution/<key>?room_id=N): 上位 100 人の順位・名前・ポイント (ユーザー ID は無い)
-  - 同じイベント・ルームの貢献ランキングを SHOWROOM から取ってあれば、順位とポイントで突き合わせて、
-    その人の当時の名前を user_names に残す (退会したユーザーの、退会前の名前も分かる)
-  - 消えたルームの分は、名前が 1 人に決まる人だけユーザー ID に結び付けて contributions に足す (「名前で推測」の印 guessed=1。
-    分析の合計には入れ、ギフターのページで分けて見せる)
+  - 同じイベント・ルームの貢献ランキングを SHOWROOM から取ってあれば、イベントが終わったあとの保存で、順位とポイントが両方同じ人が
+    1 人だけの時に、その人の当時の名前を user_names に残す (退会したユーザーの、退会前の名前も分かる)
+  - 消えたルームの分は、名前が 1 人に決まり・ページに 1 行だけで・前後 180 日に SHOWROOM で見えている人だけユーザー ID に結び付けて
+    contributions に足す (「名前で推測」の印 guessed=1。分析の合計には入れ、ギフターのページで分けて見せる)
+  - 確かでない時は結び付けない (2026-10-29。前の決まりで結び付けた分は recheck_step が 1 回だけ見直す)
 
 問い合わせ先は SHOWROOM ではないので、research.THROTTLE とは別に ARCHIVE_GAP 秒に 1 回まで (混んでいれば広げる)。
 """
@@ -27,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import memory
 from .research import ARCHIVE_HOLD, LEFT_NAMES, Throttle, is_missing
 from .research_store import Store
 
@@ -38,6 +40,10 @@ INDEX_URL = "showroom-live.com/event/*"  # 保存されているページの一�
 PAGE_TRIES = 3  # 1 つのページで、読めるものが見つかるまで試す保存の数 (新しい保存から)
 IDLE = 3600  # することが無いときに待つ時間 (秒)。新しく集めたイベント・ルームと、後から突き合わせられる
 REMATCH_EVERY = 200  # この回数ページを読むごとに、まとめて突き合わせ直す
+MATCH_NEAR = 180 * 86400  # 名前で推測する人が、そのイベントの前後この秒数に SHOWROOM の貢献ランキングに出ていること
+RECHECK_NAMES = 20000  # 見直しで、1 回に見る前の名前の数
+RECHECK_PAGES = 100  # 見直しで、1 回に突き合わせ直す貢献ランキングのページの数
+RECHECK_PAUSE = 1.0  # 見直しの 1 回ごとに休む秒数
 NOT_EVENT_KEYS = {"contribution", "search", "list", "ranking", "calendar", "archive", "entry"}
 
 _KEY = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -271,51 +277,128 @@ class ArchiveCollector:
         return len(rows)
 
     # ---------------------------------------------------------------- 突き合わせ
+    # 確かな時だけ結び付ける (2026-10-29 に M さんが「過去の名前の紐付けも間違いが多い、不確かなものは消して良い」)。
+    # 前は、同点の人・イベントの途中の保存・同じページに同じ名前が 2 行・あとから同じ名前の人が見つかった時も結び付けていて、
+    # 別々の人を 1 人にまとめることがあった (project の資料「Geminiへの回答_過去名と用語_2026-10-26」の 1 章)。
+    # 見た行には checked=1 を付ける (結び付けなかった行を、何度も見直さない)
     def _match(self, event_id: int, room_id: int) -> None:
-        """1 つのイベント・ルームの、Internet Archive の貢献ランキングをユーザーに結び付ける。"""
+        """1 つのイベント・ルームの、Internet Archive の貢献ランキングをユーザーに結び付ける。
+
+        - SHOWROOM から取った貢献ランキングがある: イベントが終わったあとの保存で、順位とポイントが両方同じ人が 1 人だけの時
+        - 無い (消えたルームなど。「名前で推測」): その名前がページに 1 行だけ・今の名前と SHOWROOM で見た前の名前で 1 人に決まる・
+          その人がイベントの前後 MATCH_NEAR 秒に SHOWROOM の貢献ランキングに出ている、の全部の時
+        - どちらも、同じページで 2 行以上が同じ人になったら、その人はどの行にも結び付けない
+        """
         st = self.store
-        has_api = st.one("SELECT 1 FROM contributions WHERE event_id=? AND room_id=?", (event_id, room_id))
+        event_id, room_id = int(event_id), int(room_id)
+        rows = st.all("SELECT rank, name, point, at FROM archive_contributions WHERE event_id=? AND room_id=?", (event_id, room_id))
+        if not rows:
+            return
+        ev = st.one("SELECT end FROM events WHERE event_id=?", (event_id,))
+        end = ev["end"] if ev is not None else None
+        api = st.all("SELECT user_id, rank, point FROM contributions WHERE event_id=? AND room_id=? AND guessed IS NULL",
+                     (event_id, room_id))
+        links: dict[tuple[int, str], int] = {}
+        if api:
+            same: dict[tuple[Any, Any], list[int]] = {}
+            for c in api:
+                same.setdefault((c["rank"], c["point"]), []).append(c["user_id"])
+            for r in rows:
+                hit = same.get((r["rank"], r["point"])) or []
+                if end is not None and r["at"] is not None and r["at"] >= end and len(hit) == 1:
+                    links[(r["rank"], r["name"])] = hit[0]
+        elif end is not None:
+            count: dict[str, int] = {}
+            for r in rows:
+                count[r["name"]] = count.get(r["name"], 0) + 1
+            for r in rows:
+                name = r["name"] or ""
+                if len(name) < 2 or count[name] > 1 or name in LEFT_NAMES:
+                    continue
+                ids = {x[0] for x in st.all("""SELECT user_id FROM users WHERE name=?
+                                               UNION SELECT user_id FROM user_names WHERE name=? AND source='showroom'""", (name, name))}
+                if len(ids) == 1 and self._seen_near(next(iter(ids)), end):
+                    links[(r["rank"], name)] = next(iter(ids))
+        claimed: dict[int, int] = {}
+        for uid in links.values():
+            claimed[uid] = claimed.get(uid, 0) + 1
+        links = {k: u for k, u in links.items() if claimed[u] == 1}
         with st.tx() as c:
-            if has_api:
-                # SHOWROOM から取った貢献ランキングと、同じ順位・同じポイントの人
-                c.execute("""UPDATE archive_contributions SET user_id = (
-                               SELECT c.user_id FROM contributions c WHERE c.event_id=archive_contributions.event_id
-                                 AND c.room_id=archive_contributions.room_id AND c.rank=archive_contributions.rank
-                                 AND c.point=archive_contributions.point)
-                             WHERE event_id=? AND room_id=? AND user_id IS NULL""", (event_id, room_id))
-            else:
-                # 消えたルームなど: 名前が 1 人に決まる人だけ (同じ名前の人が何人もいれば結び付けない)
-                c.execute("""UPDATE archive_contributions SET user_id = (
-                               SELECT CASE WHEN COUNT(*) = 1 THEN MIN(uid) END FROM (
-                                 SELECT user_id AS uid FROM users WHERE name = archive_contributions.name
-                                 UNION SELECT user_id FROM user_names WHERE name = archive_contributions.name))
-                             WHERE event_id=? AND room_id=? AND user_id IS NULL AND length(name) >= 2""", (event_id, room_id))
+            c.execute("UPDATE archive_contributions SET user_id=NULL, checked=1 WHERE event_id=? AND room_id=?", (event_id, room_id))
+            c.executemany("UPDATE archive_contributions SET user_id=? WHERE event_id=? AND room_id=? AND rank=? AND name=?",
+                          [(u, event_id, room_id, rank, name) for (rank, name), u in links.items()])
             c.execute("""INSERT OR IGNORE INTO user_names(user_id, name, at, source)
                          SELECT a.user_id, a.name, a.at, 'archive' FROM archive_contributions a JOIN users u USING(user_id)
                          WHERE a.event_id=? AND a.room_id=? AND a.user_id IS NOT NULL AND a.name != '' AND a.name != u.name
                            AND a.name NOT IN ({_LEFT})""".replace("{_LEFT}", _LEFT), (event_id, room_id, *sorted(LEFT_NAMES)))
-        if not has_api:
-            matched = st.all("""SELECT user_id, name, point, rank FROM archive_contributions
-                                WHERE event_id=? AND room_id=? AND user_id IS NOT NULL""", (event_id, room_id))
+        if not api:
+            matched = [r for r in rows if (r["rank"], r["name"]) in links]
             if matched:
-                rows = list({r["user_id"]: {"user_id": r["user_id"], "name": None, "point": r["point"], "rank": r["rank"],
-                                            "guessed": True}
-                             for r in matched}.values())
-                st.set_contributions(event_id, room_id, rows, self._clock(), final=True)
+                st.set_contributions(event_id, room_id, [{"user_id": links[(r["rank"], r["name"])], "name": None, "point": r["point"],
+                                                          "rank": r["rank"], "guessed": True} for r in matched], self._clock(), final=True)
+            else:
+                st.drop_guessed(event_id, room_id)
+
+    def _seen_near(self, uid: int, end: float) -> bool:
+        """その人が、イベントの終わりの前後 MATCH_NEAR 秒に終わったイベントの、SHOWROOM の貢献ランキングに出ているか
+        (人の索引 contributions_user_pt で 1 人分を読む)。"""
+        return self.store.one("""SELECT 1 FROM contributions c JOIN events e ON e.event_id = c.event_id
+                                 WHERE c.user_id=? AND c.guessed IS NULL AND e.end BETWEEN ? AND ? LIMIT 1""",
+                              (int(uid), end - MATCH_NEAR, end + MATCH_NEAR)) is not None
 
     def rematch(self) -> int:
         """あとから SHOWROOM の貢献ランキングが取れたイベント・ルームを、まとめて突き合わせ直す。"""
         pairs = self.store.all("""SELECT DISTINCT a.event_id, a.room_id FROM archive_contributions a
-                                  WHERE a.user_id IS NULL AND EXISTS (SELECT 1 FROM contributions c
-                                    WHERE c.event_id=a.event_id AND c.room_id=a.room_id AND c.rank=a.rank AND c.point=a.point)
+                                  WHERE a.user_id IS NULL AND a.checked IS NULL AND EXISTS (SELECT 1 FROM contributions c
+                                    WHERE c.event_id=a.event_id AND c.room_id=a.room_id AND c.rank=a.rank AND c.point=a.point
+                                      AND c.guessed IS NULL)
                                   LIMIT 500""")
         for p in pairs:
             self._match(p["event_id"], p["room_id"])
         return len(pairs)
 
+    def recheck_step(self) -> bool:
+        """前の決まりで結び付けた分を、今の決まりで 1 回だけ見直す (少しずつ。終われば meta の archive_recheck が done)。
+
+        1. Internet Archive から足した前の名前 (user_names の source='archive') を消す (確かなものは 2 で足し直す)
+        2. 貢献ランキングのページを 1 つずつ _match し直す (確かでない「名前で推測」の貢献は消える)
+        検索の索引に残った前の名前は、検索の時に user_names にあるものだけを出す (explore.search)。"""
+        st = self.store
+        state = st.meta("archive_recheck") or {}
+        if state == "done":
+            return False
+        if memory.holding():
+            return False  # 視聴を先にする
+        if not state.get("names_done"):
+            after = state.get("names") or [-1, ""]
+            rows = st.all("""SELECT user_id, name, source FROM user_names WHERE (user_id, name) > (?, ?)
+                             ORDER BY user_id, name LIMIT ?""", (*after, RECHECK_NAMES))
+            with st.tx() as c:
+                c.executemany("DELETE FROM user_names WHERE user_id=? AND name=?",
+                              [(r["user_id"], r["name"]) for r in rows if r["source"] == "archive"])
+            state = {**state, "names": [rows[-1]["user_id"], rows[-1]["name"]] if rows else after,
+                     "names_done": len(rows) < RECHECK_NAMES}
+            worked = bool(rows)
+        else:
+            after = state.get("pages") or [-1, -1]
+            pairs = st.all("""SELECT DISTINCT event_id, room_id FROM archive_contributions WHERE (event_id, room_id) > (?, ?)
+                              ORDER BY event_id, room_id LIMIT ?""", (*after, RECHECK_PAGES))
+            for p in pairs:
+                self._match(p["event_id"], p["room_id"])
+            if len(pairs) < RECHECK_PAGES:
+                st.set_meta("archive_recheck", "done")
+                log.info("Internet Archive から結び付けた前の名前と「名前で推測」の貢献を、確かなものだけに見直しました")
+                return True
+            state = {**state, "pages": [pairs[-1]["event_id"], pairs[-1]["room_id"]]}
+            worked = True
+        st.set_meta("archive_recheck", state)
+        if worked:
+            time.sleep(RECHECK_PAUSE)  # 収集と視聴の書き込みを長く待たせない
+        return True
+
     def step(self) -> bool:
         self._requeue_once()
-        return self.index_step() or self.page_step()
+        return self.recheck_step() or self.index_step() or self.page_step()
 
     def _requeue_once(self) -> None:
         """前の版は、Internet Archive に断られた (つながらない) 回もページの試した数に数え、読めるはずのページを
