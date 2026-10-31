@@ -1565,3 +1565,49 @@ def test_rows_from_before_the_new_columns_stay_unknown(tmp_path):
         s.set_contributions(900, 9, [{"user_id": 1, "name": "u1", "point": 300, "rank": 1}], NOW, final=True)
         r = s.one("SELECT try_at, try_status, ok_at, gone_at FROM room_events WHERE event_id=900")
         assert tuple(r) == (None, None, None, None)  # 前に取れた分は、正常に取れたことにしない
+
+
+def test_owner_profiles_are_picked_from_a_small_todo_table(tmp_path):
+    """プロフィールを読む人は owner_todo から選ぶ (前は毎回 active_fans と user_rooms を全部結んでいた。サーバーで最長 307 秒)。"""
+    now = time.time()
+    with research_store.Store(tmp_path) as s:
+        # 前の版で残したファン (owner_todo ができる前の分): 1 は未調査、2 は 100 日前に調べた、3 は昨日調べた
+        s.conn.executemany("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (?, ?, ?, ?)",
+                           [(9, "202609", 1, 3), (9, "202610", 1, 5), (9, "202610", 2, 9), (9, "202610", 3, 20)])
+        s.conn.executemany("INSERT INTO user_rooms(user_id, room_id, checked_at, room_key) VALUES (?, NULL, ?, NULL)",
+                           [(2, now - 100 * 86400), (3, now - 86400)])
+        before = now - sweep.OWNER_EVERY
+        assert s.fill_owner_todo(before, limit=1) is False  # 1 人ずつ進める
+        assert s.fill_owner_todo(before, limit=1) is False
+        assert s.fill_owner_todo(before, limit=1) is False
+        assert s.fill_owner_todo(before, limit=1) is True  # 移し終えた
+        assert [tuple(r) for r in s.all("SELECT user_id, level FROM owner_todo ORDER BY user_id")] == [(1, 5), (2, 9)]
+        # 新しく残したファン: 調べていない 4 は足す、昨日調べた 3 は足さない
+        s.set_active_fans(8, "202610", 1, 2, [{"user_id": 4, "level": 7}, {"user_id": 3, "level": 30}], now)
+        assert [r[0] for r in s.all("SELECT user_id FROM owner_todo ORDER BY level DESC")] == [2, 4, 1]
+        s.set_user_room(2, None, now)  # 読んだ人は消す
+        assert [r[0] for r in s.all("SELECT user_id FROM owner_todo ORDER BY level DESC")] == [4, 1]
+        # 3 は 90 日たつと読み直す (足した所を覚えるので、2 回目は足さない)
+        before = now - 3600  # 89 日と 23 時間後に見た時の、読み直す境目 (2 は今調べたので、まだ読み直さない)
+        assert s.queue_stale_owners(before, 100) == 1
+        assert s.one("SELECT level FROM owner_todo WHERE user_id=3")[0] == 30
+        s.set_user_room(3, None, now)
+        assert s.queue_stale_owners(before, 100) == 0
+
+
+def test_sweep_reads_owner_profiles_in_level_order(tmp_path):
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        return {"room_profile": {"room_id": 5, "room_url_key": "own5", "room_name": "配信者"}} if path.endswith("=2") else {}
+
+    now = time.time()
+    with research_store.Store(tmp_path) as s:
+        s.set_active_fans(9, "202610", 1, 2, [{"user_id": 1, "level": 3}, {"user_id": 2, "level": 8}], now)
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    assert sw._next_owner(now) and sw._next_owner(now) and not sw._next_owner(now)
+    assert calls == ["/api/user/profile?user_id=2", "/api/user/profile?user_id=1"]
+    with research_store.Store(tmp_path) as s:
+        assert s.one("SELECT room_id FROM user_rooms WHERE user_id=2")[0] == 5
+        assert s.scalar("SELECT COUNT(*) FROM owner_todo") == 0
