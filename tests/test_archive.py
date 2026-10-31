@@ -325,3 +325,22 @@ def test_recheck_removes_unsure_links_made_before(tmp_path):
         assert s.scalar("SELECT COUNT(*) FROM contributions WHERE event_id=3") == 0
         assert s.one("SELECT events FROM user_room WHERE user_id=1 AND room_id=20")[0] == 0
         assert s.one("SELECT c_count FROM room_events WHERE room_id=20 AND event_id=3")[0] is None
+
+
+def test_rematch_uses_pages_marked_when_showroom_ranking_arrives(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 1, "key": "a", "end": END}])
+        _page(s, 1, 10, [(1, "前の名前", 500)], END + 60)
+        s.conn.execute("UPDATE archive_contributions SET checked=1")  # 前に見たが、SHOWROOM の分がまだ無かった
+    c, _ = collector(tmp_path, {})
+    assert c.rematch() == 0
+    with Store(tmp_path) as s:
+        s.set_contributions(1, 10, [{"user_id": 1, "name": "今の名前", "point": 500, "rank": 1}], NOW, final=True)
+        s.set_contributions(1, 11, [{"user_id": 2, "name": "べつ", "point": 5, "rank": 1}], NOW, final=True)  # ページの無いルーム
+        assert [tuple(r) for r in s.all("SELECT * FROM archive_todo")] == [(1, 10)]
+    assert c.rematch() == 1
+    c.close()
+    with Store(tmp_path) as s:
+        assert s.one("SELECT user_id FROM archive_contributions")[0] == 1
+        assert s.scalar("SELECT COUNT(*) FROM archive_todo") == 0
+        assert {(r["user_id"], r["name"]) for r in s.all("SELECT * FROM user_names WHERE source='archive'")} == {(1, "前の名前")}

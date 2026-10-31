@@ -347,14 +347,11 @@ class ArchiveCollector:
                               (int(uid), end - MATCH_NEAR, end + MATCH_NEAR)) is not None
 
     def rematch(self) -> int:
-        """あとから SHOWROOM の貢献ランキングが取れたイベント・ルームを、まとめて突き合わせ直す。"""
-        pairs = self.store.all("""SELECT DISTINCT a.event_id, a.room_id FROM archive_contributions a
-                                  WHERE a.user_id IS NULL AND a.checked IS NULL AND EXISTS (SELECT 1 FROM contributions c
-                                    WHERE c.event_id=a.event_id AND c.room_id=a.room_id AND c.rank=a.rank AND c.point=a.point
-                                      AND c.guessed IS NULL)
-                                  LIMIT 500""")
+        """あとから SHOWROOM の貢献ランキングが取れたイベント・ルームを、まとめて突き合わせ直す (印の表 archive_todo から 500 件まで)。"""
+        pairs = self.store.all("SELECT event_id, room_id FROM archive_todo LIMIT 500")
         for p in pairs:
             self._match(p["event_id"], p["room_id"])
+            self.store.conn.execute("DELETE FROM archive_todo WHERE event_id=? AND room_id=?", (p["event_id"], p["room_id"]))
         return len(pairs)
 
     def recheck_step(self) -> bool:

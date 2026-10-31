@@ -757,11 +757,14 @@ class Sweeper:
         """ユーザーのプロフィールを読み、その人が持っているルーム (配信者のアカウントとルームの結び付き) を残す。
 
         アクティブファンのレベルの高い人から読む (配信者はほかのルームでも常連になっていることが多いため)。
+        候補は owner_todo (アクティブファンを残す時に足す) から選ぶ。前は毎回 active_fans と user_rooms を全部結んでいた。
         """
-        r = self._take(self._owners, """SELECT af.user_id FROM active_fans af LEFT JOIN user_rooms ur USING(user_id)
-               WHERE ur.user_id IS NULL OR ur.checked_at < ? OR (ur.room_id IS NOT NULL AND ur.room_key IS NULL)
-               GROUP BY af.user_id ORDER BY MAX(af.level) DESC""",
-                       (now - OWNER_EVERY,))
+        before = now - OWNER_EVERY
+        if not self.store.fill_owner_todo(before):  # 前からいる人を移している間は、移した分から読む
+            self.doing = "プロフィールを読む人の一覧"
+        elif not self._owners:
+            self.store.queue_stale_owners(before, BATCH)
+        r = self._take(self._owners, "SELECT user_id FROM owner_todo ORDER BY level DESC", ())
         if r is None:
             return False
         self.doing = "ユーザーのプロフィール"

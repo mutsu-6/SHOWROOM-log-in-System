@@ -109,6 +109,9 @@ CREATE INDEX IF NOT EXISTS archive_pages_todo ON archive_pages(kind, fetched_at)
 CREATE TABLE IF NOT EXISTS archive_contributions (
     event_id INTEGER, room_id INTEGER, rank INTEGER, name TEXT, point INTEGER, user_id INTEGER, at REAL,
     PRIMARY KEY (event_id, room_id, rank, name)) WITHOUT ROWID;
+-- あとから SHOWROOM の貢献ランキングが取れた、Internet Archive の貢献ランキングのページ (archive.rematch が突き合わせ直して消す)。
+-- 前は rematch が archive_contributions を毎回全部読んでいた (サーバーで 1 回 153 秒。2026-10-31 に Cursor が測った)
+CREATE TABLE IF NOT EXISTS archive_todo (event_id INTEGER, room_id INTEGER, PRIMARY KEY (event_id, room_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 -- ルームのアクティブファン (月ごとのファンレベル。見る・コメント・ギフトで上がるので、ポイントに出ない常連も分かる)
 CREATE TABLE IF NOT EXISTS active_fans (
@@ -121,6 +124,12 @@ CREATE INDEX IF NOT EXISTS room_fans_ym ON room_fans(ym, at);  -- 月が終わ�
 -- ユーザーが持っているルーム (プロフィールでルームを公開している配信者。room_id が NULL ならルームなし・非公開)
 CREATE TABLE IF NOT EXISTS user_rooms (user_id INTEGER PRIMARY KEY, room_id INTEGER, checked_at REAL);
 CREATE INDEX IF NOT EXISTS user_rooms_room ON user_rooms(room_id);
+CREATE INDEX IF NOT EXISTS user_rooms_checked ON user_rooms(checked_at);  -- 読み直す時期が来た人を、古い順に owner_todo へ足す
+-- プロフィールを読む人 (アクティブファンで、持っているルームをまだ調べていない人・読み直す時期が来た人)。level は月ごとのファンレベルの最大。
+-- sweep._next_owner がレベルの高い順に読み、読んだら消す。前は毎回 active_fans と user_rooms を全部結んで選んでいた
+-- (サーバーで 1 回最長 307 秒・1 日 88 回。2026-10-31 に Cursor が測った)
+CREATE TABLE IF NOT EXISTS owner_todo (user_id INTEGER PRIMARY KEY, level INTEGER);
+CREATE INDEX IF NOT EXISTS owner_todo_level ON owner_todo(level);
 -- イベントの一覧に入っている、ほかの項目 (説明文・続きもののイベントの親・特典の順位・リーグ・ブロックなど)。
 -- data は一覧の 1 件をそのまま (画像の URL を除く) 残したもの
 CREATE TABLE IF NOT EXISTS event_info (
@@ -322,6 +331,10 @@ GIFT_EVENT_INDEXES = [
     ("gift_events_user_at", "CREATE INDEX IF NOT EXISTS gift_events_user_at ON gift_events(user_id, at, room_key, gift_id, num)",
      "gift_events_user", "user_id, at"),
 ]
+
+
+# owner_todo の level を、前の値と新しい値の大きい方にする (レベルが分からない時は 0 とみる)
+_MAX_LEVEL = "level=MAX(COALESCE(owner_todo.level, 0), COALESCE(excluded.level, 0))"
 
 class Store:
     """research.db への接続 1 本。スレッドごとに作って使う (with 文で閉じる)。"""
@@ -661,6 +674,11 @@ class Store:
                        failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
                        c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
         self._names(c, rows, now)
+        if rows and not any(r.get("guessed") for r in rows):
+            # Internet Archive のページがあれば、SHOWROOM の分で突き合わせ直す印 (主キーの頭で 1 回引くだけ)
+            c.execute("""INSERT OR IGNORE INTO archive_todo(event_id, room_id)
+                         SELECT ?, ? WHERE EXISTS (SELECT 1 FROM archive_contributions WHERE event_id=? AND room_id=?)""",
+                      (event_id, room_id, event_id, room_id))
         top = max((int(r["user_id"]) for r in rows if not r.get("guessed")), default=None)
         if top is not None:
             c.execute("""INSERT INTO event_max_user(event_id, uid) VALUES (?, ?)
@@ -859,6 +877,52 @@ class Store:
             if current:
                 c.execute("UPDATE rooms SET fans_at=? WHERE room_id=?", (now, rid))
             self._names(c, [{"user_id": int(u["user_id"]), "name": u.get("user_name")} for u in users if u.get("user_id")], now)
+            # まだ持っているルームを調べていない人を、プロフィールを読む人に足す (読み直しは queue_stale_owners が足す)
+            c.executemany(f"""INSERT INTO owner_todo(user_id, level) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM user_rooms WHERE user_id=?)
+                             ON CONFLICT(user_id) DO UPDATE SET {_MAX_LEVEL}""",
+                          [(int(u["user_id"]), u.get("level"), int(u["user_id"])) for u in users if u.get("user_id")])
+
+    def fill_owner_todo(self, before: float, limit: int = 5000) -> bool:
+        """前からいるアクティブファンのうち、プロフィールを読む人を owner_todo に移す (1 回だけ。limit 人ずつ進める)。終わっていれば True。
+
+        before より前に調べた人 (読み直す時期が来た人) と、ルームの URL の名前を残す前に調べた人も入れる。
+        """
+        upto = self.meta("owner_todo_upto")
+        if upto is True:
+            return True
+        if upto is None:  # これより前に調べた人は、ここで入れる。これよりあとに時期が来た人は queue_stale_owners が足す
+            self.set_meta("owner_stale_at", before)
+        ids = [r[0] for r in self.all("SELECT DISTINCT user_id FROM active_fans WHERE user_id > ? ORDER BY user_id LIMIT ?",
+                                      (-1 if upto is None else upto, int(limit)))]
+        with self.tx() as c:
+            if ids:
+                c.execute(f"""INSERT INTO owner_todo(user_id, level)
+                               SELECT af.user_id, MAX(af.level) FROM active_fans af LEFT JOIN user_rooms ur USING(user_id)
+                               WHERE af.user_id BETWEEN ? AND ?
+                                 AND (ur.user_id IS NULL OR ur.checked_at < ? OR (ur.room_id IS NOT NULL AND ur.room_key IS NULL))
+                               GROUP BY af.user_id
+                               ON CONFLICT(user_id) DO UPDATE SET {_MAX_LEVEL}""", (ids[0], ids[-1], before))
+            self.set_meta("owner_todo_upto", ids[-1] if ids else True)
+        return not ids
+
+    def queue_stale_owners(self, before: float, limit: int) -> int:
+        """読み直す時期が来た人 (before より前に調べた人) を、古い順に owner_todo へ足す。戻り値は足した人数。
+
+        どこまで足したかを meta の owner_stale_at に残すので、足した人を何度も読み飛ばさない。
+        """
+        since = self.meta("owner_stale_at")
+        if since is None:
+            return 0  # 前からいる人を移し終えるまで待つ (fill_owner_todo が始める)
+        rows = self.all("SELECT user_id, checked_at FROM user_rooms WHERE checked_at >= ? AND checked_at < ? ORDER BY checked_at LIMIT ?",
+                        (since, before, int(limit)))
+        if not rows:
+            return 0
+        with self.tx() as c:
+            c.executemany("""INSERT OR IGNORE INTO owner_todo(user_id, level)
+                             SELECT ?, (SELECT MAX(level) FROM active_fans WHERE user_id=?)""",
+                          [(r[0], r[0]) for r in rows])
+            self.set_meta("owner_stale_at", rows[-1][1])
+        return len(rows)
 
     def set_user_room(self, user_id: int, room_id: Any, now: float, key: Any = None) -> None:
         """ユーザーが持っているルーム (無い・非公開なら None) と、そのルームの URL の名前を残す。"""
@@ -866,6 +930,7 @@ class Store:
                              ON CONFLICT(user_id) DO UPDATE SET room_id=excluded.room_id, checked_at=excluded.checked_at,
                              room_key=excluded.room_key""",
                           (int(user_id), None if room_id in (None, "", 0) else int(room_id), now, key or None))
+        self.conn.execute("DELETE FROM owner_todo WHERE user_id=?", (int(user_id),))
 
     def add_final(self, event_id: int, rows: list[dict[str, Any]], now: float) -> int:
         """終わる直前の細かい推移を残す。戻り値は残したルームの数。"""
