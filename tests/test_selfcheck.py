@@ -423,3 +423,26 @@ def test_hold_does_not_stop_a_started_analysis(monkeypatch):
     t.start()
     t.join()
     assert seen == [False]  # 数え直しの続き (見るルームの集計を先に作る) は止めない
+
+
+def test_gc_note_inside_a_held_lock_does_not_stop_the_thread():
+    """note がロックを持っている最中に GC の知らせが割り込んでも、止まらない (2026-10-31 に、視聴まで止まった)。"""
+    import threading as th
+
+    log = selfcheck.SlowLog()
+    done = th.Event()
+
+    def inside():
+        with log._lock:  # note の途中で、片付けが始まった時と同じ
+            selfcheck._gc["started"] = time.monotonic() - 10
+            real, selfcheck.SLOW = selfcheck.SLOW, log
+            try:
+                selfcheck._gc_timer("stop", {"generation": 2})
+            finally:
+                selfcheck.SLOW = real
+        done.set()
+
+    th.Thread(target=inside, daemon=True).start()
+    assert done.wait(2)
+    rows = log.summary(time.time())
+    assert [(r["kind"], r["count"]) for r in rows] == [("gc", 1)] and rows[0]["max"] >= 9
