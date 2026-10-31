@@ -224,7 +224,9 @@ def test_rebuild_switches_everyone_at_once(tmp_path):
         for _ in range(50):
             if not gs.step(s, later):
                 break
-        assert {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")} == before
+        after = {r[0]: r[1] for r in s.all("SELECT user_id, overall FROM gifter_status")}
+        # 全員が、作り直した値に入れ替わる (later で月をまたぐと値そのものは変わるので、before とはくらべない)
+        assert set(after) == set(before) and all(after[u] != old[u] for u in after)
         assert s.scalar("SELECT COUNT(*) FROM gifter_status_next") == 0
         assert all(json.loads(r[0])["formula"] == gs.FORMULA for r in s.all("SELECT data FROM gifter_status"))
 

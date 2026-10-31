@@ -318,3 +318,38 @@ def test_alerts_for_stalled_sweep_pauses_and_disk_forecast(tmp_path, monkeypatch
     assert any("取り終わるまでに、ディスクをあと約 6.0GB" in a and "525,307 件" in a for a in alerts)
     monkeypatch.setattr(backup, "backlog", lambda d, n: {"pending": 1000, "per_ranking": 5000, "bytes": 5 << 20})
     assert not any("取り終わる" in a for a in web.build_alerts(tmp_path, {}, now))
+
+
+def test_status_cache_does_not_wait_for_a_slow_showroom():
+    import threading as th
+
+    gate = th.Event()
+    calls = []
+
+    def slow(key):
+        calls.append(key)
+        if key == "slow":
+            gate.wait(5)
+        return {"key": key, "name": key, "is_live": False}
+
+    cache = StatusCache(fetcher=slow, wait=0.2)
+    t0 = time.time()
+    got = cache.get_many(["fast", "slow"])
+    assert time.time() - t0 < 2  # SHOWROOM の返事を待ち続けない
+    assert got["fast"]["name"] == "fast" and "error" in got["slow"]
+    assert cache.get_many(["slow"])["slow"].get("error") and calls.count("slow") == 1  # 問い合わせ中は重ねない
+    gate.set()
+    for _ in range(50):
+        if "error" not in cache.get_many(["slow"])["slow"]:
+            break
+        time.sleep(0.05)
+    assert cache.get_many(["slow"])["slow"]["name"] == "slow"  # 裏で取れた値を、次の読み直しで使う
+
+    def broken(key):
+        calls.append(key)
+        raise OSError("timed out")
+
+    bad = StatusCache(fetcher=broken, wait=1)
+    assert bad.get_many(["x"])["x"]["error"] == "timed out"
+    bad.get_many(["x"])
+    assert calls.count("x") == 1  # 失敗しても、ttl のあいだは問い合わせ直さない
