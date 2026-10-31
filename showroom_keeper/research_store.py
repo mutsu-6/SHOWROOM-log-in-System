@@ -109,6 +109,9 @@ CREATE INDEX IF NOT EXISTS archive_pages_todo ON archive_pages(kind, fetched_at)
 CREATE TABLE IF NOT EXISTS archive_contributions (
     event_id INTEGER, room_id INTEGER, rank INTEGER, name TEXT, point INTEGER, user_id INTEGER, at REAL,
     PRIMARY KEY (event_id, room_id, rank, name)) WITHOUT ROWID;
+-- あとから SHOWROOM の貢献ランキングが取れた、Internet Archive の貢献ランキングのページ (archive.rematch が突き合わせ直して消す)。
+-- 前は rematch が archive_contributions を毎回全部読んでいた (サーバーで 1 回 153 秒。2026-10-31 に Cursor が測った)
+CREATE TABLE IF NOT EXISTS archive_todo (event_id INTEGER, room_id INTEGER, PRIMARY KEY (event_id, room_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 -- ルームのアクティブファン (月ごとのファンレベル。見る・コメント・ギフトで上がるので、ポイントに出ない常連も分かる)
 CREATE TABLE IF NOT EXISTS active_fans (
@@ -661,6 +664,11 @@ class Store:
                        failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
                        c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
         self._names(c, rows, now)
+        if rows and not any(r.get("guessed") for r in rows):
+            # Internet Archive のページがあれば、SHOWROOM の分で突き合わせ直す印 (主キーの頭で 1 回引くだけ)
+            c.execute("""INSERT OR IGNORE INTO archive_todo(event_id, room_id)
+                         SELECT ?, ? WHERE EXISTS (SELECT 1 FROM archive_contributions WHERE event_id=? AND room_id=?)""",
+                      (event_id, room_id, event_id, room_id))
         top = max((int(r["user_id"]) for r in rows if not r.get("guessed")), default=None)
         if top is not None:
             c.execute("""INSERT INTO event_max_user(event_id, uid) VALUES (?, ?)

@@ -33,8 +33,6 @@ ALLOWED = [
     ("SCAN af", "FROM active_fans af LEFT JOIN user_rooms", "プロフィールを読む人を 100 人ずつまとめて選ぶ (100 回に 1 回だけ)"),
     ("SCAN gifter_status_next", "SELECT data FROM gifter_status_next", "ステータスの評価の区切りを作る。1 日 1 回、回し終えた時だけ (パワーギフターの分だけ)"),
     ("SCAN gifter_status_next", "SELECT user_id, version", "作り直した全員を一覧に入れ替える。1 日 1 回、回し終えた時だけ"),
-    ("SCAN a", "WHERE a.user_id IS NULL AND a.checked IS NULL",
-     "Internet Archive の、あとから突き合わせられる分を探す。することが無い時に 1 時間に 1 回と、ページを 200 読むごと (前からの読み方)"),
 ]
 
 
