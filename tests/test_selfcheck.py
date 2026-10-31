@@ -71,6 +71,12 @@ def test_dead_thread_is_logged(monkeypatch):
 
 
 def test_prune_expired_keeps_fresh_entries(monkeypatch):
+    from showroom_keeper import event_analysis as ea, explore, feed, gifter_analysis as ga, news, room_analysis as ra
+
+    # ほかのテストが残した使い回しを数えない (決まった時刻で作った分が、日がたつと期限切れになって数に入っていた)
+    for mod, name in ((ea, "_series"), (ea, "_choice"), (ea, "_strengths"), (ea, "_lag"), (ga, "_cuts"), (ra, "_congestion"),
+                      (explore, "_folded_rooms"), (feed, "_cache"), (news, "_cache"), (listing, "_user_cache")):
+        monkeypatch.setattr(mod, name, {})
     monkeypatch.setattr(listing, "_search_cache", {"old": (NOW - listing.SEARCH_TTL - 1, []), "new": (NOW, [])})
     monkeypatch.setattr(listing, "_listeners_cache", {("a", None, None): (NOW - listing.LISTENERS_STALE - 1, {}),
                                                       ("a", 7, None): (NOW, {})})

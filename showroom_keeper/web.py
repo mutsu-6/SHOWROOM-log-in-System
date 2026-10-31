@@ -19,7 +19,8 @@ import logging
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -67,33 +68,64 @@ class LogBuffer(logging.Handler):
 
 
 class StatusCache:
-    """SHOWROOM の配信状況を短時間だけ使い回す (画面の自動更新で問い合わせが増えすぎないように)。"""
+    """SHOWROOM の配信状況を短時間だけ使い回す (画面の自動更新で問い合わせが増えすぎないように)。
 
-    def __init__(self, ttl: float = STATUS_TTL, fetcher: Any = fetch):
+    SHOWROOM の返事は WAIT 秒までしか待たない。間に合わなかったルームは、前に取れた値 (無ければ「確かめています」) で返し、
+    問い合わせは裏で続けて、次の読み直しで使う。前は 1 ルームに最大 3 回 (各 15 秒まで) の問い合わせを全部待ってから返していて、
+    SHOWROOM が遅い・断っている時に、ホーム画面の読み込みが終わらなかった (2026-10-31)。
+    失敗した時も ttl 秒は問い合わせ直さない (15 秒ごとの読み直しのたびに、遅い問い合わせを重ねないため)。
+    """
+
+    WAIT = 3.0
+
+    def __init__(self, ttl: float = STATUS_TTL, fetcher: Any = fetch, wait: float | None = None):
         self.ttl = ttl
+        self.wait = self.WAIT if wait is None else wait
         self._fetch = fetcher
-        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}  # 取れた値
+        self._tried: dict[str, float] = {}  # 最後に問い合わせ始めた時刻 (失敗も含む)
+        self._errors: dict[str, dict[str, Any]] = {}  # 最後の失敗 (取れた値が無い時に出す)
+        self._running: dict[str, Future] = {}
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(8)
 
+    def _one(self, key: str) -> None:
+        try:
+            value = self._fetch(key)
+        except Exception as e:  # noqa: BLE001
+            value = {"key": key, "error": str(e).splitlines()[0] if str(e) else type(e).__name__}
+        with self._lock:
+            if "error" in value:
+                self._errors[key] = value
+            else:
+                self._cache[key] = (time.time(), value)
+                self._errors.pop(key, None)
+            self._running.pop(key, None)
+
     def get_many(self, keys: list[str]) -> dict[str, dict[str, Any]]:
         now = time.time()
+        waiting = []
         with self._lock:
-            fresh = {k: v for k, (at, v) in self._cache.items() if k in keys and now - at < self.ttl}
-        missing = [k for k in keys if k not in fresh]
-
-        def one(key: str) -> tuple[str, dict[str, Any]]:
-            try:
-                return key, self._fetch(key)
-            except Exception as e:  # noqa: BLE001
-                return key, {"key": key, "error": str(e).splitlines()[0]}
-
-        for key, value in self._pool.map(one, missing):
-            fresh[key] = value
-            if "error" not in value:
-                with self._lock:
-                    self._cache[key] = (now, value)
-        return fresh
+            for key in keys:
+                at = self._cache.get(key, (0.0, None))[0]
+                if key in self._running:
+                    waiting.append(self._running[key])
+                elif now - at >= self.ttl and now - self._tried.get(key, 0.0) >= self.ttl:
+                    self._tried[key] = now
+                    self._running[key] = fut = self._pool.submit(self._one, key)
+                    waiting.append(fut)
+        if waiting:
+            wait_futures(waiting, timeout=self.wait)
+        with self._lock:
+            out = {}
+            for key in keys:
+                if key in self._cache:
+                    out[key] = self._cache[key][1]
+                elif key in self._errors:
+                    out[key] = self._errors[key]
+                else:
+                    out[key] = {"key": key, "error": "SHOWROOM の配信状況を確かめています"}
+            return out
 
 
 def watcher_view(w: Any) -> dict[str, Any]:
