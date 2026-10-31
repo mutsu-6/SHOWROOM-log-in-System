@@ -142,28 +142,54 @@ ERRORS = ErrorLog()
 
 # ---------------------------------------------------------------- 遅い処理を数える
 class SlowLog:
-    """時間のかかった処理を、種類と名前 (画面の要求の道・SQL の頭・集計の名前) ごとに数える。"""
+    """時間のかかった処理を、種類と名前 (画面の要求の道・SQL の頭・集計の名前) ごとに数える。
+
+    ロックを取らずに置くだけの note_later もある。Python の片付け (GC) の知らせと、視聴の処理 (asyncio) はこちらを使う:
+    - GC の知らせは、どのスレッドの中でも割り込んで呼ばれる。note がロックを持ったまま片付けが始まると、
+      同じスレッドがもう一度ロックを取りに行って、二度と進まなくなっていた (2026-10-31。swap で片付けが遅く、知らせる長さを超えた。
+      視聴・ログインの確認・管理画面が、起動し直すまで止まった)
+    - 視聴の処理は、ほかのスレッドがロックを持っている間も待たない
+    置いた分は、次の note・summary の時にロックの中で入れる。
+    """
 
     def __init__(self, kinds: int = ERROR_KINDS) -> None:
         self.kinds = kinds
         self._lock = threading.Lock()
         self.items: dict[tuple[str, str], dict[str, Any]] = {}
+        self._later: deque[tuple[str, str, float, float]] = deque(maxlen=1000)  # append と popleft は、ロック無しで混ざらない
+
+    def note_later(self, kind: str, name: str, seconds: float, now: float | None = None) -> None:
+        """ロックを取らずに置く (GC の知らせ・視聴の処理から)。"""
+        self._later.append((kind, name, float(seconds), time.time() if now is None else now))
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                kind, name, seconds, at = self._later.popleft()
+            except IndexError:
+                return
+            self._add(kind, name, seconds, at)
+
+    def _add(self, kind: str, name: str, seconds: float, now: float) -> None:
+        key = (kind, " ".join(str(name).split())[:120])
+        it = self.items.get(key)
+        if it is None:
+            if len(self.items) >= self.kinds:
+                self.items.pop(min(self.items, key=lambda k: self.items[k]["times"][-1][0]))
+            it = self.items[key] = {"times": deque(maxlen=100)}
+        it["times"].append((now, float(seconds)))
 
     def note(self, kind: str, name: str, seconds: float, now: float | None = None) -> None:
         now = time.time() if now is None else now
-        key = (kind, " ".join(str(name).split())[:120])
         with self._lock:
-            it = self.items.get(key)
-            if it is None:
-                if len(self.items) >= self.kinds:
-                    self.items.pop(min(self.items, key=lambda k: self.items[k]["times"][-1][0]))
-                it = self.items[key] = {"times": deque(maxlen=100)}
-            it["times"].append((now, float(seconds)))
+            self._drain()
+            self._add(kind, name, seconds, now)
 
     def summary(self, now: float, window: float = ERROR_WINDOW, limit: int = 15) -> list[dict[str, Any]]:
         """window 秒のうちに出たものを、いちばん遅かった順に。"""
         out = []
         with self._lock:
+            self._drain()
             for (kind, name), it in self.items.items():
                 recent = [sec for t, sec in it["times"] if t > now - window]
                 if recent:
@@ -258,7 +284,7 @@ async def watch_loop(every: float = 0.5) -> None:
             lag = time.monotonic() - started - every
             blame, _beat["blame"] = _beat["blame"], None
             if lag >= LOOP_LAG_NOTE:
-                SLOW.note("loop", blame or "視聴の処理", lag)
+                SLOW.note_later("loop", blame or "視聴の処理", lag)  # 視聴の処理は、ロックを待たない
     finally:
         stop.set()
         _beat["at"] = 0.0
@@ -276,7 +302,7 @@ def _gc_timer(phase: str, info: dict[str, Any]) -> None:
     elif _gc["started"] is not None:
         took, _gc["started"] = time.monotonic() - _gc["started"], None
         if took >= GC_NOTE:
-            SLOW.note("gc", "いちばん古い世代の片付け", took)
+            SLOW.note_later("gc", "いちばん古い世代の片付け", took)  # ロックを取らない (note の途中に割り込んでも止まらない)
 
 
 def _thread_died(args: Any) -> None:
