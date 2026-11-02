@@ -91,42 +91,37 @@ def test_backup_finishes_while_writes_never_stop(tmp_path):
     assert r["ok"] and time.time() - started < 20
 
 
-def test_backup_removes_old_copies_before_making_new_one(tmp_path, monkeypatch):
+def test_backup_keeps_previous_copy_until_new_one_is_ready(tmp_path, monkeypatch):
     _fill(tmp_path, 10)
-    backup.backup_research_db(tmp_path, keep=1, now=1792000000)
+    first = backup.backup_research_db(tmp_path, keep=1, now=1792000000)
     seen = []
     real = backup.shutil.disk_usage
 
-    def usage(path):  # 空きを調べる時には、もう古い写しが消えている
+    def usage(path):  # 空きを調べる時には、前の写しがまだ残っている
         seen.append(sorted(p.name for p in backup.copies(tmp_path)))
         return real(path)
 
     monkeypatch.setattr(backup.shutil, "disk_usage", usage)
     r = backup.backup_research_db(tmp_path, keep=1, now=1792000000 + 86400)
-    assert r["ok"] and seen[0] == []
-    assert len(backup.copies(tmp_path)) == 1
+    assert r["ok"] and first["file"] in seen[0]
+    assert [p.name for p in backup.copies(tmp_path)] == [r["file"]]
 
 
-def test_backup_drops_previous_copy_when_disk_is_short(tmp_path, monkeypatch):
+def test_backup_keeps_previous_copy_when_disk_is_short(tmp_path, monkeypatch):
     _fill(tmp_path, 10)
     folder = backup.backup_dir(tmp_path)
     folder.mkdir(parents=True)
-    (folder / "research-20261020-0400.db").write_bytes(b"old")  # 縮める前の版で作った写し
-    real = backup.shutil.disk_usage
-    calls = []
+    old = folder / "research-20261020-0400.db"  # 縮める前の版で作った写し
+    old.write_bytes(b"old")
 
     class Usage:
-        def __init__(self, free):
-            self.free = free
+        free = 0
 
-    def usage(path):  # 前の写しがあるうちは足りない
-        calls.append(len(backup.copies(tmp_path)))
-        return Usage(0 if backup.copies(tmp_path) else real(path).free)
-
-    monkeypatch.setattr(backup.shutil, "disk_usage", usage)
-    r = backup.backup_research_db(tmp_path, keep=2, now=1792000000)
-    assert r["ok"] and calls[:2] == [1, 0]
-    assert [p.name for p in backup.copies(tmp_path)] == [r["file"]]
+    monkeypatch.setattr(backup.shutil, "disk_usage", lambda path: Usage)
+    r = backup.backup_research_db(tmp_path, keep=1, now=1792000000)
+    assert r["ok"] is False and "作れなかった" in r["reason"] and "残しています" in r["reason"]
+    assert backup.copies(tmp_path) == [old]
+    assert "作れなかった" in backup.last_backup(tmp_path)["reason"]
 
 
 def test_backup_replaces_old_uncompressed_copies(tmp_path):

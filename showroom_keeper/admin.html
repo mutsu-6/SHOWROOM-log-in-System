@@ -4182,8 +4182,9 @@ function renderCollect(d) {
   $("#r-sweep").innerHTML = sweepStatus(d) || `<div class="hint">全ルームの収集は有効になっていません (SHOWROOM_RESEARCH_ALL)。</div>`;
   const b = d.backup, t = d.throttle || {};
   const pauses = (t.pause_log || []).slice(0, 5).map((p) => `${tm(p.at, true).slice(0, 11)} から ${durationText(p.seconds)} (${esc(p.why)}・続けて ${p.count} 回目)`);
+  const backupMiss = b && !b.ok && String(b.reason || "").includes("作れなかった");
   $("#r-backup").innerHTML = (!b ? "バックアップ: まだありません" : b.ok ? `バックアップ: ${tm(b.at, true).slice(0, 11)} (${num(b.mb)} MB・毎日 4:00)`
-    : `<b style="color:var(--accent)">バックアップに失敗 (${esc(tm(b.at, true).slice(0, 11))}): ${esc(b.reason || "")}</b>`)
+    : `<b style="color:var(--accent)">バックアップを${backupMiss ? "作れなかった" : "失敗"} (${esc(tm(b.at, true).slice(0, 11))}): ${esc(b.reason || "")}</b>`)
     + (d.upload ? (d.upload.ok ? ` ・ サーバーの外: gs://${esc(d.upload.bucket)}/${esc(d.upload.name)} (${tm(d.upload.at, true).slice(0, 11)})`
       : ` ・ <b style="color:var(--accent)">サーバーの外に送れませんでした: ${esc(d.upload.reason || "")}</b>`) : "")
     + (pauses.length ? `<br>問い合わせを止めた記録: ${pauses.join(" / ")}` : "");
@@ -4215,7 +4216,7 @@ function renderHomeTiles() {
   if (s) {
     tiles.push(tile("全ルームの収集", !w || !w.enabled ? "無効" : t && t.paused ? "止めています" : w.running ? "集めています" : "止まっています",
       t && t.paused ? `あと ${durationText(t.paused)}` : store ? `ルーム ${num(store.collected)} / ${num(store.rooms)}` : "", t && t.paused ? "warn" : w && w.running ? "ok" : "", "#collect"));
-    tiles.push(tile("バックアップ", !b ? "まだ" : b.ok ? ymd(b.at).slice(5) : "失敗", b && b.ok ? `${num(b.mb)} MB` : b ? esc(b.reason || "") : "毎日 4:00", b && !b.ok ? "bad" : b ? "ok" : "", "#collect"));
+    tiles.push(tile("バックアップ", !b ? "まだ" : b.ok ? ymd(b.at).slice(5) : (String(b.reason || "").includes("作れなかった") ? "作れなかった" : "失敗"), b && b.ok ? `${num(b.mb)} MB` : b ? esc(b.reason || "") : "毎日 4:00", b && !b.ok ? "bad" : b ? "ok" : "", "#collect"));
   }
   $("#home-tiles").innerHTML = tiles.join("");
 }

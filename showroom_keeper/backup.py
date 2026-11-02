@@ -9,8 +9,8 @@ sqlite3.Connection.backup は、写している途中にほかの接続が書き
 そのあいだも収集の書き込みは止めない。
 
 写しは gzip で縮めて (research-YYYYMMDD-HHMM.db.gz、半分ほどになる) 1 つだけ残す。古い日に戻す時は、
-Google Cloud が毎日作るディスクの写し (14 日分) を使う。空きが足りない時は、前の写しを消してから作り、
-それでも足りなければ作らない (どちらもディスクの写しがあるので戻せる)。
+Google Cloud が毎日作るディスクの写し (14 日分) を使う。新しい写しができてから前の写しを消す。
+空きが足りない日は前の写しを残し、作れなかったことを管理画面に出す。
 """
 
 from __future__ import annotations
@@ -131,19 +131,13 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
     folder.mkdir(parents=True, exist_ok=True)
     size = _db_size(src)
     need = _need(size)
-    # 新しい写しを作る前に、古い写しを消しておく (作ったあとに消すと、一時的に DB の何倍もの空きが要るため)。
-    # 作るあいだも keep - 1 個は残しておくので、作るのに失敗しても前の写しはある
-    for old in copies(state_dir)[max(keep - 1, 0):]:
-        old.unlink(missing_ok=True)
+    # 前の写しは、新しい写しができてから消す。作る前に消すと、作れなかった日に写しが 0 になる。
     free = shutil.disk_usage(folder).free
-    if free < need and copies(state_dir):
-        # 空きが足りない時は、残しておいた前の写しも消して作る (古い日は Google Cloud のディスクの写しで戻せる)
-        for old in copies(state_dir):
-            old.unlink(missing_ok=True)
-        log.warning("ディスクの空きが少ないので、前の写しを消してから作ります (空き %.1fGB、約 %.1fGB 要る)", free / 1e9, need / 1e9)
-        free = shutil.disk_usage(folder).free
     if free < need:
-        result = {"ok": False, "at": now, "reason": f"ディスクの空きが足りません (空き {free / 1e9:.1f}GB、写しに約 {need / 1e9:.1f}GB 要る)"}
+        kept = copies(state_dir)
+        note = "前の写しは残しています" if kept else "前の写しはありません"
+        result = {"ok": False, "at": now, "kept": len(kept),
+                  "reason": f"作れなかった。ディスクの空きが足りません (空き {free / 1e9:.1f}GB、写しに約 {need / 1e9:.1f}GB 要る)。{note}"}
         log.warning("research.db のバックアップをやめました: %s", result["reason"])
         _save_last(state_dir, result)
         return result
@@ -170,9 +164,13 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
         raw = tmp.stat().st_size
         _compress(tmp, packed)
         os.replace(packed, folder / name)
-    except Exception as e:  # noqa: BLE001 - 失敗しても収集は続ける
+    except Exception as e:  # noqa: BLE001 - 失敗しても収集は続ける。前の写しは消していない
         packed.unlink(missing_ok=True)
-        result = {"ok": False, "at": now, "reason": str(e).splitlines()[0] if str(e) else type(e).__name__}
+        reason = str(e).splitlines()[0] if str(e) else type(e).__name__
+        kept = copies(state_dir)
+        if kept:
+            reason = f"{reason}。前の写しは残しています"
+        result = {"ok": False, "at": now, "kept": len(kept), "reason": reason}
         log.warning("research.db のバックアップに失敗しました: %s", result["reason"])
         _save_last(state_dir, result)
         return result
