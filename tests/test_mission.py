@@ -47,20 +47,21 @@ def test_views_left_and_comment_wanted():
     assert not mission.comment_wanted(mission.flatten(_daily(comment=1)))
 
 
-def test_comments_left_uses_the_daily_five_and_ignores_the_cumulative_twenty():
+def test_comments_left_uses_the_daily_three_and_ignores_the_cumulative_forty():
     ms = [
-        {"title": "デイリー新人ライバーの配信を視聴して3ルームでコメントしよう", "target_value": 3,
+        {"title": "新人ライバーの配信を視聴して3ルームでコメントしよう", "target_value": 3,
+         "current_value": 0, "is_daily": 0, "is_active": 1},
+        {"title": "新人ライバーの配信を視聴して通算10ルームでコメントしよう", "target_value": 10,
+         "current_value": 0, "is_daily": 1, "is_active": 1},
+        {"title": "新人ライバーの配信を視聴して通算40ルームでコメントしよう", "target_value": 40,
          "current_value": 0, "is_active": 1},
-        {"title": "デイリー新人ライバーの配信を視聴して5ルームでコメントしよう", "target_value": 5,
-         "current_value": 1, "is_daily": 0, "is_active": 1},
-        {"title": "新人ライバーの配信を視聴して通算20ルームでコメントしよう", "target_value": 20,
+        {"title": "新人ライバーに文字ギフト「はじめまして」or「初見です」を2回贈ろう", "target_value": 2,
          "current_value": 0, "is_daily": 1, "is_active": 1},
-        {"title": "デイリー新人ライバーに文字ギフト「はじめまして」or「初見です」を2回贈ろう", "target_value": 2,
-         "current_value": 0, "is_daily": 1, "is_active": 1},
+        {"title": "新人ライバーを10ルームフォローしよう", "target_value": 10, "current_value": 0, "is_active": 1},
     ]
-    assert mission.comments_left(ms, "new") == 4  # 毎日の残り 3 と 4 の大きい方。通算20とギフトは入れない
-    done = [dict(m, current_value=m["target_value"]) for m in ms[:2]]
-    assert mission.comments_left(done + ms[2:], "new") == 0  # 毎日が済んでいれば通算では送らない
+    assert mission.comments_left(ms, "new") == 3  # 題に「毎日」が無くても 3 ルーム。通算40・ギフト・フォローは入れない
+    done = [dict(ms[0], current_value=3)]
+    assert mission.comments_left(done + ms[1:], "new") == 0  # 毎日が済んでいれば通算では送らない
 
 
 def test_comments_left_caps_a_cumulative_mission_when_there_is_no_daily():
@@ -200,21 +201,25 @@ async def test_comments_in_new_and_kikkake_rooms_and_receives_their_limited_rewa
     assert sorted(commented) == [1, *sorted(set(commented) & {2, 7, 8, 9})]
     assert len(set(commented) & {2, 7, 8, 9}) == 3  # 毎日の 3 ルームで足りる
     assert ("POST", "/api/mission/receive", {"mission_id": 11}) in posts  # 新人のルームの中で受け取る
-    assert r.state["kikkake"] == 1 and r.state["new"] == 4  # 新人は 5 つまで先に見る。配信があるのは 4 つ
+    assert r.state["kikkake"] == 1 and r.state["new"] == 3  # 新人は 3 つまで先に見る
 
 
-async def test_daily_five_new_room_comments_ignore_the_cumulative_twenty(tmp_path):
+async def test_daily_three_new_room_comments_ignore_the_cumulative_forty(tmp_path):
     r, sv = _runner(tmp_path, jst(2026, 11, 2, 21, 5).timestamp())
     sv.targeted = True
     sv.new_rooms = {2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
-    sv.new_comment_title = "デイリー新人ライバーの配信を視聴して5ルームでコメントしよう"
-    sv.new_comment_target = 5
-    sv.new_comment_daily = 0  # 題の「デイリー」で毎日と分かる
+    sv.new_comment_title = "新人ライバーの配信を視聴して3ルームでコメントしよう"
+    sv.new_comment_target = 3
+    sv.new_comment_daily = 0  # 画面の「毎日」は題の外
     sv.extra_new_missions = [
-        {"mission_id": 12, "title": "デイリー新人ライバーの配信を視聴して3ルームでコメントしよう",
-         "current_value": 0, "target_value": 3, "is_daily": 1, "is_active": 1, "remain_reward": 0},
-        {"mission_id": 13, "title": "新人ライバーの配信を視聴して通算20ルームでコメントしよう",
-         "current_value": 0, "target_value": 20, "is_daily": 0, "is_active": 1, "remain_reward": 0},
+        {"mission_id": 12, "title": "新人ライバーの配信を視聴して通算10ルームでコメントしよう",
+         "current_value": 0, "target_value": 10, "is_daily": 0, "is_active": 1, "remain_reward": 0},
+        {"mission_id": 13, "title": "新人ライバーの配信を視聴して通算40ルームでコメントしよう",
+         "current_value": 0, "target_value": 40, "is_daily": 0, "is_active": 1, "remain_reward": 0},
+        {"mission_id": 14, "title": "新人ライバーに文字ギフト「はじめまして」or「初見です」を2回贈ろう",
+         "current_value": 0, "target_value": 2, "is_daily": 0, "is_active": 1, "remain_reward": 0},
+        {"mission_id": 15, "title": "新人ライバーを10ルームフォローしよう",
+         "current_value": 0, "target_value": 10, "is_daily": 0, "is_active": 1, "remain_reward": 0},
     ]
     lives = _onlives()
 
@@ -228,8 +233,8 @@ async def test_daily_five_new_room_comments_ignore_the_cumulative_twenty(tmp_pat
     await r.step(mission.parse_times("21:00"))
     posts = [c for c in sv.calls if c[0] == "POST"]
     commented = {p[2]["live_id"] - 1000 for p in posts if p[1] == "/api/live/post_live_comment"}
-    assert r.state["new"] > 5  # 5 より多くの新人を見ている
-    assert len(commented & sv.new_rooms) == 5  # 通算20には合わせない
+    assert r.state["new"] > 3  # 3 より多くの新人を見ている
+    assert len(commented & sv.new_rooms) == 3  # 通算40には合わせない
     assert 1 in commented  # 毎日の分が無いきっかけ配信は、上限まで 1 ルーム
     assert not any("gift" in p[1] for p in posts)
 
