@@ -47,6 +47,28 @@ def test_views_left_and_comment_wanted():
     assert not mission.comment_wanted(mission.flatten(_daily(comment=1)))
 
 
+def test_comments_left_uses_the_daily_five_and_ignores_the_cumulative_twenty():
+    ms = [
+        {"title": "デイリー新人ライバーの配信を視聴して3ルームでコメントしよう", "target_value": 3,
+         "current_value": 0, "is_active": 1},
+        {"title": "デイリー新人ライバーの配信を視聴して5ルームでコメントしよう", "target_value": 5,
+         "current_value": 1, "is_daily": 0, "is_active": 1},
+        {"title": "新人ライバーの配信を視聴して通算20ルームでコメントしよう", "target_value": 20,
+         "current_value": 0, "is_daily": 1, "is_active": 1},
+        {"title": "デイリー新人ライバーに文字ギフト「はじめまして」or「初見です」を2回贈ろう", "target_value": 2,
+         "current_value": 0, "is_daily": 1, "is_active": 1},
+    ]
+    assert mission.comments_left(ms, "new") == 4  # 毎日の残り 3 と 4 の大きい方。通算20とギフトは入れない
+    done = [dict(m, current_value=m["target_value"]) for m in ms[:2]]
+    assert mission.comments_left(done + ms[2:], "new") == 0  # 毎日が済んでいれば通算では送らない
+
+
+def test_comments_left_caps_a_cumulative_mission_when_there_is_no_daily():
+    ms = [{"title": "きっかけ配信を10ルーム視聴してコメントしよう", "target_value": 10, "current_value": 0,
+           "is_daily": 0, "is_active": 1}]
+    assert mission.comments_left(ms, "kikkake") == mission.KIKKAKE_MAX
+
+
 def _onlives():
     lives = [{"room_id": i, "live_id": 1000 + i, "room_url_key": f"r{i}", "live_type": 0} for i in range(1, 30)]
     lives[0]["live_type"] = 4  # きっかけ配信
@@ -77,12 +99,14 @@ class FakeSession:
         if path.startswith("/api/mission"):
             rid = int(path.split("=")[1])
             data = _daily(sv.level, sv.value, sv.comment, sv.remain)
-            if rid in sv.new_rooms:  # 新人のルームの中にだけ出る限定のミッション
-                data["genre_list"].append({"genre": "limited", "name": "HW2026 新人ライバー応援ミッション", "all_days_mission": [
-                    {"mission_id": 10, "title": "新人ライバーの配信3ルームでコメントしよう", "current_value": sv.new_comments,
-                     "target_value": 3, "is_daily": 1, "is_active": 1, "remain_reward": 0},
+            if rid in sv.new_rooms:  # 新人のルームの中にだけ出るミッション
+                data["genre_list"].append({"genre": "limited", "name": "新人ライバー応援", "all_days_mission": [
+                    {"mission_id": 10, "title": getattr(sv, "new_comment_title", "新人ライバーの配信3ルームでコメントしよう"),
+                     "current_value": sv.new_comments, "target_value": getattr(sv, "new_comment_target", 3),
+                     "is_daily": getattr(sv, "new_comment_daily", 1), "is_active": 1, "remain_reward": 0},
                     {"mission_id": 11, "title": "新人ライバーの配信を1回視聴しよう", "current_value": 1, "target_value": 1,
-                     "is_daily": 1, "is_active": 1, "remain_reward": sv.new_remain, "reward_name": "G", "reward_num": 2}]})
+                     "is_daily": 1, "is_active": 1, "remain_reward": sv.new_remain, "reward_name": "G", "reward_num": 2},
+                    *getattr(sv, "extra_new_missions", [])]})
             if rid == 1:
                 data["genre_list"][1]["all_days_mission"][0]["current_value"] = sv.kik_comments
             return json.dumps(data)
@@ -174,9 +198,40 @@ async def test_comments_in_new_and_kikkake_rooms_and_receives_their_limited_rewa
     posts = [c for c in sv.calls if c[0] == "POST"]
     commented = [p[2]["live_id"] - 1000 for p in posts if p[1] == "/api/live/post_live_comment"]
     assert sorted(commented) == [1, *sorted(set(commented) & {2, 7, 8, 9})]
-    assert len(set(commented) & {2, 7, 8, 9}) == 3  # 新人のルームのコメントは 3 ルームで足りる
+    assert len(set(commented) & {2, 7, 8, 9}) == 3  # 毎日の 3 ルームで足りる
     assert ("POST", "/api/mission/receive", {"mission_id": 11}) in posts  # 新人のルームの中で受け取る
-    assert r.state["kikkake"] == 1 and r.state["new"] == 3
+    assert r.state["kikkake"] == 1 and r.state["new"] == 4  # 新人は 5 つまで先に見る。配信があるのは 4 つ
+
+
+async def test_daily_five_new_room_comments_ignore_the_cumulative_twenty(tmp_path):
+    r, sv = _runner(tmp_path, jst(2026, 11, 2, 21, 5).timestamp())
+    sv.targeted = True
+    sv.new_rooms = {2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+    sv.new_comment_title = "デイリー新人ライバーの配信を視聴して5ルームでコメントしよう"
+    sv.new_comment_target = 5
+    sv.new_comment_daily = 0  # 題の「デイリー」で毎日と分かる
+    sv.extra_new_missions = [
+        {"mission_id": 12, "title": "デイリー新人ライバーの配信を視聴して3ルームでコメントしよう",
+         "current_value": 0, "target_value": 3, "is_daily": 1, "is_active": 1, "remain_reward": 0},
+        {"mission_id": 13, "title": "新人ライバーの配信を視聴して通算20ルームでコメントしよう",
+         "current_value": 0, "target_value": 20, "is_daily": 0, "is_active": 1, "remain_reward": 0},
+    ]
+    lives = _onlives()
+
+    async def more():
+        for live in lives["onlives"][0]["lives"]:
+            if live["room_id"] in sv.new_rooms:
+                live["new_days_count_label"] = "New7day"
+        return lives
+
+    r._fetch_onlives = more
+    await r.step(mission.parse_times("21:00"))
+    posts = [c for c in sv.calls if c[0] == "POST"]
+    commented = {p[2]["live_id"] - 1000 for p in posts if p[1] == "/api/live/post_live_comment"}
+    assert r.state["new"] > 5  # 5 より多くの新人を見ている
+    assert len(commented & sv.new_rooms) == 5  # 通算20には合わせない
+    assert 1 in commented  # 毎日の分が無いきっかけ配信は、上限まで 1 ルーム
+    assert not any("gift" in p[1] for p in posts)
 
 
 async def test_waits_for_the_start_time_and_skips_comment_when_off(tmp_path):

@@ -7,8 +7,9 @@
 - きっかけ配信は配信中の一覧の live_type が 4。そのルームを今月と前月で 6 時間未満しか見ていない人だけが対象
   (current_user の is_targeted_discovery_live)。新人の配信は new_days_count_label (New1day〜New30day) が付いている
 - 同じ配信は 1 回しか数えないので、見た配信 (live_id) を覚えておく
-- 新人・きっかけ配信のルームの中にだけ出る限定のミッション (「HW2026 新人ライバー応援ミッション」など) があるので、
-  コメントの残りと報酬の受取は、そのルームの中で読む
+- 新人のルームの中に出る毎日のコメント (「デイリー新人ライバーの配信を視聴して5ルームでコメントしよう」など) は、そのルームで読む。
+  通算 (「通算20ルームでコメント」など) は、この 1 回の回数にしない。ハロウィン2026 の限定は 2026-11-01 23:59 で終わった
+- ギフトとフォローのミッションはしない。報酬の受取は、そのルームの中で読む
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ POLL_EVERY = 30.0  # 視聴中に polling を送る間隔 (秒。配信ページ
 ROOM_GAP = 2.0  # ルームとルームの間を空ける時間 (秒)
 RECEIVE_GAP = 1.0  # 受取と受取の間 (秒)
 RETRY_AFTER = 1800.0  # ルームが足りない・ログインしていない時に、同じ区切りの中で試し直すまで (秒)
-KIKKAKE_MAX = 3  # 1 回に見るきっかけ配信の上限 (限定のミッションは 1 日 2 回ほど)
-NEW_MAX = 3  # 1 回に見る新人の配信の上限
+KIKKAKE_MAX = 3  # 1 回に先に見るきっかけ配信の上限 (毎日の 10 ルームコメントは、ハロウィン2026 で終わった)
+NEW_MAX = 5  # 1 回に先に見る新人の配信の上限 (毎日のコメントは 5 ルーム)
 EXTRA_ROOMS = 5  # 「配信を視聴しよう (n/20)」が進まない時に、mission_rooms より多く試す数
 LIVE_NORMAL, LIVE_KIKKAKE = 0, 4
 NEW_GENRES = {762, 763, 764}  # New1day / New7day / New30day
@@ -119,15 +120,36 @@ def comment_wanted(missions: list[dict[str, Any]]) -> bool:
                and int(m.get("current_value") or 0) < int(m.get("target_value") or 1) for m in missions)
 
 
+def _is_daily_mission(m: dict[str, Any]) -> bool:
+    """毎日やり直すミッションか。題の「通算」は毎日ではない。「デイリー」「毎日」か is_daily なら毎日。"""
+    title = str(m.get("title"))
+    if "通算" in title:
+        return False
+    return bool(m.get("is_daily")) or "デイリー" in title or "毎日" in title
+
+
 def comments_left(missions: list[dict[str, Any]], kind: str) -> int:
-    """新人・きっかけ配信のルームでコメントするミッション (「新人ライバーの配信 3 ルームでコメント」など) の残りのルーム数。"""
+    """その種類のルームで、この 1 回にコメントする残りのルーム数。
+
+    毎日の分 (「デイリー新人ライバーの配信を視聴して5ルームでコメントしよう」と、3 ルームの分) の残りのうち、大きい方。
+    通算 (「通算20ルームでコメント」など) は、毎日の分が 1 つでもある時は数に入れない。
+    毎日の分が無い時だけ、通算の残りをこの 1 回の上限 (新人は NEW_MAX、きっかけ配信は KIKKAKE_MAX) まで。
+    """
     word = ROOM_WORDS.get(kind)
-    left = 0
+    cap = {"new": NEW_MAX, "kikkake": KIKKAKE_MAX}.get(kind, 0)
+    daily = cumulative = 0
+    saw_daily = False
     for m in missions:
         title = str(m.get("title"))
-        if word and word in title and "コメント" in title and m.get("is_active", 1):
-            left = max(left, int(m.get("target_value") or 1) - int(m.get("current_value") or 0))
-    return left
+        if not (word and word in title and "コメント" in title and m.get("is_active", 1)):
+            continue
+        left = max(0, int(m.get("target_value") or 1) - int(m.get("current_value") or 0))
+        if _is_daily_mission(m):
+            saw_daily = True
+            daily = max(daily, left)
+        else:
+            cumulative = max(cumulative, left)
+    return daily if saw_daily else min(cumulative, cap)
 
 
 def candidates(onlives: dict[str, Any], skip_keys: set[str], seen_lives: set[int],
@@ -237,7 +259,7 @@ class MissionRunner:
         left = views_left(missions)
         text = (self.cfg.mission_comment or "").strip()
         say = text.lower() not in COMMENT_OFF
-        # 新人・きっかけ配信のルームの中にだけ出るミッション (ハロウィンの限定など) は、そのルームで読む
+        # 新人・きっかけ配信のルームの中にだけ出るミッション (毎日のコメントなど) は、そのルームで読む
         need: dict[str, int] = {}
         for k in ROOM_WORDS:
             room = next((r for r in cands if r["kind"] == k), None)
