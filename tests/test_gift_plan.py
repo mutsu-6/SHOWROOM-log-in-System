@@ -10,6 +10,15 @@ from showroom_keeper import gift_plan as gp
 NOW = 1_800_000_000.0
 
 
+def run(coro):
+    # asyncio.run は Python 3.9 で今のイベントループを消してしまい、ほかのテストが動かなくなるので使わない
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def cfg(**kw):
     base = dict(gift_send=False, gift_free_path="/free", gift_paid_path="/paid", gift_paid_max=0, gift_paid_daily_max=0,
                 gift_late_limit=2.0)
@@ -127,40 +136,40 @@ def test_runner_sends_once_at_the_time(tmp_path):
     p = make(tmp_path, cfg(gift_send=True))
     clock, s = Clock(NOW + 50), FakeSession()
     r = runner(tmp_path, cfg(gift_send=True), clock, s)
-    asyncio.run(r.step())
+    run(r.step())
     assert len(s.posts) == 1
     path, form, token = s.posts[0]
     assert path == "/free" and form == {"gift_id": 1, "live_id": 999, "num": 10, "is_delay": 0} and token == "t"
     done = gp.load(tmp_path)[0]
     assert done["state"] == gp.SENT and done["started"] >= p["at"] and done["late"] < 0.1
-    asyncio.run(r.step())
+    run(r.step())
     assert len(s.posts) == 1  # 2 度は送らない
 
 
 def test_runner_practice_does_not_post(tmp_path):
     make(tmp_path, cfg())
     clock, s = Clock(NOW + 50), FakeSession()
-    asyncio.run(runner(tmp_path, cfg(), clock, s).step())
+    run(runner(tmp_path, cfg(), clock, s).step())
     assert s.posts == [] and gp.load(tmp_path)[0]["state"] == gp.PRACTICE
 
 
 def test_runner_skips_late_plans_and_timeouts_become_unknown(tmp_path):
     make(tmp_path, cfg())
     clock, s = Clock(NOW + 70), FakeSession()
-    asyncio.run(runner(tmp_path, cfg(gift_send=True), clock, s).step())
+    run(runner(tmp_path, cfg(gift_send=True), clock, s).step())
     assert s.posts == [] and gp.load(tmp_path)[0]["state"] == gp.SKIPPED
 
     make(tmp_path, cfg(), at=NOW + 100)
     s.fail = TimeoutError("timed out")
     clock.t = NOW + 90
-    asyncio.run(runner(tmp_path, cfg(gift_send=True), clock, s).step())
+    run(runner(tmp_path, cfg(gift_send=True), clock, s).step())
     assert len(s.posts) == 1 and gp.load(tmp_path)[-1]["state"] == gp.UNKNOWN
 
 
 def test_runner_rechecks_the_paid_limit_before_sending(tmp_path):
     make(tmp_path, cfg(gift_paid_max=500, gift_paid_daily_max=500), gift_id=2, num=5, confirm_sg=500)
     clock, s = Clock(NOW + 50), FakeSession()
-    asyncio.run(runner(tmp_path, cfg(gift_send=True), clock, s).step())  # 上限を 0 に下げた
+    run(runner(tmp_path, cfg(gift_send=True), clock, s).step())  # 上限を 0 に下げた
     assert s.posts == [] and gp.load(tmp_path)[0]["state"] == gp.SKIPPED
 
 
