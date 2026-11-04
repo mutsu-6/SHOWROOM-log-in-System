@@ -73,6 +73,14 @@ class Session:
         with self._opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
             return resp.read().decode("utf-8", "replace")
 
+    def post_with(self, path: str, form: dict[str, Any], token: str, timeout: float = REQUEST_TIMEOUT) -> tuple[int, str]:
+        """前もって取った CSRF トークンで 1 回だけ送る (時刻を合わせて送るギフトの予約用)。(HTTP の番号, 本文)。"""
+        body = urllib.parse.urlencode({**form, "csrf_token": token}).encode()
+        req = urllib.request.Request(BASE_URL + path, data=body, method="POST",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+        with self._opener.open(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+
 
 class RoomEntrance:
     """配信状況を順に確かめ、新しい配信を見つけたら入室する (同時に 1 ルームずつ)。"""

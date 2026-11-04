@@ -581,6 +581,7 @@ td a.name-link, td a { word-break: break-word; }
       <a href="#live" data-sub="watch">視聴中</a>
       <a href="#live/gifts" data-sub="gifts">記録したギフト</a>
       <a href="#live/comment" data-sub="comment">コメント</a>
+      <a href="#live/gift" data-sub="gift">予約投げ</a>
     </nav>
 
     <div class="sub-panel" data-panel="watch">
@@ -637,6 +638,36 @@ td a.name-link, td a { word-break: break-word; }
         <div class="hint" id="c-hint"></div>
       </div>
       <ul class="history" id="c-history"></ul>
+    </div>
+
+    <div class="sub-panel" data-panel="gift">
+      <p class="sub">決めた時刻に、ログイン中のアカウントでギフトを 1 回だけ送ります。送ったギフトは取り消せず、SG も戻りません。
+        送れたか分からない時は送り直しません (「不明」になります)。予定より遅れたら送りません (「見送り」)。</p>
+      <div class="hint" id="gp-mode"></div>
+      <div class="card">
+        <form id="gp-load" class="row">
+          <input type="text" id="gp-room" class="grow" autocomplete="off" placeholder="ルームの URL か room_url_key (例: https://www.showroom-live.com/r/xxxx)">
+          <button class="btn" type="submit">ギフトを読む</button>
+        </form>
+        <div id="gp-form" hidden>
+          <div class="row" style="margin-top:10px">
+            <select id="gp-gift" class="grow"></select>
+            <select id="gp-num"></select>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label for="gp-at" style="color:var(--muted)">送る時刻 (日本時間)</label>
+            <input type="text" id="gp-at" class="grow" autocomplete="off" placeholder="2026-11-05 23:59:58.5">
+          </div>
+          <div class="hint">イベントは「○時○分 59 秒」までで、SHOWROOM 側の反映が遅れると数えられません。何秒前に置けば間に合うかは、まだ測っていません。</div>
+          <div class="row" style="margin-top:10px">
+            <input type="text" id="gp-memo" class="grow" maxlength="100" placeholder="メモ (なくてもよい)">
+            <button class="btn" type="button" id="gp-check">内容を確かめる</button>
+          </div>
+          <div id="gp-confirm" hidden style="margin-top:10px"></div>
+        </div>
+      </div>
+      <h3>予約と結果</h3>
+      <div id="gp-list"></div>
     </div>
   </section>
 
@@ -2549,11 +2580,96 @@ $("#rooms").addEventListener("click", (ev) => {
 /* ------------------------------------------------------------ ライブ */
 function showLive(sub) {
   if (sub === "listeners") { go("#gifters"); return; }  // 前の「記録したリスナー」は、ギフターの一覧にまとめた
-  sub = ["watch", "gifts", "comment"].includes(sub) ? sub : "watch";
+  sub = ["watch", "gifts", "comment", "gift"].includes(sub) ? sub : "watch";
   setSub("#lv-tabs", sub);
   $$("#lv-tabs ~ .sub-panel").forEach((p) => { p.hidden = p.dataset.panel !== sub; });
   if (sub === "comment") setTimeout(() => $("#c-text").focus(), 0);
+  if (sub === "gift") loadGiftPlans();
 }
+
+/* ------------------------------------------------------------ ギフトの予約投げ (showroom_keeper/gift_plan.py) */
+const gp = { room: null, gifts: [], pending: null };
+const tmMs = (sec) => sec ? `${tm(sec, true)}.${String(Math.floor((sec % 1) * 1000)).padStart(3, "0")}` : "—";
+// 「2026-11-05 23:59:58.5」を日本時間として読む (見ている端末の時間帯にかかわらず)
+function parseJst(text) {
+  const m = String(text || "").trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{2}):(\d{2})(\.\d+)?$/);
+  if (!m) return null;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5], +m[6]) / 1000 + (m[7] ? Number(m[7]) : 0);
+}
+const GP_CLS = { "送った": "ok", "送信中": "warn", "不明": "warn", "失敗": "bad", "見送り": "warn" };
+async function loadGiftPlans() {
+  if (page.name !== "live" || page.arg !== "gift") return;
+  let d;
+  try { d = await api("/api/gift_plan"); } catch (e) { $("#gp-list").innerHTML = errorHtml(e); return; }
+  const s = d.settings;
+  $("#gp-mode").innerHTML = (s.send ? "<b>本当に送ります。</b>" : "<b>練習中です</b> (時刻まで待ちますが、送りません。SHOWROOM_GIFT_SEND で切り替え)。")
+    + ` 有料の上限: 1 回 ${num(s.paid_max)} SG ・ 1 日 ${num(s.paid_daily_max)} SG (今日の予約・送った分 ${num(d.paid_today)} SG)${s.paid_max ? "" : " ・ 今は無料ギフトだけ予約できます"}`
+    + ` ・ 予定より ${s.late_limit} 秒遅れたら送りません`;
+  const rows = [...d.plans].sort((a, b) => b.at - a.at);
+  $("#gp-list").innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>送る時刻</th><th>ルーム</th><th>ギフト</th><th class="num">SG</th><th>状態</th><th>結果</th><th></th></tr></thead><tbody>${rows.map((p) => `<tr>
+      <td>${tmMs(p.at)}</td><td>${esc(p.room_name || p.room)}</td><td>${esc(p.gift_name)} × ${num(p.num)}${p.free ? " <small>(無料)</small>" : ""}</td>
+      <td class="num">${p.free ? "0" : num(p.sg)}</td><td><span class="pill ${GP_CLS[p.state] || ""}">${esc(p.state)}</span></td>
+      <td><small>${p.started ? `送り始め ${tmMs(p.started)} (予定より ${Math.round(p.late * 1000)} ms)` : ""}${p.took != null ? ` ・ 返事まで ${Math.round(p.took * 1000)} ms` : ""}${p.note ? `<br>${esc(p.note)}` : ""}${p.memo ? `<br>メモ: ${esc(p.memo)}` : ""}</small></td>
+      <td>${p.state === "予約" ? `<button class="btn small" data-gp-cancel="${esc(p.id)}">取り消す</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty">まだ予約はありません。</div>`;
+}
+$("#gp-load").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const key = normalize("rooms", $("#gp-room").value);
+  if (!key) return toast("ルームの URL か room_url_key を入れてください");
+  try {
+    const d = await api(`/api/gift_plan/gifts?room=${encodeURIComponent(key)}`);
+    Object.assign(gp, { room: { key, name: d.room_name, id: d.room_id }, gifts: d.gifts, pending: null });
+    $("#gp-gift").innerHTML = d.gifts.map((g) => `<option value="${g.gift_id}">${esc(g.name)} ・ ${g.free ? "無料" : `${num(g.point)} SG`}</option>`).join("");
+    $("#gp-form").hidden = false;
+    $("#gp-confirm").hidden = true;
+    fillGiftNums();
+    toast(`${d.room_name} のギフトを読みました`);
+  } catch (e) { toast(e.message); }
+});
+function fillGiftNums() {
+  const g = gp.gifts.find((x) => String(x.gift_id) === $("#gp-gift").value);
+  $("#gp-num").innerHTML = (g && g.free ? [1, 10] : [1, 5, 10]).map((n) => `<option value="${n}">${n} 個</option>`).join("");
+  $("#gp-confirm").hidden = true;
+}
+$("#gp-gift").addEventListener("change", fillGiftNums);
+$("#gp-num").addEventListener("change", () => { $("#gp-confirm").hidden = true; });
+$("#gp-check").addEventListener("click", () => {
+  const g = gp.gifts.find((x) => String(x.gift_id) === $("#gp-gift").value);
+  const n = Number($("#gp-num").value), at = parseJst($("#gp-at").value);
+  if (!g || !gp.room) return toast("ギフトを選んでください");
+  if (!at) return toast("送る時刻を「2026-11-05 23:59:58.5」の形で入れてください");
+  const sg = g.free ? 0 : g.point * n;
+  gp.pending = { room: gp.room.key, gift_id: g.gift_id, num: n, at, confirm_sg: sg, memo: $("#gp-memo").value };
+  const box = $("#gp-confirm");
+  box.hidden = false;
+  box.innerHTML = `<div class="card">
+    <div><b>${esc(gp.room.name)}</b> に <b>${esc(g.name)} × ${n}</b> を、<b>${tmMs(at)}</b> (日本時間) に送ります。</div>
+    <div style="margin-top:6px">${sg ? `<b>有料 ${num(sg)} SG</b> を使います。取り消せず、戻りません。` : "無料ギフトです (SG は使いません)。"}</div>
+    <div class="row" style="margin-top:10px"><button class="btn primary" type="button" id="gp-go">${sg ? `${num(sg)} SG で予約する` : "予約する"}</button>
+      <button class="btn" type="button" id="gp-back">やめる</button></div></div>`;
+  $("#gp-back").onclick = () => { box.hidden = true; gp.pending = null; };
+  $("#gp-go").onclick = async () => {
+    const body = gp.pending;
+    if (!body) return;
+    gp.pending = null;  // 2 回押しても 1 回だけ予約する
+    $("#gp-go").disabled = true;
+    try {
+      await api("/api/gift_plan", body);
+      box.hidden = true;
+      toast("予約しました");
+      loadGiftPlans();
+    } catch (e) { toast(e.message); $("#gp-go").disabled = false; gp.pending = body; }
+  };
+});
+$("#gp-list").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-gp-cancel]");
+  if (!b) return;
+  b.disabled = true;
+  try { await api("/api/gift_plan/cancel", { id: b.dataset.gpCancel }); toast("取り消しました"); } catch (e) { toast(e.message); }
+  loadGiftPlans();
+});
+setInterval(() => { if (!document.hidden) loadGiftPlans(); }, 3000);
 // 記録したギフトの画面を、ルームかイベントを選んだ状態で開く
 function openRecorded(kind, key, label) {
   setGiftMode(kind);
