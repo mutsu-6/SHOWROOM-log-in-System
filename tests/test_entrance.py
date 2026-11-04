@@ -15,8 +15,9 @@ class FakeShowroom:
     is_login=False ならログインしていない応答 (401)、fail なら通信の失敗、stale_uuid は使い回した uuid を断る。
     """
 
-    def __init__(self, is_login=True, fail=False, greeting='{"ok":1}', stale_uuid=False):
+    def __init__(self, is_login=True, fail=False, greeting='{"ok":1}', stale_uuid=False, fail_paths=()):
         self.is_login, self.fail, self.greeting, self.stale_uuid = is_login, fail, greeting, stale_uuid
+        self.fail_paths = fail_paths
         self.sessions = []
         self.issued = 0
 
@@ -31,7 +32,7 @@ class FakeShowroom:
 
             def get(self, path):
                 asked.append(path)
-                if fake.fail:
+                if fake.fail or any(path.startswith(p) for p in fake.fail_paths):
                     raise OSError("Connection reset")
                 if path.startswith("/r/"):
                     fake.issued += 1
@@ -79,10 +80,12 @@ async def test_enters_once_per_live_with_current_user_and_greeting():
     await entrance.step()
     # 配信中の a と c に 1 回ずつ入室する。配信していない b には入室しない
     assert entrance.entered == {"a": 10, "c": 30} and len(showroom.sessions) == 2
-    # 最初の入室で配信ページを 1 回開いて uuid をもらい、あとは使い回す。current_user (ステージにアバターが並ぶ) と
-    # greeting (入室のお知らせ) を待たずに呼ぶ
-    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
-    assert showroom.sessions[1]["asked"] == ["/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
+    # 最初の入室で配信ページを 1 回開いて uuid をもらい、あとは使い回す。
+    # live_info (訪問回数を増やす) を current_user と greeting (入室のお知らせ) より先に、待たずに呼ぶ
+    assert showroom.sessions[0]["asked"] == [
+        "/r/a", "/api/live/live_info?room_id=5", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
+    assert showroom.sessions[1]["asked"] == [
+        "/api/live/live_info?room_id=7", "/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
     assert showroom.sessions[1]["uuid"] == "u1"
     assert waits == [] and showroom.sessions[0]["cookies"] == COOKIES
     # 次の配信が始まったらもう一度入室する
@@ -96,7 +99,7 @@ async def test_stale_uuid_is_renewed_once():
     await entrance.step()
     # 2 件目は使い回した uuid を断られたので、配信ページで取り直して入室する
     assert entrance.entered == {"a": 10, "c": 30}
-    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/api/live/current_user?room_id=1", "/r/c"]
+    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/api/live/live_info?room_id=1", "/r/c"]
 
 
 async def test_uuid_is_renewed_after_a_while():
@@ -137,6 +140,14 @@ async def test_gives_up_on_a_live_after_repeated_failures():
     statuses["a"] = live("a", 11)
     await entrance.step()
     assert len(showroom.sessions) == 4
+
+
+async def test_live_info_failure_does_not_count_as_entered_or_greet():
+    entrance, showroom, _ = make({"a": live("a", 10, room_id=5)}, fail_paths=("/api/live/live_info",))
+    await entrance.step()
+    # 訪問回数を増やす問い合わせが失敗した時は、お知らせを出さず、入室済みにしない
+    assert entrance.entered == {}
+    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/live_info?room_id=5"]
 
 
 async def test_greeting_refused_is_retried():
