@@ -124,6 +124,45 @@ def test_backup_keeps_previous_copy_when_disk_is_short(tmp_path, monkeypatch):
     assert "作れなかった" in backup.last_backup(tmp_path)["reason"]
 
 
+def test_backup_drops_previous_copy_first_when_that_makes_room(tmp_path, monkeypatch):
+    # 前の写しが場所を取って、毎日「空きが足りない」で作れなかった (2026-11-02〜05)
+    _fill(tmp_path, 10)
+    folder = backup.backup_dir(tmp_path)
+    folder.mkdir(parents=True)
+    old = folder / "research-20261102-0400.db.gz"
+    old.write_bytes(b"o" * 4000)
+    need = backup._need(backup._db_size(db_path(tmp_path)))
+
+    class Usage:
+        free = need - 1000  # 前の写しを消せば足りる
+
+    monkeypatch.setattr(backup.shutil, "disk_usage", lambda path: Usage)
+    r = backup.backup_research_db(tmp_path, keep=1, now=1792000000)
+    assert r["ok"] and r["dropped_first"] == [old.name]
+    assert [p.name for p in backup.copies(tmp_path)] == [r["file"]]
+
+
+def test_backup_failure_after_dropping_previous_copy_says_so(tmp_path, monkeypatch):
+    _fill(tmp_path, 10)
+    folder = backup.backup_dir(tmp_path)
+    folder.mkdir(parents=True)
+    (folder / "research-20261102-0400.db.gz").write_bytes(b"o" * 4000)
+    need = backup._need(backup._db_size(db_path(tmp_path)))
+
+    class Usage:
+        free = need - 1000
+
+    monkeypatch.setattr(backup.shutil, "disk_usage", lambda path: Usage)
+
+    def broken(src, dest):
+        raise OSError("書けません")
+
+    monkeypatch.setattr(backup, "_compress", broken)
+    r = backup.backup_research_db(tmp_path, keep=1, now=1792000000)
+    assert r["ok"] is False and "先に消した" in r["reason"] and not backup.copies(tmp_path)
+    assert not list(folder.glob("*.tmp"))
+
+
 def test_backup_replaces_old_uncompressed_copies(tmp_path):
     _fill(tmp_path, 10)
     folder = backup.backup_dir(tmp_path)
@@ -209,6 +248,12 @@ def test_record_disk_keeps_sizes_and_growth(tmp_path, monkeypatch):
     assert len(b._disk_history(tmp_path / b.DISK_FILE)) == 1
     b.record_disk(tmp_path, now + 2 * 86400)
     assert b.growth(tmp_path, now + 2 * 86400)[0] == ("gifts", 1000.0)
+    # 増え方は最近 7 日で見る (取り始めの急な増え方をまぜない)
+    (tmp_path / "gifts" / "room" / "c.jsonl").write_bytes(b"x" * 9000)
+    b.record_disk(tmp_path, now + 20 * 86400)
+    (tmp_path / "gifts" / "room" / "d.jsonl").write_bytes(b"x" * 700)
+    b.record_disk(tmp_path, now + 27 * 86400)
+    assert b.growth(tmp_path, now + 27 * 86400)[0] == ("gifts", 100.0)
 
 
 def test_backup_measures_table_sizes_and_disk_history_keeps_them(tmp_path):
