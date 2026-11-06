@@ -1,11 +1,13 @@
 """視聴はしないルームに、配信が始まったら一度だけ入室する (ブラウザのページは開かない)。
 
+そのアカウントの訪問回数を増やすのは /api/live/live_info を、ログインした Cookie のまま呼んだ時。
 観客席 (ステージ) にアバターが並ぶのは /api/live/current_user を呼んだ時 (ステージの一覧 stage_user_list に入る)。
-配信ページは、ログインしていれば開いてから 10 秒後に /api/room/greeting を呼び、SHOWROOM はこれを受けて
-入室のお知らせ (リアルタイム通信の t=18。「○○さんが初訪問」など) を流すことがある (毎回ではない。配信ページと
-同じ順に呼んで 10 秒待っても、流れないことがある。2026-10-18 に確かめた)。
+配信ページは、ログインしていれば live_info のあとに /api/room/greeting を呼び、SHOWROOM はこれを受けて
+入室のお知らせ (リアルタイム通信の t=18。「○○さんが初訪問」「N 度目の訪問」) を流すことがある
+(毎回ではない。10 秒待っても流れないことがある。2026-10-18 に確かめた)。
+訪問回数を増やすには、greeting の前に live_info を呼ぶ。greeting は増えた回数をお知らせする。
 greeting には、配信ページを開くと受け取る Cookie (uuid) が要る。uuid を 1 回もらって使い回し、
-入室は current_user と greeting の 2 回で済ませる (待たない)。
+入室は live_info と current_user と greeting の 3 回で済ませる (待たない)。
 """
 
 from __future__ import annotations
@@ -206,9 +208,12 @@ class RoomEntrance:
             await asyncio.to_thread(s.get, f"/r/{status.room_url_key}")
             if s.uuid is not None:
                 self._uuid, self._uuid_at = s.uuid, now
-        # 観客席 (ステージ) にアバターが並ぶのは current_user を呼んだ時。greeting だけではお知らせしか流れない
-        await asyncio.to_thread(s.get, f"/api/live/current_user?room_id={status.room_id}")
-        return await asyncio.to_thread(s.get, f"/api/room/greeting?room_id={status.room_id}")
+        room = status.room_id
+        # 訪問回数は live_info で増える。このあと greeting が「N 度目の訪問」をお知らせする。
+        # 観客席にアバターが並ぶのは current_user。配信の映像やアンケートは取らない。
+        await asyncio.to_thread(s.get, f"/api/live/live_info?room_id={room}")
+        await asyncio.to_thread(s.get, f"/api/live/current_user?room_id={room}")
+        return await asyncio.to_thread(s.get, f"/api/room/greeting?room_id={room}")
 
 
 class AllRoomsEntrance(RoomEntrance):
