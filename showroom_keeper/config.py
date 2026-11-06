@@ -86,6 +86,14 @@ class Config:
     mission_comment: str = "1"  # コメントのミッションが残っている時だけ、昼と夜に 1 回送る文 (off なら送らない)
     mission_times: str = "12:00,21:00"  # 始める時刻 (日本時間)。昼と夜の区切りの中で、この時刻を過ぎたら始める
     mission_view_seconds: float = 60.0
+    # ギフトの時間指定 (予約) 投げ (showroom_keeper/gift_plan.py)。管理画面の「ライブ」→「予約投げ」で予約する。
+    # gift_send が off (既定) の間は練習で、時刻まで待つが送らない。送り先は確かめていない推定なので、サーバーで確かめてから on にする
+    gift_send: bool = False
+    gift_free_path: str = "/api/live/gifting_free"  # 無料ギフト (星・種) の送り先 (推定)
+    gift_paid_path: str = "/api/live/gifting_point_use"  # 有料ギフト (SG) の送り先 (推定)
+    gift_paid_max: int = 0  # 1 回の予約の有料の上限 (SG)。0 なら有料は予約できない
+    gift_paid_daily_max: int = 0  # 1 日 (日本時間) の有料の上限 (SG)。予約した分と送った分の合計
+    gift_late_limit: float = 2.0  # 予定の時刻からこの秒数より遅れたら送らない
     # ログインした状態で訪問しないルーム (入室しない・ギフトの記録やログイン確認にもログインを使わない)。
     # 視聴するルーム (rooms) にも入れた時は、視聴を優先する
     no_visit_rooms: list[str] = field(default_factory=list)
@@ -247,6 +255,8 @@ class Config:
             raise ValueError("stall_threshold は 1 以上である必要があります")
         if self.mission_view_seconds < 30:
             raise ValueError("mission_view_seconds は 30 以上である必要があります (30 秒以上で 1 回の視聴)")
+        if self.gift_paid_max < 0 or self.gift_paid_daily_max < 0 or self.gift_late_limit < 0:
+            raise ValueError("gift_paid_max・gift_paid_daily_max・gift_late_limit は 0 以上である必要があります")
 
 
 ENV_PREFIX = "SHOWROOM_"
