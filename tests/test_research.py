@@ -941,6 +941,104 @@ def test_sweep_stops_when_next_page_does_not_advance(tmp_path):
     assert [r["room_id"] for r in sw2._read_event_rooms(8, NOW)] == [1, 2, 3] and len(calls) == 3
 
 
+def test_sweep_reads_block_ranks_only_when_labeled(tmp_path):
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path.endswith("/newer/ranking"):
+            return {"event_block_list": []}
+        if path.endswith("/ranking"):
+            return {"event_block_list": [{"block_list": [
+                {"block_id": 1, "label": "A"}, {"block_id": 2, "label": "B"}]}]}
+        if "block_id=1&page=1" in path:
+            return {"total_entries": 40, "entries_per_page": 30, "block_ranking_list": [
+                {"room_id": 1, "rank": 1}, {"room_id": 2, "rank": 2}]}
+        if "block_id=1&page=2" in path:
+            return {"total_entries": 40, "entries_per_page": 30, "next_page": 2,
+                    "block_ranking_list": [{"room_id": 4, "rank": 31}]}
+        if "block_id=2" in path:
+            return {"total_entries": 1, "entries_per_page": 30, "next_page": 1,
+                    "block_ranking_list": [{"room_id": 3, "rank": 1}, {"room_id": 1, "rank": 2}]}
+        if "room_list" in path:
+            return {"list": [{"room_id": 1, "room_name": "全体", "point": 9, "rank": 1}]}
+        return {}
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 7, "name": "印なし", "key": "plain", "end": NOW}])
+    assert [r["room_id"] for r in sw._read_event_rooms(7, NOW)] == [1]
+    assert not any("ranking" in c for c in calls)  # ブロックの印が無ければ、順位のページもブロックも読まない
+    with Store(tmp_path) as s:
+        assert s.one("SELECT point, rank FROM room_events WHERE event_id=7")["point"] == 9
+        assert s.one("SELECT blocks_at FROM events WHERE event_id=7")["blocks_at"] is None
+
+    calls.clear()
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 8, "name": "分け", "key": "split", "end": NOW - 10},
+                         {"event_id": 9, "name": "新しい方", "key": "newer", "end": NOW}])
+        s.upsert_event_info([{"event_id": 8, "event_block_label": "All Livers"},
+                             {"event_id": 9, "event_block_label": "All Livers"}], NOW)
+        s.set_event_rooms(8, [{"room_id": 1, "point": 100, "rank": 5}], NOW)
+    assert sw._next_event_blocks(NOW) is True  # 終わりの新しい 9 から
+    assert calls == ["/api/event/newer/ranking"]  # ブロックの一覧が空なら、ブロックの順位は読まない
+    with Store(tmp_path) as s:
+        assert s.one("SELECT blocks_at FROM events WHERE event_id=9")["blocks_at"] is not None
+        assert s.scalar("SELECT COUNT(*) FROM event_block_rooms WHERE event_id=9") == 0
+
+    calls.clear()
+    assert sw._next_event_blocks(NOW) is True
+    assert calls[0] == "/api/event/split/ranking"
+    assert [c for c in calls if "block_ranking" in c] == [
+        "/api/event/block_ranking?event_id=8&block_id=1&page=1",
+        "/api/event/block_ranking?event_id=8&block_id=1&page=2",
+        "/api/event/block_ranking?event_id=8&block_id=2&page=1"]
+    with Store(tmp_path) as s:
+        got = [(r["room_id"], r["block_label"], r["block_rank"]) for r in s.all(
+            "SELECT room_id, block_label, block_rank FROM event_block_rooms WHERE event_id=8 ORDER BY block_label, block_rank")]
+        assert got == [(1, "A", 1), (2, "A", 2), (4, "A", 31), (3, "B", 1)]
+        assert s.one("SELECT point, rank FROM room_events WHERE event_id=8 AND room_id=1")["rank"] == 5  # 全体の順位は変えない
+    assert sw._next_event_blocks(NOW) is False
+
+    calls.clear()
+
+    def boom(path):
+        calls.append(path)
+        if path.endswith("/ranking"):
+            raise RuntimeError("落ちた")
+        return {}
+
+    with Store(tmp_path) as s:
+        s.conn.execute("UPDATE events SET blocks_at=NULL WHERE event_id=8")
+    sw.c.get = boom
+    assert sw._next_event_blocks(NOW) is True and calls == ["/api/event/split/ranking"]
+    with Store(tmp_path) as s:
+        assert s.one("SELECT blocks_at FROM events WHERE event_id=8")["blocks_at"] is None
+        assert s.scalar("SELECT retry_at FROM events WHERE event_id=8") is not None
+        assert s.one("SELECT point FROM room_events WHERE event_id=8 AND room_id=1")["point"] == 100
+    assert sw._next_event_blocks(NOW) is False  # 失敗したあとは、しばらく同じイベントを読まない
+
+    calls.clear()
+
+    def boom_rooms(path):
+        calls.append(path)
+        if "room_list" in path:
+            return {"list": [{"room_id": 1, "room_name": "残す", "point": 3, "rank": 1}]}
+        if path.endswith("/ranking"):
+            raise RuntimeError("落ちた")
+        return {}
+
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 6, "name": "読み直し", "key": "again", "end": NOW}])
+        s.upsert_event_info([{"event_id": 6, "event_block_label": "All Livers"}], NOW)
+        s.conn.execute("UPDATE events SET retry_at=NULL WHERE event_id=6")
+    sw.c.get = boom_rooms
+    assert [r["point"] for r in sw._read_event_rooms(6, NOW)] == [3]
+    with Store(tmp_path) as s:
+        assert s.one("SELECT point, rank FROM room_events WHERE event_id=6")["point"] == 3
+        assert s.one("SELECT blocks_at FROM events WHERE event_id=6")["blocks_at"] is None
+
+
 def test_sweep_logs_where_it_is_stuck(tmp_path, monkeypatch, caplog):
     import threading
 

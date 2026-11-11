@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS room_events (
     room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
     point INTEGER, rank INTEGER, PRIMARY KEY (room_id, event_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS room_events_event ON room_events(event_id);
+-- ブロック分けのイベントの、ブロックの中の順位 (全体の順位 room_events.rank とは別。ポイントは room_events のまま)
+CREATE TABLE IF NOT EXISTS event_block_rooms (
+    event_id INTEGER, room_id INTEGER, block_id INTEGER, block_label TEXT, block_rank INTEGER,
+    PRIMARY KEY (event_id, room_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS cumulative (
     room_id INTEGER, user_id INTEGER, point INTEGER, visits INTEGER, rank INTEGER, PRIMARY KEY (room_id, user_id))
     WITHOUT ROWID;
@@ -373,7 +377,8 @@ class Store:
                                    ("gift_senders", "points INTEGER DEFAULT 0"), ("gift_senders", "free_points INTEGER DEFAULT 0"),
                                    ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0"),
                                    ("room_events", "try_at REAL"), ("room_events", "try_status TEXT"),
-                                   ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL")):
+                                   ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL"),
+                                   ("events", "blocks_at REAL")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -739,6 +744,24 @@ class Store:
             if rows:
                 c.execute("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
                           (len(rows), _median_point(r.get("point") for r in rows), event_id))
+
+    def set_event_blocks(self, event_id: int, rows: list[dict[str, Any]], now: float) -> None:
+        """ブロックの中の順位を入れ直す (全体のポイント・順位は変えない)。"""
+        event_id = int(event_id)
+        seen: set[int] = set()
+        keep = []
+        for r in rows:
+            rid = r.get("room_id")
+            if not rid or int(rid) in seen:
+                continue
+            seen.add(int(rid))
+            keep.append((event_id, int(rid), int(r["block_id"]), r.get("block_label") or "", r.get("block_rank")))
+        with self.tx() as c:
+            c.execute("INSERT OR IGNORE INTO events(event_id) VALUES (?)", (event_id,))
+            c.execute("DELETE FROM event_block_rooms WHERE event_id=?", (event_id,))
+            c.executemany("""INSERT INTO event_block_rooms(event_id, room_id, block_id, block_label, block_rank)
+                             VALUES (?, ?, ?, ?, ?)""", keep)
+            c.execute("UPDATE events SET blocks_at=? WHERE event_id=?", (now, event_id))
 
     def build_room_stats(self, step: int = ROOM_STATS_STEP) -> bool:
         """前に集めたイベントの参加ルームの数・ポイントの真ん中と、貢献ランキングの数字 (c_*) を、少しずつ作る。

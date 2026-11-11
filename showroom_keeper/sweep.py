@@ -41,6 +41,8 @@ LIVE_EVERY = 300  # 配信中のルームを見る間隔 (秒)
 EVENTS_EVERY = 6 * 3600  # イベントの一覧を見る間隔 (秒)
 EVENT_PAGES = 30  # イベントの一覧 (1 ページ 30 件) を状態ごとに読むページ数の上限
 EVENT_ROOM_PAGES = 100  # 1 つのイベントの参加ルーム (1 ページ 30 件) を読むページ数の上限
+BLOCK_MAX = 16  # 1 イベントで読むブロックの数の上限
+BLOCK_PAGES = 4  # 1 ブロックの順位 (1 ページ 30 件) を読むページ数の上限
 EVENT_ROOMS_EVERY = 12 * 3600  # 開催中・開催予定のイベントの参加ルームを読み直す間隔 (秒。利用者の指示で 2026-10-21 に 24 時間から縮めた)
 ROOM_EVERY = 7 * 86400  # 最近配信したルームの累計ランキングなどを取り直す間隔 (秒)
 ACTIVE_DAYS = 30  # この日数のうちに配信したルームを、取り直しの対象にする
@@ -222,7 +224,7 @@ class Sweeper:
         # 貢献ランキングはギフター分析にいちばん効くので、問い合わせの数で数えて ranking_share の割合を回す。
         # ほかの仕事は 1 つで何回も問い合わせる (ルームの取り直し・参加ルームのページなど) ので、仕事の数ではなく問い合わせの数でくらべる。
         # 取る貢献ランキングが無くなれば、ほかの仕事だけが回る
-        others = [self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
+        others = [self._next_room, self._next_event_rooms, self._next_event_blocks, self._next_fans, self._next_event_history,
                   self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history,
                   self._next_room_profile, self._next_fans_closed]
         if self.scan:
@@ -310,7 +312,81 @@ class Sweeper:
             # (最後のページより先を頼むと、1 ページ目や最後のページが返ってくるため。同じページを読み続けないように)
             page = next_page_number(page, data.get("next_page")) if new else None
         self.store.set_event_rooms(event_id, rooms, now)
+        try:
+            self._read_event_blocks(event_id, now)
+        except Exception as err:  # noqa: BLE001
+            # 参加ルームのポイントは残す。ブロックの順位は、印が残っていればあとで読み直す
+            log.warning("ブロックの順位は読めませんでした (イベント %s): %s", event_id, err)
         return rooms
+
+    def _read_event_blocks(self, event_id: int, now: float) -> bool:
+        """ブロック分けの順位を読む。印 (event_info.block) が無いイベントは何もしない。
+
+        全体の順位のページはポイントが 0 のままなので、並びだけを残し、ポイントは参加ルームの一覧のまま使う。
+        問い合わせは、順位のページ 1 回と、ブロックごとに 1 ページ (30 人を超えるブロックは最大 BLOCK_PAGES ページ)。
+        """
+        info = self.store.one("SELECT block FROM event_info WHERE event_id=?", (event_id,))
+        if info is None or not (info["block"] or "").strip():
+            return False
+        ev = self.store.one("SELECT key FROM events WHERE event_id=?", (event_id,))
+        key = ev["key"] if ev is not None else None
+        if not key:
+            self.store.set_event_blocks(event_id, [], now)
+            return True
+        try:
+            data = self.c.get(f"/api/event/{key}/ranking") or {}
+        except Exception as err:  # noqa: BLE001
+            if not is_missing(err):
+                raise
+            self.store.set_event_blocks(event_id, [], now)
+            return True
+        blocks: list[dict[str, Any]] = []
+        for group in data.get("event_block_list") or []:
+            if not isinstance(group, dict):
+                continue
+            for b in group.get("block_list") or []:
+                if isinstance(b, dict) and b.get("block_id") and len(blocks) < BLOCK_MAX:
+                    blocks.append({"block_id": int(b["block_id"]), "label": b.get("label") or ""})
+        rows: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for b in blocks:
+            page: Any = 1
+            pages = 0
+            while page and pages < BLOCK_PAGES:
+                pages += 1
+                got = self.c.get(
+                    f"/api/event/block_ranking?event_id={event_id}&block_id={b['block_id']}&page={page}") or {}
+                chunk = [x for x in got.get("block_ranking_list") or [] if isinstance(x, dict) and x.get("room_id")]
+                for x in chunk:
+                    rid = int(x["room_id"])
+                    if rid in seen:
+                        continue
+                    seen.add(rid)
+                    rows.append({"room_id": rid, "block_id": b["block_id"], "block_label": b["label"],
+                                 "block_rank": x.get("rank")})
+                per = int(got.get("entries_per_page") or 30)
+                total = int(got.get("total_entries") or 0)
+                nxt = next_page_number(page, got.get("next_page")) if got.get("next_page") else (
+                    page + 1 if chunk and page * per < total else None)
+                page = nxt
+        self.store.set_event_blocks(event_id, rows, now)
+        return True
+
+    def _next_event_blocks(self, now: float) -> bool:
+        """ブロックの印があるのに、まだ順位を読んでいないイベントを 1 つ読む (新しいものから)。"""
+        e = self.store.one(
+            """SELECT e.event_id, e.name FROM events e JOIN event_info i USING(event_id)
+               WHERE i.block IS NOT NULL AND i.block != '' AND e.blocks_at IS NULL
+                 AND (e.retry_at IS NULL OR e.retry_at < ?)
+               ORDER BY COALESCE(e.end, 0) DESC LIMIT 1""", (now,))
+        if e is None:
+            return False
+        self.doing = f"ブロックの順位 ({e['name'] or e['event_id']})"
+        try:
+            self._read_event_blocks(e["event_id"], now)
+        except Exception as err:  # noqa: BLE001
+            self._failed("events", "event_id", e["event_id"], now, err)
+        return True
 
     def _next_event_rooms(self, now: float) -> bool:
         """一覧で見つけたイベントの参加ルームを、まだ読んでいない (または読み直す時期の) ものから 1 つ読む。

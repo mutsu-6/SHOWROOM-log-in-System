@@ -3908,6 +3908,29 @@ function eventDetails(x) {
   }
   return h;
 }
+function eventBlocks(d) {
+  const blocks = (d.blocks || []).filter((b) => (b.rooms || []).length);
+  if (!blocks.length) return "";
+  const split = blocks.some((b) => b.label);
+  const one = (t) => t ? `${gifterLink(t.user_id, t.name)}${t.left ? ' <span class="tag">退会</span>' : ""}${t.guessed ? ' <span class="tag warn" title="名前だけで、この人と決めた分 (同じ名前の別の人のこともあります)">名前で推測</span>' : ""} <b>${num(t.point)}</b>` : '<span class="uid">-</span>';
+  const csv = (t) => t ? `${t.name || ""} ${t.point ?? ""}`.trim() : "";
+  const hint = split
+    ? "順位はブロックの中の順位です。ポイントはイベント全体のポイント (下の参加ルームの一覧と同じ) です。貢献の上位 3 人は、終わったあとに集めた貢献ランキングです。まだ集めていないルームは空欄です。"
+    : "順位とポイントは参加ルームの一覧と同じです。貢献の上位 3 人は、終わったあとに集めた貢献ランキングです。まだ集めていないルームは空欄です。";
+  return `<h3>${split ? "ブロックごとの順位" : "参加ルームと貢献の上位"}</h3><div class="hint">${hint}</div>`
+    + blocks.map((b, i) => `${split ? `<h3>${esc(b.label)} <small class="muted">${num(b.rooms.length)} ルーム</small></h3>` : ""}`
+      + dataTable(`ep-block-${i}`, [
+        { label: "順位", num: true, value: (r) => r.rank, html: (r) => r.rank ? `${num(r.rank)}` : "-" },
+        { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
+        { label: "pt", num: true, value: (r) => r.point, html: (r) => `<b>${num(r.point)}</b>` },
+        { label: "貢献1位", value: (r) => csv((r.top || [])[0]), html: (r) => one((r.top || [])[0]) },
+        { label: "貢献2位", value: (r) => csv((r.top || [])[1]), html: (r) => one((r.top || [])[1]) },
+        { label: "貢献3位", value: (r) => csv((r.top || [])[2]), html: (r) => one((r.top || [])[2]) },
+      ], b.rooms, { sort: 0, desc: false, limit: 30, phone: [0, 1, 2], total: b.total,
+        csvName: `イベント_${d.event_id}_${b.label || "参加ルーム"}_順位`,
+        rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"`,
+        empty: "参加ルームはまだありません" })).join("");
+}
 function eventRoomsTable(d) {
   return dataTable("ep-rooms", [
       { label: "順位", num: true, value: (r) => r.place || null, html: (r) => r.place ? `${num(r.place)}${r.rank ? "" : '<span class="uid" title="今のポイントの多い順"> (今)</span>'}` : "-" },
@@ -4000,7 +4023,7 @@ async function showEvent(id) {
     </div>
     ${taikaiBox(d)}<div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
   const live = d.state === "ongoing" && d.show_ranking;
-  html += `<div class="cols"><div><h3>参加ルームの順位</h3><div id="ep-rooms-box">${eventRoomsTable(d)}</div></div>
+  html += `${eventBlocks(d)}<div class="cols"><div><h3>参加ルームの順位</h3><div id="ep-rooms-box">${eventRoomsTable(d)}</div></div>
     <div id="ep-contrib-box">${live ? `<h3>貢献者 <small class="muted">今</small></h3>${loadingHtml("SHOWROOM から今の貢献ランキングを読んでいます…")}` : eventContribTable(d)}</div></div>`;
   box.innerHTML = html;
   if (live) loadLiveContrib(d);
