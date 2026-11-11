@@ -914,7 +914,46 @@ def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = No
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
                 "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details,
                 "needed": event_analysis.needed_points(s, eid, now), "strength": _strength(s, eid, now, support),
-                "taikai": _taikai(s, eid)}
+                "taikai": _taikai(s, eid), "blocks": _event_blocks(s, eid)}
+
+
+def _event_blocks(s: Store, eid: int) -> list[dict[str, Any]]:
+    """ブロックの中の順位。ポイントは参加ルームの一覧 (全体)、貢献の上位 3 人は集めてある貢献ランキング。"""
+    rows = s.all(
+        """SELECT b.block_id, b.block_label, b.block_rank, b.room_id, r.key,
+                  COALESCE(r.name, r.key, b.room_id) AS name, re.point
+           FROM event_block_rooms b
+           LEFT JOIN rooms r USING(room_id)
+           LEFT JOIN room_events re ON re.event_id=b.event_id AND re.room_id=b.room_id
+           WHERE b.event_id=?
+           ORDER BY b.block_id, b.block_rank IS NULL, b.block_rank, re.point DESC""", (eid,))
+    if not rows:
+        return []
+    tops: dict[int, list[dict[str, Any]]] = {}
+    for c in s.all(
+            """SELECT c.room_id, c.user_id, c.point, c.rank, c.guessed, COALESCE(u.name, '') AS name
+               FROM contributions c LEFT JOIN users u USING(user_id)
+               WHERE c.event_id=? AND c.rank BETWEEN 1 AND 3
+               ORDER BY c.room_id, c.rank""", (eid,)):
+        people = tops.setdefault(int(c["room_id"]), [])
+        if len(people) < 3:
+            people.append(dict(c))
+    shown = _user_names(s, None, [c["user_id"] for cs in tops.values() for c in cs if c["name"] in LEFT_NAMES])
+    groups: dict[int, dict[str, Any]] = {}
+    order: list[int] = []
+    for r in rows:
+        bid = int(r["block_id"])
+        if bid not in groups:
+            groups[bid] = {"label": r["block_label"] or "", "rooms": []}
+            order.append(bid)
+        top = []
+        for c in tops.get(int(r["room_id"]), []):
+            left = c["name"] in LEFT_NAMES
+            top.append({"user_id": c["user_id"], "name": shown.get(c["user_id"], c["name"]),
+                        "point": c["point"], "left": left, "guessed": bool(c["guessed"])})
+        groups[bid]["rooms"].append({"room_id": r["room_id"], "key": r["key"], "name": r["name"],
+                                     "point": r["point"], "rank": r["block_rank"], "top": top})
+    return [groups[bid] for bid in order]
 
 
 def _taikai(s: Store, eid: int) -> dict[str, Any]:

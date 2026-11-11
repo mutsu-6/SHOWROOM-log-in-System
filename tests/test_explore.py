@@ -83,6 +83,31 @@ def test_event_detail(db):
     assert [(c["user_id"], c["point"], c["rooms"], c["top_room"], c["left"]) for c in d["contributors"]] == [
         (7, 6500, 2, "ルームA", False), (8, 1000, 1, "ルームA", False), (9, 500, 1, "ルームB", True)]
     assert d["rankings"] == 2 and d["rankings_pending"] == 0  # ポイント 0 のルームは取らない
+    assert d["blocks"] == []
+
+
+def test_event_detail_groups_blocks_and_top3(db):
+    with Store(db) as s:
+        s.upsert_rooms([{"room_id": 4, "key": "ddd", "name": "ルームD"}], "event", NOW)
+        s.set_event_rooms(10, [{"room_id": 1, "point": 5000, "rank": 1}, {"room_id": 2, "point": 3000, "rank": 2},
+                               {"room_id": 3, "point": 0, "rank": 3}, {"room_id": 4, "point": 800, "rank": 4}], NOW)
+        s.set_contributions(10, 4, [{"user_id": 9, "name": "退会済みユーザー", "point": 700, "rank": 1},
+                                    {"user_id": 11, "name": "同名", "point": 50, "rank": 2, "guessed": 1}], NOW, final=True)
+        s.set_event_blocks(10, [
+            {"room_id": 2, "block_id": 20, "block_label": "B", "block_rank": 1},
+            {"room_id": 4, "block_id": 20, "block_label": "B", "block_rank": 2},
+            {"room_id": 1, "block_id": 10, "block_label": "A", "block_rank": 1},
+            {"room_id": 3, "block_id": 10, "block_label": "A", "block_rank": 2},
+        ], NOW)
+    d = explore.event_detail(db, 10)
+    assert [(b["label"], [(r["name"], r["rank"], r["point"], [(t["name"], t["point"], t["left"], t["guessed"]) for t in r["top"]])
+             for r in b["rooms"]]) for b in d["blocks"]] == [
+        ("A", [("ルームA", 1, 5000, [("大口", 4000, False, False), ("中堅", 1000, False, False)]),
+               ("ルームC", 2, 0, [])]),
+        ("B", [("ルームB", 1, 3000, [("大口", 2500, False, False), ("退会済みユーザー", 500, True, False)]),
+               ("ルームD", 2, 800, [("退会済みユーザー", 700, True, False), ("同名", 50, False, True)])])]
+    assert "block_id" not in d["blocks"][0]
+    assert [(r["name"], r["rank"]) for r in d["rooms"]] == [("ルームA", 1), ("ルームB", 2), ("ルームC", 3), ("ルームD", 4)]
     p = explore.event_detail(db, "now_ev")["progress"]
     assert len(p["times"]) == 2 and [r["name"] for r in p["rooms"]] == ["ルームB", "ルームA"]
     assert p["rooms"][0]["points"] == [40, 200] and p["rooms"][0]["ranks"] == [2, 1]
