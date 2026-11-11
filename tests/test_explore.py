@@ -83,7 +83,19 @@ def test_event_detail(db):
     assert [(c["user_id"], c["point"], c["rooms"], c["top_room"], c["left"]) for c in d["contributors"]] == [
         (7, 6500, 2, "ルームA", False), (8, 1000, 1, "ルームA", False), (9, 500, 1, "ルームB", True)]
     assert d["rankings"] == 2 and d["rankings_pending"] == 0  # ポイント 0 のルームは取らない
-    assert d["blocks"] == []
+    # ブロックが無くても、全体の順位と貢献の上位 3 人の表を出す
+    assert [(b["label"], [(r["name"], r["rank"], [(t["name"], t["point"], t["left"]) for t in r["top"]]) for r in b["rooms"]])
+            for b in d["blocks"]] == [
+        ("", [("ルームA", 1, [("大口", 4000, False), ("中堅", 1000, False)]),
+              ("ルームB", 2, [("大口", 2500, False), ("退会済みユーザー", 500, True)]),
+              ("ルームC", 3, [])])]
+    assert d["blocks"][0]["total"] == 3
+    p = explore.event_detail(db, "now_ev")["progress"]
+    assert len(p["times"]) == 2 and [r["name"] for r in p["rooms"]] == ["ルームB", "ルームA"]
+    assert p["rooms"][0]["points"] == [40, 200] and p["rooms"][0]["ranks"] == [2, 1]
+    assert [(r["name"], r["rank"], r["top"]) for r in explore.event_detail(db, 11)["blocks"][0]["rooms"]] == [
+        ("ルームB", 1, []), ("ルームA", 2, [])]
+    assert explore.event_detail(db, 999) == {"event_id": "999", "found": False}
 
 
 def test_event_detail_groups_blocks_and_top3(db):
@@ -106,12 +118,8 @@ def test_event_detail_groups_blocks_and_top3(db):
                ("ルームC", 2, 0, [])]),
         ("B", [("ルームB", 1, 3000, [("大口", 2500, False, False), ("退会済みユーザー", 500, True, False)]),
                ("ルームD", 2, 800, [("退会済みユーザー", 700, True, False), ("同名", 50, False, True)])])]
-    assert "block_id" not in d["blocks"][0]
+    assert "block_id" not in d["blocks"][0] and "total" not in d["blocks"][0]
     assert [(r["name"], r["rank"]) for r in d["rooms"]] == [("ルームA", 1), ("ルームB", 2), ("ルームC", 3), ("ルームD", 4)]
-    p = explore.event_detail(db, "now_ev")["progress"]
-    assert len(p["times"]) == 2 and [r["name"] for r in p["rooms"]] == ["ルームB", "ルームA"]
-    assert p["rooms"][0]["points"] == [40, 200] and p["rooms"][0]["ranks"] == [2, 1]
-    assert explore.event_detail(db, 999) == {"event_id": "999", "found": False}
 
 
 def test_search_finds_former_names_recorded_gifters_and_known_rooms(db, search_mode):

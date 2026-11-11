@@ -3909,13 +3909,16 @@ function eventDetails(x) {
   return h;
 }
 function eventBlocks(d) {
-  const blocks = d.blocks || [];
+  const blocks = (d.blocks || []).filter((b) => (b.rooms || []).length);
   if (!blocks.length) return "";
+  const split = blocks.some((b) => b.label);
   const one = (t) => t ? `${gifterLink(t.user_id, t.name)}${t.left ? ' <span class="tag">退会</span>' : ""}${t.guessed ? ' <span class="tag warn" title="名前だけで、この人と決めた分 (同じ名前の別の人のこともあります)">名前で推測</span>' : ""} <b>${num(t.point)}</b>` : '<span class="uid">-</span>';
   const csv = (t) => t ? `${t.name || ""} ${t.point ?? ""}`.trim() : "";
-  return `<h3>ブロックごとの順位</h3>
-    <div class="hint">順位はブロックの中の順位です。ポイントはイベント全体のポイント (下の参加ルームの一覧と同じ) です。貢献の上位 3 人は、終わったあとに集めた貢献ランキングです。まだ集めていないルームは空欄です。</div>`
-    + blocks.map((b, i) => `<h3>${esc(b.label || "ブロック")} <small class="muted">${num(b.rooms.length)} ルーム</small></h3>`
+  const hint = split
+    ? "順位はブロックの中の順位です。ポイントはイベント全体のポイント (下の参加ルームの一覧と同じ) です。貢献の上位 3 人は、終わったあとに集めた貢献ランキングです。まだ集めていないルームは空欄です。"
+    : "順位とポイントは参加ルームの一覧と同じです。貢献の上位 3 人は、終わったあとに集めた貢献ランキングです。まだ集めていないルームは空欄です。";
+  return `<h3>${split ? "ブロックごとの順位" : "参加ルームと貢献の上位"}</h3><div class="hint">${hint}</div>`
+    + blocks.map((b, i) => `${split ? `<h3>${esc(b.label)} <small class="muted">${num(b.rooms.length)} ルーム</small></h3>` : ""}`
       + dataTable(`ep-block-${i}`, [
         { label: "順位", num: true, value: (r) => r.rank, html: (r) => r.rank ? `${num(r.rank)}` : "-" },
         { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key || String(r.room_id), r.name), cls: "name" },
@@ -3923,9 +3926,10 @@ function eventBlocks(d) {
         { label: "貢献1位", value: (r) => csv((r.top || [])[0]), html: (r) => one((r.top || [])[0]) },
         { label: "貢献2位", value: (r) => csv((r.top || [])[1]), html: (r) => one((r.top || [])[1]) },
         { label: "貢献3位", value: (r) => csv((r.top || [])[2]), html: (r) => one((r.top || [])[2]) },
-      ], b.rooms, { sort: 0, desc: false, limit: 30, phone: [0, 1, 2], csvName: `イベント_${d.event_id}_${b.label || "ブロック"}_順位`,
+      ], b.rooms, { sort: 0, desc: false, limit: 30, phone: [0, 1, 2], total: b.total,
+        csvName: `イベント_${d.event_id}_${b.label || "参加ルーム"}_順位`,
         rowAttr: (r) => `class="clickable" data-go="#room/${esc(r.key || r.room_id)}"`,
-        empty: "このブロックのルームはまだありません" })).join("");
+        empty: "参加ルームはまだありません" })).join("");
 }
 function eventRoomsTable(d) {
   return dataTable("ep-rooms", [
