@@ -302,7 +302,7 @@ def host_is_loopback(host_header: str | None) -> bool:
 
 # 管理画面を開いたままにすると、決まった間隔で読み直す要求 (15 秒・3 秒・60 秒ごと)。人が使っている印 (room_parts.seen) には数えない。
 # 前は数えていたので、誰かが画面を開いている間は、ルームの部品や地力を裏でいつまでも作れなかった (2026-10-21 に Cursor が見つけた)
-POLLED = {"/api/overview", "/api/logs", "/api/feed", "/api/research/status", "/api/research/collect"}
+POLLED = {"/api/overview", "/api/logs", "/api/feed", "/api/research/status", "/api/research/collect", "/api/gift_plan"}
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -533,6 +533,15 @@ class AdminHandler(BaseHTTPRequestHandler):
                 if not str(q.get("id", "")).strip().isdigit():
                     raise ValueError("ユーザー ID は数字で指定してください")
                 self._json({"user": lookup_user(q["id"])})
+            elif url.path == "/api/gift_plan":
+                from . import gift_plan
+
+                self._json(gift_plan.overview(self._state_dir(), self.keeper.cfg))
+            elif url.path == "/api/gift_plan/gifts":
+                from . import gift_plan
+
+                room = gift_plan.room_info(normalize_room_key(q.get("room", "")))
+                self._json({**room, "gifts": gift_plan.gift_catalog(room["room_id"])})
             elif url.path == "/api/listener":
                 from .listing import listener_detail
 
@@ -619,6 +628,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                     raise ValueError("つなぐ先のイベント番号を指定してください")
                 self._json({"ok": True, **explore.series_link(self._state_dir(), data.get("event_id"),
                                                               None if data.get("detach") else data.get("to_event_id"))})
+            elif path == "/api/gift_plan":
+                from . import gift_plan
+
+                self._json({"ok": True, "plan": gift_plan.create(self._state_dir(), self.keeper.cfg, data)})
+            elif path == "/api/gift_plan/cancel":
+                from . import gift_plan
+
+                self._json({"ok": True, "plan": gift_plan.cancel(self._state_dir(), str(data.get("id") or ""))})
             elif path == "/api/research/collect":
                 started = self._start_research(only_new=False, force=bool(data.get("force")))
                 self._json({"ok": True, "started": started})

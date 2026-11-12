@@ -18,6 +18,7 @@ from .api import BASE_URL, ShowroomAPI, public_get
 from .config import Config, apply_settings, settings_path
 from .comments import CommentDispatcher, queue_dir
 from .entrance import AllRoomsEntrance, RoomEntrance
+from .gift_plan import GiftRunner
 from .mission import MissionRunner
 from .status import LOGIN_KEY, write_live_stat
 from .watcher import RoomWatcher
@@ -639,6 +640,9 @@ class Keeper:
             if self.cfg.mission_auto:
                 missions = MissionRunner(self.cfg, ctx.cookies, api.onlives_raw)
                 background.append(asyncio.create_task(missions.run(), name="mission"))
+            # ギフトの予約投げ (予約が無ければ 5 秒ごとに小さなファイルを読むだけ。待つものはすべてスレッドの中)
+            gifts_plan = GiftRunner(self.cfg, ctx.cookies, Path(self.cfg.state_file).parent)
+            background.append(asyncio.create_task(gifts_plan.run(), name="gift_plan"))
             tasks += background
             saver = asyncio.create_task(self._periodic_save(ctx, api, watchers))
             wake_wait = asyncio.create_task(self._wake.wait())
