@@ -615,6 +615,7 @@ def _stub_jobs(sw, cost, done, rankings=True):
         s.set_meta("live_at", NOW)
         s.set_meta("events_at", NOW)
         s.set_meta("anchor_done_at", NOW)
+        s.set_meta("lag_at", NOW)  # 遅れの計算は 1 時間に 1 回、割合の外で行う
     sw._clock = lambda: NOW
 
 
