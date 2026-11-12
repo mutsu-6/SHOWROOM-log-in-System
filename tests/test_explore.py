@@ -64,15 +64,66 @@ def test_room_detail(db):
     assert explore.room_detail(db, "zzz") == {"key": "zzz", "found": False}
 
 
-def test_event_list(db):
+def test_event_list(db, monkeypatch):
+    from showroom_keeper import event_analysis
+
+    def boom(*_a, **_k):
+        raise AssertionError("一覧を開くときに遅れの記録は読まない")
+
+    monkeypatch.setattr(event_analysis, "api_lag", boom)
     on = explore.event_list(db, "ongoing")
     assert [e["event_id"] for e in on["events"]] == [11]
     assert on["events"][0]["rooms"] == 2 and on["events"][0]["snapshots"] == 2 and on["events"][0]["leader"] == "ルームB"
+    assert on["api_lag"] is None  # 遅れは収集の合間に計算し、一覧では保存分だけ使う
     assert [e["event_id"] for e in explore.event_list(db, "upcoming")["events"]] == [12]
     ended = explore.event_list(db, "ended")["events"]
     assert [e["event_id"] for e in ended] == [10] and ended[0]["rankings"] == 2
     with pytest.raises(ValueError):
         explore.event_list(db, "bad")
+
+
+def test_event_list_numbers_are_filled_without_rereading_the_big_tables(db):
+    with Store(db) as s:
+        s.conn.execute("UPDATE events SET progress_n=NULL, ranking_count=NULL, leader_room_id=NULL WHERE event_id=11")
+        assert s.one("SELECT progress_n FROM events WHERE event_id=11")["progress_n"] is None
+        s.fill_event_list_numbers(11)
+        row = s.one("SELECT progress_n, ranking_count, leader_room_id, room_count FROM events WHERE event_id=11")
+        assert (row["progress_n"], row["ranking_count"], row["leader_room_id"], row["room_count"]) == (2, 0, 2, 2)
+    assert explore.event_list(db, "ongoing")["events"][0]["leader"] == "ルームB"
+
+
+def test_sweep_fills_the_newest_event_list_first(tmp_path):
+    from showroom_keeper import sweep
+
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "name": "一番"}], "live", NOW)
+        s.upsert_events([{"event_id": 1, "name": "古い", "start": NOW - 20 * 86400, "end": NOW - 10 * 86400},
+                         {"event_id": 2, "name": "新しい", "start": NOW - 2 * 86400, "end": NOW - 86400}])
+        s.conn.execute("INSERT INTO room_events(room_id, event_id, point, rank, final) VALUES (1, 2, 9, 1, 1)")
+        s.conn.execute("INSERT INTO event_progress(event_id, room_id, at, point) VALUES (2, 1, ?, 9)", (NOW,))
+        s.conn.execute("UPDATE events SET progress_n=NULL, ranking_count=NULL, leader_room_id=NULL")
+    sw = sweep.Sweeper(tmp_path, scan=False)
+    assert sw._next_event_list_numbers(NOW) is True
+    with Store(tmp_path) as s:
+        done = s.one("SELECT progress_n, ranking_count, leader_room_id FROM events WHERE event_id=2")
+        assert (done["progress_n"], done["ranking_count"], done["leader_room_id"]) == (1, 1, 1)
+        assert s.one("SELECT progress_n FROM events WHERE event_id=1")["progress_n"] is None
+
+
+def test_event_page_reads_room_strength_in_one_query(db, monkeypatch):
+    """参加ルームが多くても、強さはルームごとに問い合わせない。"""
+    calls = []
+    real = Store.all
+
+    def spy(self, sql, args=()):
+        calls.append(" ".join(sql.split()))
+        return real(self, sql, args)
+
+    monkeypatch.setattr(Store, "all", spy)
+    explore.event_detail(db, 10)
+    strength = [sql for sql in calls if "ROW_NUMBER() OVER" in sql]
+    per_room = [sql for sql in calls if "re.room_id=?" in sql and "ORDER BY e.end DESC" in sql]
+    assert len(strength) == 1 and per_room == []
 
 
 def test_event_detail(db):

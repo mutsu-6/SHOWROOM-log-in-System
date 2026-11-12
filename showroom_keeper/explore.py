@@ -838,14 +838,15 @@ def event_list(state_dir: Path, state: str = "ongoing", limit: int = EVENT_LIST)
         raise ValueError("state は ongoing・upcoming・ended のどれかです")
     with Store(state_dir) as s:
         total = s.scalar(f"SELECT COUNT(*) FROM events WHERE {where}", (now, now))
-        rows = s.all(f"""SELECT e.*, (SELECT COUNT(*) FROM room_events re WHERE re.event_id=e.event_id) AS rooms,
-                                (SELECT COUNT(*) FROM room_events re WHERE re.event_id=e.event_id AND re.final=1) AS rankings,
-                                (SELECT COUNT(DISTINCT at) FROM event_progress p WHERE p.event_id=e.event_id) AS snapshots,
-                                (SELECT r.name FROM room_events re JOIN rooms r USING(room_id)
-                                  WHERE re.event_id=e.event_id AND re.rank=1 LIMIT 1) AS leader
-                         FROM events e WHERE {where} ORDER BY {order} LIMIT ?""", (now, now, int(limit)))
+        # 参加ルーム・推移・貢献ランキングは、保存してある数字を読む (開くたびに大きな表を数えない)
+        rows = s.all(f"""SELECT e.event_id, e.key, e.name, e.start, e.end, e.type,
+                                COALESCE(e.room_count, (SELECT COUNT(*) FROM room_events re WHERE re.event_id=e.event_id)) AS rooms,
+                                e.ranking_count AS rankings, e.progress_n AS snapshots,
+                                r.name AS leader
+                         FROM events e LEFT JOIN rooms r ON r.room_id=e.leader_room_id
+                         WHERE {where} ORDER BY {order} LIMIT ?""", (now, now, int(limit)))
         return {"state": state, "total": total, "now": now,
-                "api_lag": event_analysis.api_lag(state_dir, now) if state == "ongoing" else None,
+                "api_lag": event_analysis.api_lag_cached(state_dir, now) if state == "ongoing" else None,
                 "events": [{**_event_row(r, now), "rooms": r["rooms"], "rankings": r["rankings"], "snapshots": r["snapshots"],
                             "leader": r["leader"], "type": r["type"]} for r in rows]}
 
@@ -860,8 +861,15 @@ def _room_ids(s: Store, keys: list[str] | None) -> list[int]:
 
 
 def _room_labels(s: Store, rows: list[dict[str, Any]]) -> None:
+    ids = sorted({int(r["room_id"]) for r in rows if r.get("room_id") is not None})
+    found: dict[int, Any] = {}
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        marks = ",".join("?" * len(chunk))
+        for x in s.all(f"SELECT room_id, key, name FROM rooms WHERE room_id IN ({marks})", chunk):
+            found[int(x["room_id"])] = x
     for r in rows:
-        x = s.one("SELECT key, name FROM rooms WHERE room_id=?", (r["room_id"],))
+        x = found.get(int(r["room_id"])) if r.get("room_id") is not None else None
         r["key"] = (x["key"] if x is not None else None) or str(r["room_id"])
         r["name"] = (x["name"] if x is not None else None) or r["key"]
 
@@ -899,7 +907,8 @@ def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = No
         eid = int(e["event_id"])
         rooms = [dict(r) for r in s.all(
             """SELECT re.room_id, r.key, COALESCE(r.name, r.key, re.room_id) AS name, re.point, re.rank, re.final,
-                      (SELECT COUNT(*) FROM contributions c WHERE c.event_id=re.event_id AND c.room_id=re.room_id) AS contributors
+                      COALESCE(re.c_count, (SELECT COUNT(*) FROM contributions c
+                                            WHERE c.event_id=re.event_id AND c.room_id=re.room_id)) AS contributors
                FROM room_events re LEFT JOIN rooms r USING(room_id) WHERE re.event_id=?
                ORDER BY re.rank IS NULL, re.rank, re.point DESC LIMIT ?""", (eid, EVENT_ROOMS))]
         # 開催中は順位が入っていないことがあるので、ポイントの多い順の位置を使う (place)
@@ -1012,13 +1021,19 @@ def _progress(s: Store, eid: int, rooms: list[dict[str, Any]]) -> dict[str, Any]
     ats = [r[0] for r in s.all("SELECT DISTINCT at FROM event_progress WHERE event_id=? ORDER BY at", (eid,))]
     if not ats:
         return {"times": [], "rooms": []}
-    last = s.all("""SELECT room_id, point FROM event_progress WHERE event_id=? AND at=(SELECT MAX(at) FROM event_progress WHERE event_id=?)
-                    ORDER BY point DESC LIMIT ?""", (eid, eid, PROGRESS_ROOMS))
+    last = s.all("""SELECT room_id, point FROM event_progress WHERE event_id=? AND at=?
+                    ORDER BY point DESC LIMIT ?""", (eid, ats[-1], PROGRESS_ROOMS))
     names = {r["room_id"]: (r["key"], r["name"]) for r in rooms}
+    ids = [int(r["room_id"]) for r in last]
+    by_room: dict[int, dict[Any, tuple[Any, Any]]] = {rid: {} for rid in ids}
+    if ids:
+        marks = ",".join("?" * len(ids))
+        for p in s.all(f"""SELECT room_id, at, point, rank FROM event_progress
+                          WHERE event_id=? AND room_id IN ({marks})""", (eid, *ids)):
+            by_room[int(p["room_id"])][p["at"]] = (p["point"], p["rank"])
     out = []
     for r in last:
-        pts = {p["at"]: (p["point"], p["rank"]) for p in s.all(
-            "SELECT at, point, rank FROM event_progress WHERE event_id=? AND room_id=?", (eid, r["room_id"]))}
+        pts = by_room[int(r["room_id"])]
         key, name = names.get(r["room_id"]) or (None, None)
         if name is None:
             info = s.room(room_id=r["room_id"])
