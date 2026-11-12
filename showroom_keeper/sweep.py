@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from . import heat, onlives, research, room_analysis, series
+from . import event_analysis, heat, onlives, research, room_analysis, series
 from .recorder import next_page_number
 from .status import JST
 from .research import ARCHIVE_HOLD, PENDING_RANKING, RANKING_RETRIES, SKIPPED_ROOM, Collector, anchor_order, is_missing
@@ -219,10 +219,19 @@ class Sweeper:
         # 開催中のイベントの推移は、1 時間ごとの時刻が大事なので、割合に数えず先に行う
         if self._next_progress(now):
             return True
+        if now - (st.meta("lag_at") or 0) >= event_analysis.LAG_TTL:
+            # 一覧のページでは計算しない (記録のファイルを読むと、開くのが十秒以上止まる)
+            self.doing = "イベントの API の遅れ"
+            try:
+                event_analysis.api_lag(self.store.state_dir, now)
+            except Exception as err:  # noqa: BLE001
+                log.warning("イベントの API の遅れを読めませんでした: %s", err)
+            st.set_meta("lag_at", now)
+            return True
         # 貢献ランキングはギフター分析にいちばん効くので、問い合わせの数で数えて ranking_share の割合を回す。
         # ほかの仕事は 1 つで何回も問い合わせる (ルームの取り直し・参加ルームのページなど) ので、仕事の数ではなく問い合わせの数でくらべる。
         # 取る貢献ランキングが無くなれば、ほかの仕事だけが回る
-        others = [self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
+        others = [self._next_room, self._next_event_rooms, self._next_event_list_numbers, self._next_fans, self._next_event_history,
                   self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history,
                   self._next_room_profile, self._next_fans_closed]
         if self.scan:
@@ -442,6 +451,17 @@ class Sweeper:
             self._failed("events", "event_id", e["event_id"], now, err, after=PROGRESS_RETRY)
             return True
         self.store.add_progress(e["event_id"], rooms, now)
+        return True
+
+    def _next_event_list_numbers(self, now: float) -> bool:
+        """一覧の数字がまだ無いイベントを、終わりの新しい順に 1 つ数える (ページを開くときは数えない)。"""
+        e = self.store.one("""SELECT event_id, name FROM events
+                              WHERE progress_n IS NULL OR ranking_count IS NULL
+                              ORDER BY end DESC LIMIT 1""")
+        if e is None:
+            return False
+        self.doing = f"イベント一覧の数字 ({e['name'] or e['event_id']})"
+        self.store.fill_event_list_numbers(e["event_id"])
         return True
 
     def _next_event_history(self, now: float) -> bool:

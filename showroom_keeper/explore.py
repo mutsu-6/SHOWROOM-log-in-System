@@ -806,14 +806,14 @@ def event_list(state_dir: Path, state: str = "ongoing", limit: int = EVENT_LIST)
         raise ValueError("state は ongoing・upcoming・ended のどれかです")
     with Store(state_dir) as s:
         total = s.scalar(f"SELECT COUNT(*) FROM events WHERE {where}", (now, now))
-        rows = s.all(f"""SELECT e.*, (SELECT COUNT(*) FROM room_events re WHERE re.event_id=e.event_id) AS rooms,
-                                (SELECT COUNT(*) FROM room_events re WHERE re.event_id=e.event_id AND re.final=1) AS rankings,
-                                (SELECT COUNT(DISTINCT at) FROM event_progress p WHERE p.event_id=e.event_id) AS snapshots,
-                                (SELECT r.name FROM room_events re JOIN rooms r USING(room_id)
-                                  WHERE re.event_id=e.event_id AND re.rank=1 LIMIT 1) AS leader
-                         FROM events e WHERE {where} ORDER BY {order} LIMIT ?""", (now, now, int(limit)))
+        # 参加ルーム・推移・貢献ランキングは、保存してある数字を読む (開くたびに大きな表を数えない)
+        rows = s.all(f"""SELECT e.event_id, e.key, e.name, e.start, e.end, e.type,
+                                e.room_count AS rooms, e.ranking_count AS rankings, e.progress_n AS snapshots,
+                                r.name AS leader
+                         FROM events e LEFT JOIN rooms r ON r.room_id=e.leader_room_id
+                         WHERE {where} ORDER BY {order} LIMIT ?""", (now, now, int(limit)))
         return {"state": state, "total": total, "now": now,
-                "api_lag": event_analysis.api_lag(state_dir, now) if state == "ongoing" else None,
+                "api_lag": event_analysis.api_lag_cached(state_dir, now) if state == "ongoing" else None,
                 "events": [{**_event_row(r, now), "rooms": r["rooms"], "rankings": r["rankings"], "snapshots": r["snapshots"],
                             "leader": r["leader"], "type": r["type"]} for r in rows]}
 
