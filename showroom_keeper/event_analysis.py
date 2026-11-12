@@ -162,15 +162,42 @@ _choice: dict[tuple[str, tuple[int, ...]], tuple[float, dict[str, Any]]] = {}
 _strengths: dict[str, tuple[float, dict[int, Any]]] = {}
 
 
+def _strength_from_days(per_day: list[float]) -> dict[str, Any] | None:
+    return {"per_day": median(per_day), "events": len(per_day), "best": max(per_day)} if per_day else None
+
+
+def fill_strength(s: Store, room_ids: list[int], now: float, cache: dict[int, Any]) -> None:
+    """いくつかのルームの強さを、1 回の読みでキャッシュに入れる (イベントのページでルームごとに引かない)。"""
+    need = [int(rid) for rid in room_ids if int(rid) not in cache]
+    if not need:
+        return
+    grouped: dict[int, list[float]] = {rid: [] for rid in need}
+    for i in range(0, len(need), 400):
+        chunk = need[i:i + 400]
+        marks = ",".join("?" * len(chunk))
+        rows = s.all(f"""SELECT room_id, point, start, end FROM (
+                           SELECT re.room_id, re.point, e.start, e.end,
+                                  ROW_NUMBER() OVER (PARTITION BY re.room_id ORDER BY e.end DESC) AS n
+                           FROM room_events re JOIN events e USING(event_id)
+                           WHERE re.room_id IN ({marks}) AND re.point > 0 AND e.end < ?
+                             AND e.start IS NOT NULL AND e.rooms_at >= e.end)
+                         WHERE n <= ?""", (*chunk, now, STRENGTH_EVENTS))
+        for r in rows:
+            grouped[int(r["room_id"])].append(r["point"] / max(1.0, (r["end"] - r["start"]) / 86400))
+    for rid in need:
+        cache[rid] = _strength_from_days(grouped[rid])
+
+
 def room_strength(s: Store, rid: int, now: float, cache: dict[int, Any] | None = None) -> dict[str, Any] | None:
     """ルームの強さ = 最近の終わったイベントで、1 日あたりに取ったポイントの真ん中の値 (期間の長さのちがいをならすため)。"""
+    rid = int(rid)
     if cache is not None and rid in cache:
         return cache[rid]
     rows = s.all("""SELECT re.point, e.start, e.end FROM room_events re JOIN events e USING(event_id)
                     WHERE re.room_id=? AND re.point > 0 AND e.end < ? AND e.start IS NOT NULL AND e.rooms_at >= e.end
-                    ORDER BY e.end DESC LIMIT ?""", (int(rid), now, STRENGTH_EVENTS))
+                    ORDER BY e.end DESC LIMIT ?""", (rid, now, STRENGTH_EVENTS))
     per_day = [r["point"] / max(1.0, (r["end"] - r["start"]) / 86400) for r in rows]
-    out = {"per_day": median(per_day), "events": len(per_day), "best": max(per_day)} if per_day else None
+    out = _strength_from_days(per_day)
     if cache is not None:
         cache[rid] = out
     return out
@@ -178,6 +205,30 @@ def room_strength(s: Store, rid: int, now: float, cache: dict[int, Any] | None =
 
 # リーグの番号 (ルームのプロフィールの league_id と、イベントの「出られるリーグ」league_ids は同じ番号。2026-10-18 に確かめた)
 LEAGUES = {9: "SS", 10: "S", 20: "A", 30: "B", 40: "C", 0: "ランク外"}
+
+
+def _leagues_at(s: Store, room_ids: list[int], start: float | None, now: float) -> dict[int, int | None]:
+    """そのイベントの時のリーグを、ルームごとに 1 回で読む。"""
+    from datetime import datetime
+
+    from .status import JST
+
+    ids = sorted({int(r) for r in room_ids})
+    rows: dict[int, Any] = {}
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        marks = ",".join("?" * len(chunk))
+        for r in s.all(f"SELECT room_id, league_id, next_league_id FROM room_info WHERE room_id IN ({marks})", chunk):
+            rows[int(r["room_id"])] = r
+    later = start is not None and datetime.fromtimestamp(start, JST).strftime("%Y%m") > datetime.fromtimestamp(now, JST).strftime("%Y%m")
+    out: dict[int, int | None] = {}
+    for rid in ids:
+        r = rows.get(rid)
+        if r is None:
+            out[rid] = None
+        else:
+            out[rid] = r["next_league_id"] if later and r["next_league_id"] is not None else r["league_id"]
+    return out
 
 
 def room_league(s: Store, rid: int, start: float | None, now: float) -> int | None:
@@ -210,7 +261,8 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
     参加していなくても、出た時に何位くらいかを出す。"""
     now = time.time() if now is None else now
     cache = {} if cache is None else cache
-    rooms = [r[0] for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (int(eid),))]
+    rooms = [int(r[0]) for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (int(eid),))]
+    fill_strength(s, [*rooms, *(int(r) for r in focus or [])], now, cache)
     known = {rid: st for rid in rooms for st in [room_strength(s, rid, now, cache)] if st}
     vals = {rid: st["per_day"] for rid, st in known.items()}
     order = sorted(vals, key=lambda r: -vals[r])
@@ -218,13 +270,15 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
     ev = s.one("SELECT start FROM events WHERE event_id=?", (int(eid),))
     start = ev["start"] if ev is not None else None
     leagues = event_leagues(s, eid)
+    league_of = _leagues_at(s, [*rooms, *(int(r) for r in focus or [])], start, now)
     for r in out_rooms:
-        lg = room_league(s, r["room_id"], start, now)
+        lg = league_of.get(r["room_id"])
         r["league"] = LEAGUES.get(lg) if lg is not None else None
     focus_out = []
     for rid in focus or []:
+        rid = int(rid)
         st = room_strength(s, rid, now, cache)
-        lg = room_league(s, rid, start, now)
+        lg = league_of.get(rid)
         # 出られるか: イベントの「出られるリーグ」に、ルームのリーグが入っているか (どちらかが分からなければ None)
         can = None if lg is None or not leagues else lg in leagues
         base = {"room_id": rid, "joined": rid in rooms, "league": LEAGUES.get(lg) if lg is not None else None, "can_enter": can}
@@ -276,6 +330,15 @@ LAG_DAYS = 7  # 遅れを測った記録を見る日数
 LAG_RATE_WINDOW = 600  # 伸びの速さを見る、前後のリアルタイム通信のポイントの幅 (秒)
 LAG_TTL = 3600
 _lag: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def api_lag_cached(state_dir: Any, now: float | None = None) -> dict[str, Any] | None:
+    """保存してある遅れ。一覧を開くときはこちら (ファイルを読み直さない)。"""
+    now = time.time() if now is None else now
+    hit = _lag.get(str(state_dir))
+    if hit and now - hit[0] < LAG_TTL:
+        return hit[1]
+    return None
 
 
 def api_lag(state_dir: Any, now: float | None = None) -> dict[str, Any] | None:

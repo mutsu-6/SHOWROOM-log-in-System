@@ -374,7 +374,9 @@ class Store:
                                    ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0"),
                                    ("room_events", "try_at REAL"), ("room_events", "try_status TEXT"),
                                    ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL"),
-                                   ("users", "shown_points INTEGER")):
+                                   ("users", "shown_points INTEGER"),
+                                   ("events", "progress_n INTEGER"), ("events", "leader_room_id INTEGER"),
+                                   ("events", "ranking_count INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -732,6 +734,8 @@ class Store:
                      ON CONFLICT(room_id, event_id) DO UPDATE SET ranking_at=excluded.ranking_at, final=excluded.final,
                        failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
                        c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
+        c.execute("""UPDATE events SET ranking_count=(SELECT COUNT(*) FROM room_events WHERE event_id=? AND final=1)
+                     WHERE event_id=?""", (event_id, event_id))
         self._names(c, rows, now)
         self.refresh_shown_points(c, [*old_ids, *(r["user_id"] for r in rows)])
         if rows and not any(r.get("guessed") for r in rows):
@@ -797,8 +801,13 @@ class Store:
                           [(int(r["room_id"]), event_id, r.get("point"), r.get("rank")) for r in rows if r.get("room_id")])
             c.execute("UPDATE events SET rooms_at=?, retry_at=NULL WHERE event_id=?", (now, event_id))
             if rows:
-                c.execute("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
-                          (len(rows), _median_point(r.get("point") for r in rows), event_id))
+                leader = None
+                best = -1
+                for r in rows:
+                    if r.get("room_id") and r.get("rank") == 1 and (r.get("point") or 0) >= best:
+                        leader, best = int(r["room_id"]), r.get("point") or 0
+                c.execute("UPDATE events SET room_count=?, median_point=?, leader_room_id=? WHERE event_id=?",
+                          (len(rows), _median_point(r.get("point") for r in rows), leader, event_id))
 
     def build_room_stats(self, step: int = ROOM_STATS_STEP) -> bool:
         """前に集めたイベントの参加ルームの数・ポイントの真ん中と、貢献ランキングの数字 (c_*) を、少しずつ作る。
@@ -884,8 +893,28 @@ class Store:
                 for r in rows if r.get("room_id") and r.get("point") is not None]
         with self.tx() as c:
             c.executemany("INSERT OR REPLACE INTO event_progress(event_id, room_id, at, point, rank) VALUES (?, ?, ?, ?, ?)", keep)
-            c.execute("UPDATE events SET progress_at=? WHERE event_id=?", (now, event_id))
+            known = c.execute("SELECT progress_n FROM events WHERE event_id=?", (event_id,)).fetchone()
+            if known is None or known[0] is None:
+                # 最初の 1 回だけ、残っている回の数を数える (一覧を開くときに event_progress を読まないため)
+                c.execute("""UPDATE events SET progress_at=?, progress_n=(SELECT COUNT(DISTINCT at) FROM event_progress WHERE event_id=?)
+                             WHERE event_id=?""", (now, event_id, event_id))
+            elif keep:
+                c.execute("UPDATE events SET progress_at=?, progress_n=progress_n+1 WHERE event_id=?", (now, event_id))
+            else:
+                c.execute("UPDATE events SET progress_at=? WHERE event_id=?", (now, event_id))
         return len(keep)
+
+    def fill_event_list_numbers(self, event_id: int) -> None:
+        """一覧に出す数字 (推移の回数・1 位・貢献ランキングの件数) を、1 イベント分だけ数えて保存する。"""
+        eid = int(event_id)
+        snaps = self.scalar("SELECT COUNT(DISTINCT at) FROM event_progress WHERE event_id=?", (eid,))
+        leader = self.one("""SELECT room_id FROM room_events WHERE event_id=? AND rank=1
+                             ORDER BY point DESC LIMIT 1""", (eid,))
+        rankings = self.scalar("SELECT COUNT(*) FROM room_events WHERE event_id=? AND final=1", (eid,))
+        rooms = self.scalar("SELECT COUNT(*) FROM room_events WHERE event_id=?", (eid,))
+        self.conn.execute("""UPDATE events SET progress_n=?, leader_room_id=?, ranking_count=?, room_count=?
+                             WHERE event_id=?""",
+                          (snaps, None if leader is None else int(leader["room_id"]), rankings, rooms, eid))
 
     def thin_progress(self, event_id: int, now: float) -> int:
         """終わったイベントの推移を間引く (戻り値は消した行の数)。event_progress は 1 年に数 GB 増えるため。
@@ -897,7 +926,8 @@ class Store:
         e = self.one("SELECT start, end FROM events WHERE event_id=?", (eid,))
         ats = [r[0] for r in self.all("SELECT DISTINCT at FROM event_progress WHERE event_id=? ORDER BY at", (eid,))]
         if e is None or not e["start"] or not e["end"] or not ats:
-            self.conn.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
+            self.conn.execute("UPDATE events SET thinned_at=?, progress_n=? WHERE event_id=?",
+                              (now, 0 if not ats else None, eid))
             return 0
         start, end = e["start"], e["end"]
         keep = {ats[0], ats[-1]}
@@ -918,7 +948,7 @@ class Store:
         with self.tx() as c:
             for a in drop:
                 removed += c.execute("DELETE FROM event_progress WHERE event_id=? AND at=?", (eid, a)).rowcount
-            c.execute("UPDATE events SET thinned_at=? WHERE event_id=?", (now, eid))
+            c.execute("UPDATE events SET thinned_at=?, progress_n=? WHERE event_id=?", (now, len(keep), eid))
         return removed
 
     def set_active_fans(self, room_id: int, ym: str, fan_power: Any, total: Any, users: list[dict[str, Any]], now: float,
