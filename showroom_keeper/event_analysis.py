@@ -278,6 +278,15 @@ LAG_TTL = 3600
 _lag: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
+def api_lag_cached(state_dir: Any, now: float | None = None) -> dict[str, Any] | None:
+    """保存してある遅れ。一覧を開くときはこちら (ファイルを読み直さない)。"""
+    now = time.time() if now is None else now
+    hit = _lag.get(str(state_dir))
+    if hit and now - hit[0] < LAG_TTL:
+        return hit[1]
+    return None
+
+
 def api_lag(state_dir: Any, now: float | None = None) -> dict[str, Any] | None:
     """イベントの API (event_and_support) が、リアルタイム通信のイベントのポイント (t=5) よりどれだけ遅れているか。
 
