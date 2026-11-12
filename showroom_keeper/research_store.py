@@ -36,6 +36,11 @@ CREATE INDEX IF NOT EXISTS event_progress_at ON event_progress(event_id, at);
 -- 終わる直前の細かい推移 (終わる 3 時間前から 1 分ごと、10 分前から 15 秒ごと、1 分前から 2 秒ごと。上位 30 ルーム)。追い上げの時刻を見るため
 CREATE TABLE IF NOT EXISTS event_final (
     event_id INTEGER, at REAL, room_id INTEGER, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, at, room_id)) WITHOUT ROWID;
+-- ニュースの「終わる直前の一気投げ」を、イベントごとに 1 行で残す (画面の 30 件から外れても辿れる。細かい推移は読み直さない)
+CREATE TABLE IF NOT EXISTS last_shots (
+    event_id INTEGER PRIMARY KEY, room_id INTEGER, jump INTEGER, left_sec REAL,
+    rank_before INTEGER, rank_after INTEGER, point INTEGER, shot_at REAL, event_end REAL, saved_at REAL);
+CREATE INDEX IF NOT EXISTS last_shots_end ON last_shots(event_end);
 CREATE TABLE IF NOT EXISTS room_events (
     room_id INTEGER, event_id INTEGER, ranking_at REAL, final INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
     point INTEGER, rank INTEGER, PRIMARY KEY (room_id, event_id)) WITHOUT ROWID;
@@ -999,6 +1004,25 @@ class Store:
         with self.tx() as c:
             c.executemany("INSERT OR REPLACE INTO event_final(event_id, at, room_id, point, rank) VALUES (?, ?, ?, ?, ?)", keep)
         return len(keep)
+
+    def save_last_shot(self, event_id: int, end: float, shot: dict[str, Any] | None, now: float) -> None:
+        """終わる直前の一気投げを 1 行で残す。shot が無いイベントも、読み直しを繰り返さないよう印を残す。"""
+        if shot is None:
+            self.conn.execute("""INSERT INTO last_shots(event_id, event_end, saved_at) VALUES (?, ?, ?)
+                                 ON CONFLICT(event_id) DO UPDATE SET event_end=excluded.event_end, saved_at=excluded.saved_at,
+                                   room_id=NULL, jump=NULL, left_sec=NULL, rank_before=NULL, rank_after=NULL,
+                                   point=NULL, shot_at=NULL""",
+                              (int(event_id), end, now))
+            return
+        self.conn.execute("""INSERT INTO last_shots(
+                               event_id, room_id, jump, left_sec, rank_before, rank_after, point, shot_at, event_end, saved_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             ON CONFLICT(event_id) DO UPDATE SET room_id=excluded.room_id, jump=excluded.jump,
+                               left_sec=excluded.left_sec, rank_before=excluded.rank_before, rank_after=excluded.rank_after,
+                               point=excluded.point, shot_at=excluded.shot_at, event_end=excluded.event_end,
+                               saved_at=excluded.saved_at""",
+                          (int(event_id), int(shot["room_id"]), int(shot["jump"]), shot["left"], shot["before"], shot["after"],
+                           shot["point"], shot["at"], end, now))
 
     def ranking_tried(self, event_id: int, room_id: int, now: float, status: str, ok: bool = False, gone: bool = False) -> None:
         """貢献ランキングを最後に読んだ時刻と結果。答え (HTTP) と、中身を確かめた結果を 1 つの値で分ける:

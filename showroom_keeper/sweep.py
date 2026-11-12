@@ -198,6 +198,7 @@ class Sweeper:
         self.c.flush_rankings(due_only=True)  # ためている貢献ランキングが、件数か時間を過ぎていれば保存する
         if self._next_final(now):  # 終わる直前の推移は、時刻が大事なので、ほかの仕事より先に行う
             return True
+        self._remember_last_shots(now)  # 一気投げを 1 行で残す (SHOWROOM には問い合わせない。仕事の順番には数えない)
         if now - (st.meta("live_at") or 0) >= LIVE_EVERY:
             return self._onlives(now)
         if now - (st.meta("events_at") or 0) >= EVENTS_EVERY:
@@ -428,6 +429,12 @@ class Sweeper:
                 for r in data.get("list") or [] if isinstance(r, dict)]
         self.store.add_final(e["event_id"], rows, now)
         return True
+
+    def _remember_last_shots(self, now: float) -> None:
+        """終わったイベントの一気投げを 1 行で残す。細かい推移は、終わる直前の読み取りが無い時に少しずつ読む。"""
+        from . import news
+
+        news.remember_pending(self.store, now)
 
     def _next_progress(self, now: float) -> bool:
         """開催中のイベントの参加ルームのポイントと順位を、PROGRESS_EVERY ごとに残す (ポイントの推移)。
