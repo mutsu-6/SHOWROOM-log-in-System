@@ -225,6 +225,9 @@ class Sweeper:
         others = [self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
                   self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history,
                   self._next_room_profile, self._next_fans_closed]
+        # 埋め終わるまでは順番に入れる。終わったあとは入れない (False を返して、ほかの仕事の回数をずらさない)
+        if not self.store.meta("shown_points_done") or not self.store.meta("search_senders_done"):
+            others.append(self._next_search_cache)
         if self.scan:
             others.append(self._next_scan)
         ranking_first = self._used[True] < self.ranking_share * (self._used[True] + self._used[False])
@@ -247,6 +250,13 @@ class Sweeper:
             used[ranking] += max(self.c.requests - before, 1)
             if used[True] + used[False] > SHARE_WINDOW:
                 used[True], used[False] = used[True] // 2, used[False] // 2
+
+    def _next_search_cache(self, now: float) -> bool:
+        """検索欄のポイントと送り主の索引を少しずつ埋める。残っていなければ False (問い合わせは使わない)。"""
+        if self.store.fill_shown_points(40) or self.store.fill_search_senders(200):
+            self.doing = "検索の用意"
+            return True
+        return False
 
     # ---------------------------------------------------------------- ルームを見つける
     def _onlives(self, now: float) -> bool:
