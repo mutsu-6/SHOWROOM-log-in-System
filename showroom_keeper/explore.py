@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import event_analysis, room_analysis, room_parts, search_index, series as series_mod
+from . import event_analysis, packed, room_analysis, room_parts, search_index, series as series_mod
 from .research import LEFT_NAMES, _user_names, PENDING_RANKING, RANKING_RETRIES
 from .research_store import Store, unpack_text
 
@@ -73,18 +73,15 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
     if path is None:
         return
     with _sender_lock:
-        try:
-            size = path.stat().st_size
-        except OSError:
+        size = packed.size(path)  # 通しの大きさ (終わった月を .gz にしまっても、しまう前と同じ。小さくならない)
+        if size is None:
             return
         row = s.one("SELECT pos, size FROM gift_sender_pos WHERE room_key=?", (room_key,))
         reset = row is not None and size < row["size"]  # ファイルが小さくなった: 最初から (消すのは、足すのと同じトランザクションで)
         pos = 0 if reset or row is None else row["pos"]
         if size <= pos and not reset:
             return
-        with path.open("rb") as f:
-            f.seek(pos)
-            chunk = f.read(size - pos)
+        chunk = packed.read_from(path, pos, size)  # pos が .gz にしまった分の中なら、そこから読む
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
         if end <= 0 and not reset:
             return
@@ -130,12 +127,12 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
                                free_points=free_points+excluded.free_points, first_at=MIN(COALESCE(first_at, excluded.first_at), excluded.first_at),
                                unknown=COALESCE(unknown, 0)+excluded.unknown""",
                           [(room_key, uid, *x) for uid, x in senders.items()])
-            packed = [(uid, name, _fold(name), at) for (uid, name), at in names.items()]
-            fresh = [(folded, uid, name) for uid, name, folded, at in packed
+            name_rows = [(uid, name, _fold(name), at) for (uid, name), at in names.items()]
+            fresh = [(folded, uid, name) for uid, name, folded, at in name_rows
                      if len(folded) >= 3 and not c.execute(
                          "SELECT 1 FROM gift_sender_names WHERE user_id=? AND name=?", (uid, name)).fetchone()]
             c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
-                             ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""", packed)
+                             ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""", name_rows)
             try:
                 c.executemany("INSERT INTO search_senders(folded, user_id, name) VALUES (?, ?, ?)", fresh)
             except sqlite3.OperationalError:
@@ -199,18 +196,15 @@ def update_gift_events(state_dir: Path, s: Store, room_key: str, files: dict[str
     if path is None:
         return
     with _event_lock:
-        try:
-            size = path.stat().st_size
-        except OSError:
+        size = packed.size(path)  # 通しの大きさ (終わった月を .gz にしまっても、しまう前と同じ。小さくならない)
+        if size is None:
             return
         row = s.one("SELECT pos, size FROM gift_event_pos WHERE room_key=?", (room_key,))
         reset = row is not None and size < row["size"]  # ファイルが小さくなった: 最初から (消すのは、足すのと同じトランザクションで)
         pos = 0 if reset or row is None else row["pos"]
         if size <= pos and not reset:
             return
-        with path.open("rb") as f:
-            f.seek(pos)
-            chunk = f.read(size - pos)
+        chunk = packed.read_from(path, pos, size)  # pos が .gz にしまった分の中なら、そこから読む
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
         if end <= 0 and not reset:
             return
@@ -243,9 +237,8 @@ def update_live_visits(state_dir: Path, s: Store, room_key: str) -> None:
 
     path = live_events.event_dir(Path(state_dir)) / f"{room_key}.jsonl"
     with _visit_lock:
-        try:
-            size = path.stat().st_size
-        except OSError:
+        size = packed.size(path)  # 通しの大きさ (終わった月を .gz にしまっても、しまう前と同じ。小さくならない)
+        if size is None:
             return
         row = s.one("SELECT pos, size FROM live_visit_pos WHERE room_key=?", (room_key,))
         pos = row["pos"] if row is not None else 0
@@ -255,9 +248,7 @@ def update_live_visits(state_dir: Path, s: Store, room_key: str) -> None:
             pos = 0
         if size <= pos:
             return
-        with path.open("rb") as f:
-            f.seek(pos)
-            chunk = f.read(size - pos)
+        chunk = packed.read_from(path, pos, size)  # pos が .gz にしまった分の中なら、そこから読む
         end = chunk.rfind(b"\n") + 1
         if end <= 0:
             return
@@ -589,18 +580,15 @@ def update_gift_daily(state_dir: Path, s: Store, room_key: str, files: dict[str,
     if path is None:
         return
     with _gift_daily_lock:
-        try:
-            size = path.stat().st_size
-        except OSError:
+        size = packed.size(path)  # 通しの大きさ (終わった月を .gz にしまっても、しまう前と同じ。小さくならない)
+        if size is None:
             return
         row = s.one("SELECT pos, size FROM room_gift_pos WHERE room_key=?", (room_key,))
         reset = row is not None and size < row["size"]  # ファイルが小さくなった: 最初から (消すのは、足すのと同じトランザクションで)
         pos = 0 if reset or row is None else row["pos"]
         if size <= pos and not reset:
             return
-        with path.open("rb") as f:
-            f.seek(pos)
-            chunk = f.read(size - pos)
+        chunk = packed.read_from(path, pos, size)  # pos が .gz にしまった分の中なら、そこから読む
         end = chunk.rfind(b"\n") + 1  # 書きかけの最後の行は、次に読む
         if end <= 0 and not reset:
             return
