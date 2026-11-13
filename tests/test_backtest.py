@@ -117,7 +117,11 @@ def test_candidate_scores():
     c.add([(1, {k: 3.0 for k in backtest.CANDIDATES}, 30.0, 5), (2, {k: 1.0 for k in backtest.CANDIDATES}, 0.0, 1),
            (3, {k: 2.0 for k in backtest.CANDIDATES}, 10.0, 1)], seed=1)
     r = c.result()["current"]
-    assert r["order"] == 1.0 and r["appear"] == 1.0 and r["came_order"] == 1.0
+    assert r["order"] == 1.0 and r["appear"] == 1.0 and r["came_order"] == 1.0 and r["month_order"] is None  # 月の合計を渡していない
+    c.add([(1, {k: 3.0 for k in backtest.CANDIDATES}, 30.0, 5, 50.0), (2, {k: 1.0 for k in backtest.CANDIDATES}, 0.0, 1, 0.0),
+           (3, {k: 2.0 for k in backtest.CANDIDATES}, 10.0, 1, 60.0)], seed=1)
+    r = c.result()["current"]
+    assert r["month_order"] == 0.667 and r["month_came"] == 0.0  # 3 の方が 1 より月の合計は多い
 
 
 def test_run_reports_candidates(tmp_path):
@@ -126,6 +130,8 @@ def test_run_reports_candidates(tmp_path):
     out = backtest.run(tmp_path, MONTHS)
     assert set(out["candidates"]) == set(backtest.CANDIDATES) | {"decisive_past", "_decisive"}
     assert out["candidates"]["freq"]["n_pairs"] >= 1 and "candidates_split" not in out
+    # その月の合計の並び: T の月に 7 は 2 回 7 万ずつ、9 は少額、8 は出さない。先月の量の順 (7 > 8 > 9) は 7 と 9・7 と 8 で当たる
+    assert out["candidates"]["naive_month"]["month_order"] is not None and out["candidates"]["naive_month"]["month_came"] is not None
     d = out["candidates"]["_decisive"]
     # 7 はルーム 1 (1 位、2 位との差 5,000) に毎回 6 万ほど: 決め手。8 はルーム 2 (2 位、3 位との差 75,000) に 5 万: 決め手でない
     assert d["people"] >= 2 and d["past_rounds"] >= 10 and d["past_block"] == 0

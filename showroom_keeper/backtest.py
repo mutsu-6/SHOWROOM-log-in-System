@@ -280,7 +280,10 @@ class Cands:
     """候補ごとの採点 (時点をまたいで足す)。"""
 
     def __init__(self) -> None:
-        self.c = {k: {"order": [0, 0], "came_order": [0, 0], "appear": [0.0, 0], "top": [0, 0], "top_once": [0, 0]} for k in CANDIDATES}
+        # month_order・month_came: 次の 1 か月 (T の月) の合計で並べた時の当たり (2026-11-13 に M さんが「その月なら」と聞いた。
+        # 1 回の最大より合計の方がならされる。出さなかった人は 0、month_came は出した人どうし)
+        self.c = {k: {"order": [0, 0], "came_order": [0, 0], "appear": [0.0, 0], "top": [0, 0], "top_once": [0, 0],
+                      "month_order": [0, 0], "month_came": [0, 0]} for k in CANDIDATES}
         # 次の 30 日の勝負の回で決め手になるか (AUC)。候補のほかに、過去の決定力も並べる
         self.d = {k: [0.0, 0] for k in (*CANDIDATES, "decisive_past")}
         self.d_count = {"people": 0, "came": 0, "past_rounds": 0, "past_block": 0}
@@ -297,16 +300,18 @@ class Cands:
         self.d_count["past_rounds"] += past_rounds
         self.d_count["past_block"] += past_block
 
-    def add(self, rows: list[tuple[int, dict[str, float], float, int | None]], seed: int) -> None:
-        """rows: (人, 候補の値, 次の 30 日の 1 イベント × 1 ルームの最大, 量を見た回の数)。"""
-        actual = {u: a for u, _, a, _ in rows}
-        came = {u: a > 0 for u, _, a, _ in rows}
+    def add(self, rows: list[tuple[Any, ...]], seed: int) -> None:
+        """rows: (人, 候補の値, 次の 30 日の 1 イベント × 1 ルームの最大, 量を見た回の数[, 次の 1 か月の合計])。"""
+        actual = {x[0]: x[2] for x in rows}
+        came = {u: a > 0 for u, a in actual.items()}
         came_actual = {u: a for u, a in actual.items() if a > 0}
-        rounds = {u: r for u, _, _, r in rows}
+        rounds = {x[0]: x[3] for x in rows}
+        month = {x[0]: x[4] for x in rows if len(x) > 4}
+        month_came = {u: a for u, a in month.items() if a > 0}
         k = min(len(rows), max(10, len(rows) // 40))
         for name, sc in self.c.items():
-            pred = {u: v[name] for u, v, _, _ in rows}
-            for key, act in (("order", actual), ("came_order", came_actual)):
+            pred = {x[0]: x[1][name] for x in rows}
+            for key, act in (("order", actual), ("came_order", came_actual), ("month_order", month), ("month_came", month_came)):
                 pp = {u: pred[u] for u in act}
                 agree, total = pairs_agree(pp, act) if len(pp) <= 5000 else _pairs_sampled(pp, act, seed)
                 sc[key][0] += agree
@@ -362,7 +367,7 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
         phase_rows: list[tuple[str, float, float, float]] = []
         edges: dict[int, int] = {}
         cache: dict[Any, Any] = {}
-        cand_rows: list[tuple[int, dict[str, float], float, int | None]] = []
+        cand_rows: list[tuple[Any, ...]] = []
         dec_rows: list[tuple[int, dict[str, float], bool]] = []
         dec_past = [0, 0]
         unk = gifter_status._unknown(past, cache)
@@ -411,7 +416,8 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
                                                          WHERE c.user_id=? AND c.point > 0 AND c.guessed IS NULL AND e.end <= ?
                                                          ORDER BY e.end DESC LIMIT 3""", (uid, at))]
                 vals = candidates(st, months[month], r90, share, days, by_age, median(last3) if last3 else 0.0)
-                cand_rows.append((uid, vals, float(near_max), st.get("max_out_rounds")))
+                month_total = float(sum(r["point"] for r in fut if r["end"] < month_start(_add(cur, 1))))
+                cand_rows.append((uid, vals, float(near_max), st.get("max_out_rounds"), month_total))
                 hit, n_past, n_block = decisive(past, uid, at - 365 * DAY, at)
                 came_dec = decisive(full, uid, at, at + NEAR)[0] > 0
                 dec_rows.append((uid, {**vals, "decisive_past": float(hit)}, came_dec))
@@ -617,11 +623,13 @@ def main(argv: list[str] | None = None) -> int:
     parts = [("全部の月", out["candidates"])] + [(f"{k} ({'・'.join(out['candidates_split'][k + '_months'])})", out["candidates_split"][k])
                                                 for k in ("dev", "check") if out.get("candidates_split")]
     for title, cands in parts:
-        print(f"見込み量の式の候補 [{title}] (並び / 出てきた人どうしの並び / 出てくるか / 上の人の重なり / 上の人のうち 1 回だけの人 / 次の勝負で決め手になるか):")
+        print(f"見込み量の式の候補 [{title}] (並び / 出てきた人どうしの並び / 出てくるか / 上の人の重なり / 上の人のうち 1 回だけの人 / 次の勝負で決め手になるか"
+              " / その月の合計の並び / その月の合計の、出した人どうしの並び):")
         for k, v in cands.items():
             if k.startswith("_"):
                 continue
-            cells = " / ".join("-" if v.get(x) is None else f"{v[x] * 100:.0f}%" for x in ("order", "came_order", "appear", "top", "top_once", "decisive"))
+            cells = " / ".join("-" if v.get(x) is None else f"{v[x] * 100:.0f}%" for x in ("order", "came_order", "appear", "top", "top_once", "decisive",
+                                                                                     "month_order", "month_came"))
             print(f"  {v['label']}: {cells}")
         d = cands["_decisive"]
         print(f"  決め手の数え方: 人 {d['people']} ・ 次の 30 日に決め手になった人 {d['came']} ・ 過去の勝負の回 {d['past_rounds']} (うち block の付いたイベント {d['past_block']})")
