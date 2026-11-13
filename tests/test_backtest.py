@@ -158,3 +158,19 @@ def test_decisive_counts_rounds_where_the_gift_exceeded_the_gap_below(tmp_path):
         assert backtest.decisive(s, 7, 0, NOW) == (10, 10, 0)
         assert backtest.decisive(s, 8, 0, NOW) == (0, 10, 0)
         assert backtest.decisive(s, 9, 0, NOW)[0] == 0  # 少額 (下のルームとの差に届かない)
+
+
+def test_mid_month_uses_what_ended_this_month():
+    st = {"overall": 0, "fire": 0, "hp": 0}
+    a = backtest.candidates(st, 100_000, 0, None, None, {0: 100_000, 1: 100_000}, 0, so_far=60_000, elapsed=0.5)
+    assert a["so_far_extrap"] == 120_000 and a["so_far_month"] == 110_000
+    assert a["so_far_decay"] == 60_000 + 100_000 * 0.5  # 2 か月とも 10 万なので、重み付きの平均も 10 万
+    b = backtest.candidates(st, 100_000, 0, None, None, {0: 100_000}, 0)  # 月の初め: 分かった分は 0
+    assert b["so_far_extrap"] == 0 and b["so_far_month"] == b["naive_month"]
+
+
+def test_run_in_the_middle_of_the_month(tmp_path):
+    with Store(tmp_path) as s:
+        _fill(s)
+    out = backtest.run(tmp_path, MONTHS, day=15)
+    assert out["day"] == 15 and out["candidates"]["so_far_month"]["month_all"] is not None
