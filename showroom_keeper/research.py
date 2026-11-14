@@ -1879,16 +1879,6 @@ DETAIL_ROWS = 300  # 1 人の詳しい表示で返すルーム・イベントの
 GIFTER_MORE_TTL = 1800  # ギフターのページの、あとから読む分析 (関わり方・今の状態・型など) を使い回す時間 (秒)。重く、すぐには変わらない
 
 
-def guessed_sql(a: str = "c") -> str:
-    """contributions の行 a が「名前で推測」した分か (SQL の式)。
-
-    guessed の欄は人で引く索引 (contributions_user_pt) に無いので、c.guessed を読むと、その人の行を全部、大きな表の本体まで
-    探しに行く (貢献ランキングに 5,800 回出た人で 12.5 秒。2026-11-14 にサーバーで測った)。推測した行だけの小さな索引
-    (contributions_guessed。主キーの user_id も入っている) を 1 行ずつ引けば、本体はほとんど読まない。"""
-    return (f"EXISTS (SELECT 1 FROM contributions g INDEXED BY contributions_guessed WHERE g.room_id={a}.room_id "
-            f"AND g.event_id={a}.event_id AND g.user_id={a}.user_id AND g.guessed IS NOT NULL)")
-
-
 def gifter_detail(state_dir: Path, user_id: Any, support: list[str], part: str = "main") -> dict[str, Any]:
     """1 人のギフターの詳しい情報。同じページを同時に開いた時は、1 回だけ数える (once)。
 
@@ -1918,15 +1908,12 @@ def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[st
         rec = _Recorded(state_dir, s, users=[uid], catch_up=False)  # この人の分だけ (ほかの人の分は、あとから読む分析で使う)
         rooms = _Rooms(s, state_dir)
         slots = _slots(s, rooms, rec, [uid]).get(uid, {})
-        # guessed は索引に無いので、並べて 300 件に絞ってから、その分だけ推測の印を見る (guessed_sql)
-        events = [dict(r) for r in s.all(f"""SELECT top.event_id, e.name AS event, top.room_id, top.point, top.rank, e.end,
-                                                    {guessed_sql("top")} AS guessed
-                                             FROM (SELECT c.event_id, c.room_id, c.user_id, c.point, c.rank FROM contributions c
-                                                   LEFT JOIN events e USING(event_id)
-                                                   WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC LIMIT ?) top
-                                             LEFT JOIN events e USING(event_id) ORDER BY COALESCE(e.end, 0) DESC""", (uid, DETAIL_ROWS))]
+        events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end,
+                                                   c.guessed IS NOT NULL AS guessed
+                                            FROM contributions c LEFT JOIN events e USING(event_id)
+                                            WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC LIMIT ?""", (uid, DETAIL_ROWS))]
         event_total = s.scalar("SELECT COUNT(*) FROM contributions WHERE user_id=?", (uid,))
-        g = s.one(f"SELECT COUNT(*) AS n, SUM(c.point) AS points FROM contributions c WHERE c.user_id=? AND {guessed_sql()}", (uid,))
+        g = s.one("SELECT COUNT(*) AS n, SUM(point) AS points FROM contributions WHERE user_id=? AND guessed IS NOT NULL", (uid,))
         guessed = {"events": g["n"], "points": g["points"] or 0}
         gifts = rec.gifts.get(uid, [])
         rec.gifts.close()

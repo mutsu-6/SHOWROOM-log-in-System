@@ -374,9 +374,7 @@ def visibility(s: Store, uid: int, first: str, last: str) -> dict[str, Any]:
     """
     rows = s.all(f"""SELECT c.room_id, c.point, c.rank, re.c_p100 FROM contributions c
                      JOIN room_events re ON re.room_id=c.room_id AND re.event_id=c.event_id JOIN events e ON e.event_id=c.event_id
-                     WHERE c.user_id=? AND e.end IS NOT NULL AND {MONTH_SQL} BETWEEN ? AND ?
-                       AND NOT EXISTS (SELECT 1 FROM contributions g INDEXED BY contributions_guessed WHERE g.room_id=c.room_id
-                                       AND g.event_id=c.event_id AND g.user_id=c.user_id AND g.guessed IS NOT NULL)""",
+                     WHERE c.user_id=? AND c.guessed IS NULL AND e.end IS NOT NULL AND {MONTH_SQL} BETWEEN ? AND ?""",
                  (int(uid), first, last))
     full = [r for r in rows if r["c_p100"]]
     wall = sum(1 for r in full if (r["point"] or 0) <= WALL * r["c_p100"])

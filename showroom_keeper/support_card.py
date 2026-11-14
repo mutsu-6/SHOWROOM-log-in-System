@@ -30,15 +30,11 @@ ROOMS = 8  # 出すルームの数 (365 日に多く送った順)
 NEXT_SCORE = {"period": "2026-07・08", "rooms": 5359, "mae": 346, "naive_mae": 411, "order": 0.785, "naive_order": 0.785,
               "appear_auc": 0.902, "band_inside": 0.758, "newcomers": 0.26}
 
-# この人の、推測でない貢献ランキングの行 (contributions_user_pt の索引で 1 人分を読み、ルームの回は主キーで引く)。
-# 推測の印 (guessed) は索引に無いので、推測した行だけの小さな索引で見る (research.guessed_sql と同じ。c.guessed を読むと、
-# その人の行を全部、大きな表の本体まで探しに行き、貢献ランキングに 5,800 回出た人で 7 秒かかっていた。2026-11-14)
+# この人の、推測でない貢献ランキングの行 (contributions_user_pt の索引で 1 人分を読み、ルームの回は主キーで引く)
 MINE_SQL = """SELECT c.event_id, c.room_id, c.point, e.name, e.end, e.show_ranking, r.ranking_at, r.c_count
               FROM contributions c JOIN events e ON e.event_id = c.event_id
               JOIN room_events r ON r.room_id = c.room_id AND r.event_id = c.event_id
-              WHERE c.user_id=? AND e.end IS NOT NULL AND e.end <= ?
-                AND NOT EXISTS (SELECT 1 FROM contributions g INDEXED BY contributions_guessed WHERE g.room_id=c.room_id
-                                AND g.event_id=c.event_id AND g.user_id=c.user_id AND g.guessed IS NOT NULL)"""
+              WHERE c.user_id=? AND c.guessed IS NULL AND e.end IS NOT NULL AND e.end <= ?"""
 # ルームが出た回 (主キー (room_id, event_id) で 1 ルーム分)
 ROOM_SQL = """SELECT r.event_id, r.point, r.ranking_at, r.c_count, e.end, e.show_ranking
               FROM room_events r JOIN events e ON e.event_id = r.event_id

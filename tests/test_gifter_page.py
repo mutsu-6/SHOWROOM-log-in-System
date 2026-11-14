@@ -23,7 +23,7 @@ def test_main_comes_without_the_heavy_parts_and_more_has_them(tmp_path):
     d = research.gifter_detail(tmp_path, 7, [])
     assert d["found"] and d["more"] and not any(k in d for k in HEAVY)
     assert d["summary"] and d["rooms"] and d["support"] is not None and "timeline" in d and "habits" in d
-    # 推測の印は、推測した行だけの索引で見る (表の本体の guessed と同じ答え)
+    # 名前で推測した印は、前と同じに出る
     assert {e["event_id"]: bool(e["guessed"]) for e in d["events"]} == {1: False, 2: True}
     assert d["guessed"] == {"events": 1, "points": 300}
     m = research.gifter_detail(tmp_path, 7, [], "more")
