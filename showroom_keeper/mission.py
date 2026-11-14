@@ -8,7 +8,9 @@
   (current_user の is_targeted_discovery_live)。新人の配信は new_days_count_label (New1day〜New30day) が付いている
 - 同じ配信は 1 回しか数えないので、見た配信 (live_id) を覚えておく
 - 新人のルームの中に出る毎日のコメント (「新人ライバーの配信を視聴して3ルームでコメントしよう」) は、そのルームで読む。
-  通算 (10・20・40 ルーム) は、この 1 回の回数にしない。2026-11-02 にログイン中の一覧で確認した
+  2026-11-02 にログイン中の一覧で確認した
+- 期間限定の企画の視聴・コメント (通算 30 回視聴・通算 40 ルームでコメントなど) は、1 回に LIMITED_MAX ルームまで先に済ませる
+  (2026-11-13 利用者の決定「期間限定の企画が出たときは、上限を上げて先に済ませる」)
 - ギフト (文字ギフト「はじめまして」「初見です」、通算 15・30・50 回) とフォロー (10 ルーム) はしない。報酬の受取は、そのルームの中で読む
 """
 
@@ -37,6 +39,7 @@ RECEIVE_GAP = 1.0  # 受取と受取の間 (秒)
 RETRY_AFTER = 1800.0  # ルームが足りない・ログインしていない時に、同じ区切りの中で試し直すまで (秒)
 KIKKAKE_MAX = 3  # 1 回に先に見るきっかけ配信の上限 (毎日の 10 ルームコメントは、ハロウィン2026 で終わった)
 NEW_MAX = 3  # 1 回に先に見る新人の配信の上限 (毎日の視聴は 3 ルーム、毎日のコメントも 3 ルーム)
+LIMITED_MAX = 10  # 期間限定の視聴・コメントが残っている時、1 回に先に見る (コメントする) その種類のルームの上限
 EXTRA_ROOMS = 5  # 「配信を視聴しよう (n/20)」が進まない時に、mission_rooms より多く試す数
 LIVE_NORMAL, LIVE_KIKKAKE = 0, 4
 NEW_GENRES = {762, 763, 764}  # New1day / New7day / New30day
@@ -135,30 +138,48 @@ def _is_daily_mission(m: dict[str, Any]) -> bool:
 def comments_left(missions: list[dict[str, Any]], kind: str) -> int:
     """その種類のルームで、この 1 回にコメントする残りのルーム数。
 
-    毎日の分 (「新人ライバーの配信を視聴して3ルームでコメントしよう」) の残り。
-    通算 (10・20・40 ルーム) は、毎日の分が 1 つでもある時は数に入れない。
-    毎日の分が無い時だけ、通算の残りをこの 1 回の上限 (新人は NEW_MAX、きっかけ配信は KIKKAKE_MAX) まで。
+    毎日の分 (「新人ライバーの配信を視聴して3ルームでコメントしよう」) の残りと、
+    通算 (10・20・40 ルーム) の残りを LIMITED_MAX までにしたものの、多いほう。
     """
     word = ROOM_WORDS.get(kind)
-    cap = {"new": NEW_MAX, "kikkake": KIKKAKE_MAX}.get(kind, 0)
     daily = cumulative = 0
-    saw_daily = False
     for m in missions:
         title = str(m.get("title"))
-        if not (word and word in title and "コメント" in title and m.get("is_active", 1)):
+        if not (word and word in title and "コメント" in title and m.get("is_active", 1)) or _is_gift_or_follow(title):
             continue
         left = max(0, int(m.get("target_value") or 1) - int(m.get("current_value") or 0))
         if _is_daily_mission(m):
-            saw_daily = True
             daily = max(daily, left)
         else:
             cumulative = max(cumulative, left)
-    return daily if saw_daily else min(cumulative, cap)
+    return max(daily, min(cumulative, LIMITED_MAX))
+
+
+def _is_gift_or_follow(title: str) -> bool:
+    return "ギフト" in title or "フォロー" in title or "贈" in title
+
+
+def limited_views_left(missions: list[dict[str, Any]], kind: str) -> int:
+    """その種類のルームの視聴ミッション (「きっかけ配信を通算30回視聴しよう」など) の残りを、この 1 回の上限 LIMITED_MAX まで。"""
+    word = ROOM_WORDS.get(kind)
+    left = 0
+    for m in missions:
+        title = str(m.get("title"))
+        if not (word and word in title and "視聴" in title and m.get("is_active", 1)):
+            continue
+        if "コメント" in title or _is_gift_or_follow(title):
+            continue
+        left = max(left, int(m.get("target_value") or 1) - int(m.get("current_value") or 0))
+    return min(left, LIMITED_MAX)
 
 
 def candidates(onlives: dict[str, Any], skip_keys: set[str], seen_lives: set[int],
-               rng: random.Random | None = None) -> list[dict[str, Any]]:
-    """見るルームの順 (きっかけ配信 → 新人 → ほか)。有料の配信・見続けているルーム・もう見た配信は外す。"""
+               rng: random.Random | None = None, first: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    """見るルームの順 (きっかけ配信 → 新人 → ほか)。有料の配信・見続けているルーム・もう見た配信は外す。
+
+    first は種類ごとに先に見る数 (既定は きっかけ配信 KIKKAKE_MAX・新人 NEW_MAX)。
+    """
+    first = {"kikkake": KIKKAKE_MAX, "new": NEW_MAX, **(first or {})}
     rng = rng or random.Random()
     rooms: dict[int, dict[str, Any]] = {}
     for g in onlives.get("onlives") or []:
@@ -177,10 +198,10 @@ def candidates(onlives: dict[str, Any], skip_keys: set[str], seen_lives: set[int
     groups = {k: [r for r in rooms.values() if r["kind"] == k] for k in ("kikkake", "new", "normal")}
     for rs in groups.values():
         rng.shuffle(rs)
-    first = groups["kikkake"][:KIKKAKE_MAX] + groups["new"][:NEW_MAX]
-    rest = groups["kikkake"][KIKKAKE_MAX:] + groups["new"][NEW_MAX:] + groups["normal"]
+    head = groups["kikkake"][:first["kikkake"]] + groups["new"][:first["new"]]
+    rest = groups["kikkake"][first["kikkake"]:] + groups["new"][first["new"]:] + groups["normal"]
     rng.shuffle(rest)
-    return first + [r for r in rest if r["kind"] != "kikkake"] + [r for r in rest if r["kind"] == "kikkake"]
+    return head + [r for r in rest if r["kind"] != "kikkake"] + [r for r in rest if r["kind"] == "kikkake"]
 
 
 class MissionRunner:
@@ -253,7 +274,8 @@ class MissionRunner:
         st = self.state
         s = self._session(await self._cookies())
         lives = await self._fetch_onlives()
-        cands = candidates(lives, set(self.cfg.rooms) | set(self.cfg.no_visit_rooms), set(st["live_ids"]), self._rng)
+        skip = set(self.cfg.rooms) | set(self.cfg.no_visit_rooms)
+        cands = candidates(lives, skip, set(st["live_ids"]), self._rng)
         if not cands:
             st["retry_at"] = self._clock() + RETRY_AFTER
             self._save()
@@ -263,24 +285,42 @@ class MissionRunner:
         left = views_left(missions)
         text = (self.cfg.mission_comment or "").strip()
         say = text.lower() not in COMMENT_OFF
-        # 新人・きっかけ配信のルームの中にだけ出るミッション (毎日のコメントなど) は、そのルームで読む
-        need: dict[str, int] = {}
+        # 新人・きっかけ配信のルームの中にだけ出るミッション (毎日のコメント・期間限定の視聴など) は、そのルームで読む
+        need: dict[str, int] = {}  # その種類のルームでコメントする残り
+        more: dict[str, int] = {}  # その種類のルームを見る残り (期間限定の視聴)
         for k in ROOM_WORDS:
             room = next((r for r in cands if r["kind"] == k), None)
-            if room is not None and say:
-                need[k] = comments_left(flatten(await self._get_json(s, f"/api/mission?room_id={room['room_id']}")), k)
+            if room is None:
+                continue
+            room_missions = flatten(await self._get_json(s, f"/api/mission?room_id={room['room_id']}"))
+            more[k] = limited_views_left(room_missions, k)
+            if say:
+                need[k] = comments_left(room_missions, k)
+        quota = {k: max(more.get(k, 0), need.get(k, 0)) for k in ROOM_WORDS}
+        if any(quota.values()):
+            cands = candidates(lives, skip, set(st["live_ids"]), self._rng, first=quota)
         budget = self.cfg.mission_rooms + 2 * EXTRA_ROOMS - st["views"]  # 数えられない時に、試し直しで見続けないように
         want = self.cfg.mission_rooms - st["views"] if left is None else left
         want = max(0, min(want, self.cfg.mission_rooms, budget))
-        tries = want + EXTRA_ROOMS
+
+        def kind_left(kind: str) -> int:
+            return max(more.get(kind, 0), need.get(kind, 0))
+
+        tries = max(want, sum(map(kind_left, ROOM_WORDS))) + EXTRA_ROOMS
         last_room = cands[0]
         viewed: dict[str, dict[str, Any]] = {}  # ルームの種類ごとに、見た最後のルーム (報酬はその中で受け取る)
         for room in cands:
-            if want <= 0 or tries <= 0 or datetime.fromtimestamp(self._clock(), JST) >= end - timedelta(minutes=2):
+            if want <= 0 and not any(map(kind_left, ROOM_WORDS)):
                 break
+            if tries <= 0 or datetime.fromtimestamp(self._clock(), JST) >= end - timedelta(minutes=2):
+                break
+            if want <= 0 and kind_left(room["kind"]) <= 0:
+                continue  # 毎日の視聴は済んだ。期間限定の残りがある種類のルームだけ見る
             tries -= 1
             if not await self.view(s, room):
                 continue
+            if more.get(room["kind"], 0) > 0:
+                more[room["kind"]] -= 1
             last_room = viewed[room["kind"]] = room
             st["live_ids"].append(room["live_id"])
             st["views"] += 1

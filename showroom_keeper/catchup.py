@@ -63,6 +63,7 @@ def _run(state_dir: Path, mark: bool = True) -> None:
             try:
                 explore.update_all_live_visits(state_dir, s)
                 search_index.refresh(s)
+                explore.fill_search_cache(s)
             except Exception as e:  # noqa: BLE001 - 足せなくても、次に頼まれた時にまた足す
                 log.debug("来場・検索の索引を足せませんでした: %s", e)
             try:

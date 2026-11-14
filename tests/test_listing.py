@@ -408,7 +408,7 @@ def test_gifter_page_reads_gifts_from_the_table_not_the_files(tmp_path, monkeypa
     """ギフターのページは、ギフト 1 件ずつを表 (gift_events) から引き、記録のファイルを読み直さない (新しい分だけ足す)。"""
     from pathlib import Path
 
-    from showroom_keeper import research
+    from showroom_keeper import once, research
     from showroom_keeper.research_store import Store
 
     now = _setup(tmp_path, monkeypatch)
@@ -418,12 +418,14 @@ def test_gifter_page_reads_gifts_from_the_table_not_the_files(tmp_path, monkeypa
     opened = []
     real = Path.open
     monkeypatch.setattr(Path, "open", lambda self, *a, **k: opened.append(self.name) or real(self, *a, **k))
-    d = research.gifter_detail(tmp_path, 7, [])
+    d = research.gifter_detail(tmp_path, 7, [], "more")  # 記録したギフトの型は、あとから読む分析
     assert not [n for n in opened if n.endswith(".jsonl") and n.startswith("room_")]
     assert d["habits"] and sum(r["points"] for r in d["recorded_types"]["stars"]) == 205
-    # 新しく増えた分は、その分だけ足して出る
+    # 新しく増えた分は、その分だけ足して出る (あとから読む分析は GIFTER_MORE_TTL 秒使い回すので、使い回しを忘れてから見る)
     record_gift(tmp_path, "room_a", 1, {"t": 2, "u": 7, "ac": "たろう", "g": 100, "n": 1, "created_at": now})
-    d = research.gifter_detail(tmp_path, 7, [])
+    assert sum(r["points"] for r in research.gifter_detail(tmp_path, 7, [], "more")["recorded_types"]["stars"]) == 205
+    once.forget(lambda k: k[0] == "gifter-more")
+    d = research.gifter_detail(tmp_path, 7, [], "more")
     assert sum(r["points"] for r in d["recorded_types"]["stars"]) == 305
 
 

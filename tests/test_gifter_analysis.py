@@ -241,7 +241,7 @@ def test_gifter_page_names_rooms_first_seen_late(tmp_path):
         _event(s, 1, "2026-09", {10: {1: 500}})
         for ym in ("202608", "202609"):
             s.conn.execute("INSERT INTO active_fans(room_id, ym, user_id, level) VALUES (99, ?, 1, 15)", (ym,))
-    d = research.gifter_detail(tmp_path, 1, [])
+    d = research.gifter_detail(tmp_path, 1, [], "more")  # 今の状態は、あとから読む分析
     assert d["found"] and any(r["name"] == "ルーム99" for r in d["states"]["engage"]["rooms"])
 
 

@@ -148,6 +148,43 @@ def test_search_finds_former_names_recorded_gifters_and_known_rooms(db, search_m
     assert ev[0]["event_id"] == 77 and ev[0]["named"] is False and ev[0]["name"] == "イベント 77"
 
 
+def test_search_reads_stored_points_and_sender_index(tmp_path, monkeypatch):
+    """検索の要求では user_room を足さず、3文字以上の送り主は索引だけを見る。"""
+    monkeypatch.setattr("showroom_keeper.catchup.soon", lambda *_a, **_k: False)
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "aaa", "name": "ルームA"}], "live", NOW)
+        s.set_cumulative(1, [{"user_id": 7, "name": "わたり", "point": 90000, "visits": 1, "rank": 1}], NOW)
+        assert s.one("SELECT shown_points FROM users WHERE user_id=7")["shown_points"] == 90000
+        s.conn.execute("UPDATE users SET shown_points=NULL WHERE user_id=7")
+        s.conn.execute("DELETE FROM meta WHERE k='shown_points_done'")
+        s.conn.execute("INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (80, 'watari', 'watari', ?)", (NOW,))
+        s.conn.execute("INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (81, 'あお', 'あお', ?)", (NOW,))
+        s.conn.execute("DELETE FROM meta WHERE k='search_senders_done'")
+    seen: list[str] = []
+    real = Store.all
+
+    def spy(self, sql, args=()):
+        seen.append(sql)
+        return real(self, sql, args)
+
+    monkeypatch.setattr(Store, "all", spy)
+    hit = explore.search(tmp_path, "わたり")["gifters"]
+    assert hit and hit[0]["user_id"] == 7 and not hit[0]["points"]
+    assert not any("user_room" in sql for sql in seen)
+    assert not any("instr(folded" in sql for sql in seen)
+    with Store(tmp_path) as s:
+        assert s.fill_shown_points() >= 1
+    assert explore.search(tmp_path, "わたり")["gifters"][0]["points"] == 90000
+    # 索引に入る前の 3 文字以上の送り主は、名前の表を全部くらべて出さない
+    assert all(g["user_id"] != 80 for g in explore.search(tmp_path, "wata")["gifters"])
+    with Store(tmp_path) as s:
+        assert s.fill_search_senders() >= 1
+    found = explore.search(tmp_path, "wata")["gifters"]
+    assert found and found[0]["user_id"] == 80 and found[0]["match"]["kind"] == "recorded"
+    # 2 文字は索引では引けないので、今まで通り名前の表から出る
+    assert explore.search(tmp_path, "あお")["gifters"][0]["user_id"] == 81
+
+
 def test_search_ignores_spaces_width_and_kana(tmp_path, monkeypatch, search_mode):
     from showroom_keeper import listing
 

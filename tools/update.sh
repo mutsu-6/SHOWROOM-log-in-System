@@ -50,7 +50,8 @@ for _ in $(seq 1 30); do
     # 更新のたびに作り直しの途中のファイルと古いイメージがたまり、ディスク (29GB) を食うので片付ける
     # (3GB までは残す。ブラウザを入れる段の分 (使うブラウザだけにして 2.2GB ほど) まで消すと、次の更新でブラウザを
     # 入れ直して 20 分ほど CPU とディスクが重くなる。古いものから消すので、前のイメージの段から消える。4 日で 5.9GB たまっていた)
-    sudo docker builder prune -f --max-used-space 3GB >/dev/null 2>&1 || true
+    # -a が無いと、どこからも指されていない切れ端しか消さず、3GB を超えてたまる (2026-11-13 に 4.7GB、空き 3.5GB まで減った)
+    sudo docker builder prune -a -f --max-used-space 3GB >/dev/null 2>&1 || true
     sudo docker image prune -f >/dev/null 2>&1 || true
     echo "== 終わりました ($after)"
     exit 0

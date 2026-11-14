@@ -130,9 +130,16 @@ def update_gift_senders(state_dir: Path, s: Store, room_key: str, files: dict[st
                                free_points=free_points+excluded.free_points, first_at=MIN(COALESCE(first_at, excluded.first_at), excluded.first_at),
                                unknown=COALESCE(unknown, 0)+excluded.unknown""",
                           [(room_key, uid, *x) for uid, x in senders.items()])
+            packed = [(uid, name, _fold(name), at) for (uid, name), at in names.items()]
+            fresh = [(folded, uid, name) for uid, name, folded, at in packed
+                     if len(folded) >= 3 and not c.execute(
+                         "SELECT 1 FROM gift_sender_names WHERE user_id=? AND name=?", (uid, name)).fetchone()]
             c.executemany("""INSERT INTO gift_sender_names(user_id, name, folded, at) VALUES (?, ?, ?, ?)
-                             ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""",
-                          [(uid, name, _fold(name), at) for (uid, name), at in names.items()])
+                             ON CONFLICT(user_id, name) DO UPDATE SET at=MAX(at, excluded.at)""", packed)
+            try:
+                c.executemany("INSERT INTO search_senders(folded, user_id, name) VALUES (?, ?, ?)", fresh)
+            except sqlite3.OperationalError:
+                pass
             c.executemany("""INSERT INTO user_looks(user_id, avatar_id, class_level, at) VALUES (?, ?, ?, ?)
                              ON CONFLICT(user_id) DO UPDATE SET avatar_id=COALESCE(excluded.avatar_id, avatar_id),
                                class_level=COALESCE(excluded.class_level, class_level), at=excluded.at
@@ -296,14 +303,27 @@ def update_all_gift_senders(state_dir: Path, s: Store) -> None:
 
 
 def _recorded_senders(s: Store, folded: str, num: int | None, skip: set[int], limit: int) -> list[dict[str, Any]]:
-    """記録したギフトにしか出ていない人を、送り主の表から探す (名前のそろえた形に folded を含む人と、ユーザー ID が num の人)。"""
+    """記録したギフトにしか出ていない人を、送り主の表から探す (名前のそろえた形に folded を含む人と、ユーザー ID が num の人)。
+
+    3文字以上は search_senders の索引だけを見る。2文字以下は trigram で引けないので、名前の表をくらべる。
+    """
     ids: dict[int, str] = {}
     if num is not None:
         for r in s.all("SELECT name FROM gift_sender_names WHERE user_id=? ORDER BY at DESC LIMIT 1", (num,)):
             ids[num] = r["name"]
         if num not in ids and s.one("SELECT 1 FROM gift_senders WHERE user_id=? LIMIT 1", (num,)):
             ids[num] = ""
-    if folded:
+    if folded and len(folded) >= 3:
+        phrase = '"' + folded.replace('"', '""') + '"'
+        try:
+            rows = s.all("SELECT user_id, name FROM search_senders WHERE search_senders MATCH ? LIMIT ?",
+                         (phrase, limit * 10))
+        except sqlite3.OperationalError:
+            rows = s.all("SELECT user_id, name FROM gift_sender_names WHERE instr(folded, ?) > 0 ORDER BY at DESC LIMIT ?",
+                         (folded, limit * 10))
+        for r in rows:
+            ids.setdefault(int(r["user_id"]), r["name"])
+    elif folded:
         for r in s.all("SELECT user_id, name FROM gift_sender_names WHERE instr(folded, ?) > 0 ORDER BY at DESC LIMIT ?",
                        (folded, limit * 10)):
             ids.setdefault(r["user_id"], r["name"])
@@ -317,6 +337,17 @@ def _recorded_senders(s: Store, folded: str, num: int | None, skip: set[int], li
                     "times": (row["times"] if row else 0) or 0})
     out.sort(key=lambda x: (x["user_id"] != num, -x["times"]))
     return out[:limit]
+
+
+def fill_search_cache(s: Store, budget: float = 0.4) -> None:
+    """検索欄が読むポイントと、3文字以上の送り主の索引を、少しずつ埋める。検索の要求では呼ばない。"""
+    end = time.monotonic() + budget
+    while time.monotonic() < end:
+        if s.fill_shown_points(80):
+            continue
+        if s.fill_search_senders(400):
+            continue
+        return
 
 
 def _fold(text: Any) -> str:
@@ -397,7 +428,7 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
             src, cond, args = search_index.where(table, cols, folded, two)
             return f"SELECT rowid FROM {src} WHERE {cond}", args
 
-        points = "(SELECT SUM(MAX(ur.cumulative, ur.events)) FROM user_room ur WHERE ur.user_id=u.user_id)"
+        points = "u.shown_points"  # 保存してある数字。検索のたびに user_room を足さない
         if indexed:
             sub, args = ids("search_users", ("folded",))
             users_sql, users_args = f"u.user_id IN ({sub} LIMIT {SEARCH_CANDIDATES})", args
@@ -410,12 +441,13 @@ def search(state_dir: Path, q: str, showroom: bool = False) -> dict[str, Any]:
             former_sql, former_args = f"user_names n WHERE {name_match('n.name')}", likes
         gifters = [{**dict(r), "match": None} for r in s.all(
             f"""SELECT u.user_id, u.name, {points} AS points FROM users u WHERE u.user_id = ? OR {users_sql}
-                ORDER BY u.user_id = ? DESC, points DESC LIMIT ?""", (num, *users_args, num, SEARCH_LIMIT))]
+                ORDER BY u.user_id = ? DESC, COALESCE({points}, 0) DESC LIMIT ?""", (num, *users_args, num, SEARCH_LIMIT))]
         seen = {g["user_id"] for g in gifters}
         # 前の名前で見つかった人 (今の名前と、どの名前で見つかったかを出す)
         former_from, _, former_where = former_sql.partition(" WHERE ") if not indexed else (former_sql, "", "")
         for r in s.all(f"""SELECT n.user_id, n.name AS old, u.name, {points} AS points FROM {former_from}
-                           LEFT JOIN users u USING(user_id) {"WHERE " + former_where if former_where else ""} ORDER BY points DESC LIMIT ?""",
+                           LEFT JOIN users u USING(user_id) {"WHERE " + former_where if former_where else ""}
+                           ORDER BY COALESCE({points}, 0) DESC LIMIT ?""",
                        (*former_args, SEARCH_LIMIT)):
             if r["user_id"] not in seen:
                 seen.add(r["user_id"])

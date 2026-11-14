@@ -373,7 +373,8 @@ class Store:
                                    ("gift_senders", "points INTEGER DEFAULT 0"), ("gift_senders", "free_points INTEGER DEFAULT 0"),
                                    ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0"),
                                    ("room_events", "try_at REAL"), ("room_events", "try_status TEXT"),
-                                   ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL")):
+                                   ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL"),
+                                   ("users", "shown_points INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -427,6 +428,19 @@ class Store:
                         self.conn.execute(f"CREATE INDEX IF NOT EXISTS {old} ON gift_events({old_cols})")
                 _import_json(self)
                 _mark_guessed(self)
+                # 3文字以上の送り主の名前を、検索のたびに表を全部くらべずに引く (VERSION の索引とは別。作り直さない)
+                try:
+                    self.conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS search_senders USING fts5(
+                                         folded, user_id UNINDEXED, name UNINDEXED, tokenize='trigram')""")
+                except sqlite3.OperationalError:
+                    pass
+                # 空の表は埋め終わったことにする (収集の試しが、何もしない仕事で回数をずらさないため)
+                if not self.meta("shown_points_done") and self.conn.execute(
+                        "SELECT 1 FROM users WHERE shown_points IS NULL LIMIT 1").fetchone() is None:
+                    self.set_meta("shown_points_done", True)
+                if not self.meta("search_senders_done") and self.conn.execute(
+                        "SELECT 1 FROM gift_sender_names LIMIT 1").fetchone() is None:
+                    self.set_meta("search_senders_done", True)
                 _ready.add(str(path))
 
     def close(self) -> None:
@@ -472,6 +486,49 @@ class Store:
     def set_meta(self, k: str, v: Any) -> None:
         self.conn.execute("INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                           (k, json.dumps(v)))
+
+    def refresh_shown_points(self, c: sqlite3.Connection, user_ids: Iterable[Any]) -> None:
+        """検索欄に出すポイントを、その人の user_room から作り直す (検索の要求では足さない)。"""
+        ids = sorted({int(u) for u in user_ids if u is not None})
+        c.executemany("""UPDATE users SET shown_points=COALESCE(
+                           (SELECT SUM(MAX(cumulative, events)) FROM user_room WHERE user_id=?), 0)
+                         WHERE user_id=?""", [(u, u) for u in ids])
+
+    def fill_shown_points(self, limit: int = 40) -> int:
+        """まだ数字の無い人を limit 人だけ埋める。残っていなければ 0 (検索の要求では呼ばない)。"""
+        if self.meta("shown_points_done"):
+            return 0
+        ids = [r[0] for r in self.all("SELECT user_id FROM users WHERE shown_points IS NULL LIMIT ?", (limit,))]
+        if not ids:
+            self.set_meta("shown_points_done", True)
+            return 0
+        with self.tx() as c:
+            self.refresh_shown_points(c, ids)
+        return len(ids)
+
+    def fill_search_senders(self, limit: int = 400) -> int:
+        """送り主の名前を、3文字以上だけ検索の索引に少しずつ入れる。入れ終えていれば 0。"""
+        if self.meta("search_senders_done"):
+            return 0
+        try:
+            self.conn.execute("SELECT 1 FROM search_senders LIMIT 0")
+        except sqlite3.OperationalError:
+            return 0
+        cur = self.meta("search_senders_at") or [0, ""]
+        rows = self.all("""SELECT user_id, name, folded FROM gift_sender_names
+                           WHERE (user_id, name) > (?, ?) ORDER BY user_id, name LIMIT ?""",
+                        (cur[0], cur[1], limit))
+        if not rows:
+            self.set_meta("search_senders_done", True)
+            return 0
+        with self.tx() as c:
+            c.executemany("INSERT INTO search_senders(folded, user_id, name) VALUES (?, ?, ?)",
+                          [(folded, uid, name) for uid, name, folded in rows if folded and len(folded) >= 3])
+        last = rows[-1]
+        self.set_meta("search_senders_at", [last["user_id"], last["name"]])
+        if len(rows) < limit:
+            self.set_meta("search_senders_done", True)
+        return len(rows)
 
     # ---------------------------------------------------------------- ルーム・イベント
     def upsert_rooms(self, rooms: Iterable[dict[str, Any]], via: str, now: float) -> int:
@@ -613,6 +670,7 @@ class Store:
                      cumulative_rank=excluded.cumulative_rank, visits=MAX(visits, excluded.visits)""",
                 [(r["user_id"], room_id, r["point"], r.get("rank"), r["visits"]) for r in rows])
             self._names(c, rows, now)
+            self.refresh_shown_points(c, [r["user_id"] for r in rows])
 
     def set_contributions(self, event_id: int, room_id: int, rows: list[dict[str, Any]], now: float, final: bool) -> None:
         """イベントの貢献ランキングを置き換える (取り直したときは前の分を user_room から引いてから足す)。"""
@@ -644,6 +702,7 @@ class Store:
 
     def _set_contributions(self, c: sqlite3.Connection, event_id: int, room_id: int, rows: list[dict[str, Any]],
                            now: float, final: bool) -> None:
+        old_ids = [r[0] for r in c.execute("SELECT user_id FROM contributions WHERE event_id=? AND room_id=?", (event_id, room_id))]
         c.execute("""UPDATE user_room SET events = events - (SELECT point FROM contributions o
                        WHERE o.event_id=? AND o.room_id=? AND o.user_id=user_room.user_id)
                      WHERE room_id=? AND user_id IN (SELECT user_id FROM contributions WHERE event_id=? AND room_id=?)""",
@@ -674,6 +733,7 @@ class Store:
                        failures=0, c_count=excluded.c_count, c_sum=excluded.c_sum, c_top1=excluded.c_top1,
                        c_top3=excluded.c_top3, c_top10=excluded.c_top10, c_p100=excluded.c_p100""", (room_id, event_id, now, int(final), *stats))
         self._names(c, rows, now)
+        self.refresh_shown_points(c, [*old_ids, *(r["user_id"] for r in rows)])
         if rows and not any(r.get("guessed") for r in rows):
             # Internet Archive のページがあれば、SHOWROOM の分で突き合わせ直す印 (主キーの頭で 1 回引くだけ)
             c.execute("""INSERT OR IGNORE INTO archive_todo(event_id, room_id)

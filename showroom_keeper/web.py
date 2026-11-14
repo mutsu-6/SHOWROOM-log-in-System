@@ -469,7 +469,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif url.path == "/api/research/gifter":
                 from . import research
 
-                self._json(research.gifter_detail(self._state_dir(), q.get("user"), self._support(q)))
+                self._json(research.gifter_detail(self._state_dir(), q.get("user"), self._support(q),
+                                                  "more" if q.get("part") == "more" else "main"))
             elif url.path in ("/api/search", "/api/room", "/api/events", "/api/event", "/api/room_profiles", "/api/room_metrics",
                               "/api/series"):
                 from . import explore

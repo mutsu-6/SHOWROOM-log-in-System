@@ -10,7 +10,9 @@ sqlite3.Connection.backup は、写している途中にほかの接続が書き
 
 写しは gzip で縮めて (research-YYYYMMDD-HHMM.db.gz、半分ほどになる) 1 つだけ残す。古い日に戻す時は、
 Google Cloud が毎日作るディスクの写し (14 日分) を使う。新しい写しができてから前の写しを消す。
-空きが足りない日は前の写しを残し、作れなかったことを管理画面に出す。
+前の写しを残したままでは空きが足りず、前の写しを消せば足りる日は、前の写しを先に消してから作る
+(前の写しが場所を取って、11/2 から 4 日続けて作れなかった。古い日はディスクの写しで戻せる。2026-11-06)。
+それでも足りない日は作らず、作れなかったことを管理画面に出す。
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ log = logging.getLogger("backup")
 
 BACKUP_DIR = "backup"
 KEEP = 1  # 残す写しの数 (古いものから消す。古い日は Google Cloud のディスクの写しで戻す)
-MIN_FREE = 1 << 30  # 写しを作ったあとにも残しておくディスクの空き (1GB)
+MIN_FREE = 2 << 30  # 写しを作っている間も残しておくディスクの空き (全ルームの収集が止まる空き sweep.DISK_MIN と同じ 2GB)
 COMPRESS_LEVEL = 1  # gzip の強さ。サーバーで 300MB が 55 秒で 146MB。6 にしても 133MB で、時間は 2 倍以上
 COMPRESS_RATIO = 0.6  # 縮めた写しの大きさの見込み (元の何倍か。空きを確かめる時に、少し多めに見る)
 COMPRESS_CHUNK = 16 << 20  # 縮める時に 1 回に読む大きさ (メモリ 2GB でも小さく)
@@ -115,9 +117,10 @@ def _compress(src: Path, dest: Path) -> None:
 
 
 def _need(size: int) -> float:
-    """写しを作るのに要る空きの見込み (縮める前の一時の写し + 縮めた写し + 残しておく空き)。"""
+    """写しを作るのに要る空きの見込み (縮める前の一時の写し + 縮めた写し + 残しておく空き)。
+    VACUUM INTO の写しは、すき間を詰めるので元より小さい (2026-11-02 の写しは 5.65GB → 5.0GB)。"""
     packed = 0.0 if sys.platform.startswith("linux") else COMPRESS_RATIO  # 返していける所では、縮めた写しは返した所に入る
-    return size * (1.2 + packed) + MIN_FREE
+    return size * (1.0 + packed) + MIN_FREE
 
 
 def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = None) -> dict[str, Any] | None:
@@ -131,16 +134,24 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
     folder.mkdir(parents=True, exist_ok=True)
     size = _db_size(src)
     need = _need(size)
-    # 前の写しは、新しい写しができてから消す。作る前に消すと、作れなかった日に写しが 0 になる。
+    # 前の写しは、ふだんは新しい写しができてから消す (作る前に消すと、作れなかった日に写しが 0 になる)。
+    # 空きが足りず、前の写しを消せば足りる時だけ、先に消す (古い日は Google Cloud のディスクの写しで戻せる)。
     free = shutil.disk_usage(folder).free
+    dropped = []
     if free < need:
         kept = copies(state_dir)
-        note = "前の写しは残しています" if kept else "前の写しはありません"
-        result = {"ok": False, "at": now, "kept": len(kept),
-                  "reason": f"作れなかった。ディスクの空きが足りません (空き {free / 1e9:.1f}GB、写しに約 {need / 1e9:.1f}GB 要る)。{note}"}
-        log.warning("research.db のバックアップをやめました: %s", result["reason"])
-        _save_last(state_dir, result)
-        return result
+        held = sum(p.stat().st_size for p in kept)
+        if not kept or free + held < need:
+            note = "前の写しは残しています" if kept else "前の写しはありません"
+            result = {"ok": False, "at": now, "kept": len(kept),
+                      "reason": f"作れなかった。ディスクの空きが足りません (空き {free / 1e9:.1f}GB、写しに約 {need / 1e9:.1f}GB 要る)。{note}"}
+            log.warning("research.db のバックアップをやめました: %s", result["reason"])
+            _save_last(state_dir, result)
+            return result
+        for old in kept:
+            old.unlink(missing_ok=True)
+            dropped.append(old.name)
+        log.warning("空きが足りないので、前の写し (%s、%.1fGB) を先に消してから作ります", ", ".join(dropped), held / 1e9)
 
     name = datetime.fromtimestamp(now, JST).strftime("research-%Y%m%d-%H%M.db.gz")  # 日本時間
     tmp = folder / f"{name[:-3]}.tmp"
@@ -170,6 +181,8 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
         kept = copies(state_dir)
         if kept:
             reason = f"{reason}。前の写しは残しています"
+        elif dropped:
+            reason = f"{reason}。空きが足りず前の写しを先に消したので、写しはありません (Google Cloud のディスクの写しで戻せます)"
         result = {"ok": False, "at": now, "kept": len(kept), "reason": reason}
         log.warning("research.db のバックアップに失敗しました: %s", result["reason"])
         _save_last(state_dir, result)
@@ -184,6 +197,8 @@ def backup_research_db(state_dir: Path, keep: int = KEEP, now: float | None = No
     mb = round((folder / name).stat().st_size / 1e6, 1)
     result = {"ok": True, "at": now, "file": name, "mb": mb, "raw_mb": round(raw / 1e6, 1), "seconds": round(time.time() - started, 1),
               "copies": min(len(left), max(keep, 1)), "tables": tables}
+    if dropped:
+        result["dropped_first"] = dropped
     log.info("research.db のバックアップを作りました: %s (%.1f MB、縮める前 %.1f MB、%.0f 秒)", name, mb, result["raw_mb"], result["seconds"])
     _save_last(state_dir, result)
     return result
@@ -263,7 +278,7 @@ DISK_FILE = "disk_history.json"  # ディスクの空きを 1 日 1 回残した
 
 
 # 大きさを見張る記録 (state_dir の中)。増え方の大きいものを、ディスクの知らせに出す
-WATCHED = ("research.db", "gifts", "live_events", "comment_counts", "backup")
+WATCHED = ("research.db", "gifts", "live_events", "live_ranks", "comment_counts", "backup")
 
 
 def _size(path: Path) -> int:
@@ -379,9 +394,12 @@ def backlog(state_dir: Path, now: float | None = None) -> dict[str, Any] | None:
     return out
 
 
+GROWTH_DAYS = 7  # 増え方を見る日数 (30 日で見ると、取り始めの急な増え方がまざって、今の増え方の 2 倍に見えていた。2026-11-06)
+
+
 def growth(state_dir: Path, now: float) -> list[tuple[str, float]]:
-    """見張る記録の、最近 30 日の 1 日あたりの増え方 (バイト)。多い順。1 日分たまるまでは空。"""
-    hist = [h for h in _disk_history(Path(state_dir) / DISK_FILE) if len(h) > 2 and now - h[0] <= 31 * 86400]
+    """見張る記録の、最近 GROWTH_DAYS 日の 1 日あたりの増え方 (バイト)。多い順。1 日分たまるまでは空。"""
+    hist = [h for h in _disk_history(Path(state_dir) / DISK_FILE) if len(h) > 2 and now - h[0] <= (GROWTH_DAYS + 1) * 86400]
     if len(hist) < 2 or hist[-1][0] - hist[0][0] < 86400:
         return []
     days = (hist[-1][0] - hist[0][0]) / 86400
