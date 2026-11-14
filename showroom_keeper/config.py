@@ -91,8 +91,10 @@ class Config:
     gift_send: bool = False
     gift_free_path: str = "/api/live/gifting_free"  # 無料ギフト (星・種) の送り先 (推定)
     gift_paid_path: str = "/api/live/gifting_point_use"  # 有料ギフト (SG) の送り先 (推定)
-    gift_paid_max: int = 0  # 1 回の予約の有料の上限 (SG)。0 なら有料は予約できない
-    gift_paid_daily_max: int = 0  # 1 日 (日本時間) の有料の上限 (SG)。予約した分と送った分の合計
+    # 有料の上限は、利用者の「上限 300万」(2026-11-15) から。SG か、イベントのポイント (大きな有料ギフトは 1 SG = 3 pt) かを確かめるまで、
+    # 少ない方の読み (イベントのポイント 300万 = 100万 SG) にしておく。300万 SG なら .env で 3000000 にする
+    gift_paid_max: int = 1_000_000  # 1 回の予約の有料の上限 (SG)。0 なら有料は予約できない
+    gift_paid_daily_max: int = 1_000_000  # 1 日 (日本時間) の有料の上限 (SG)。予約した分と送った分と「不明」の分の合計
     gift_late_limit: float = 2.0  # 予定の時刻からこの秒数より遅れたら送らない
     # ログインした状態で訪問しないルーム (入室しない・ギフトの記録やログイン確認にもログインを使わない)。
     # 視聴するルーム (rooms) にも入れた時は、視聴を優先する
