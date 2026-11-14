@@ -2131,7 +2131,7 @@ function wordsSection() {
       { label: "何を数えたか", sort: false, value: (r) => r.note, html: (r) => `<span class="uid">${esc(r.note)}</span>` },
     ], rows, { sort: null, limit: 100, phone: [0, 2, 3], csvName: "言葉" });
 }
-const power = { grade: "all", data: null, byGrade: {}, steady: false };  // steady: 回数の少ない人 (信頼度が「参考」) を除く  // byGrade: ランクで絞った分 (サーバーがランクの境目で絞って返す)
+const power = { grade: "all", data: null, byGrade: {}, steady: true };  // steady: 回数の少ない人 (信頼度が「参考」) を除く。初めは除く (2026-11-13、1 回だけの爆投げが上に来るため。押すと出す)  // byGrade: ランクで絞った分 (サーバーがランクの境目で絞って返す)
 async function showPowerRanking(box) {
   if (!power.data) box.innerHTML = loadingHtml("出てきた時の量の順位を読み込んでいます…");
   try { power.data = await api("/api/research/power?limit=500"); power.byGrade = {}; } catch (e) { box.innerHTML = errorHtml(e); return; }
@@ -2150,7 +2150,7 @@ function drawPowerRanking(box) {
   box.innerHTML = `<div class="summary">${stat(num(d.people || d.rows.length), "上位 10% の人 (人)")}${["S", "A", "B"].map((g) => stat(num(d.rows.filter((r) => r.grade === g).length), `上位 ${num(d.rows.length)} 人のうち ${g}`)).join("")}</div>
     <div class="hint">SHOWROOM 全体で、次の勝負に出てきたら 1 人で動かせる量 (出てきた時の量) の多い順。上位 10% の人 = 直近 12 か月のどこかの月で、その月に貢献ランキングに出た人の上から 10% に入った人。S〜D は出てきた時の量の段階。前の名前: 見込み量の順位・戦力ランキング・総合力・パワーギフター・ランク。${d.at ? `${tm(d.at, true)} に作り終えた分` : ""}。どの線も仮の値です</div>
     <div class="row" style="margin:8px 0"><div class="filters grow">${[["all", "すべて"], ["S", "S"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"]].map(([g, l]) => `<button type="button" class="fchip ${power.grade === g ? "active" : ""}" data-pg="${g}">${l}</button>`).join("")}
-      <button type="button" class="fchip ${power.steady ? "active" : ""}" data-psteady="1" title="くらべた回が 1 回・送った月が 1 か月だけの人は、その 1 回がそのまま出てきた時の量になるので除く">1 回だけの人を除く</button></div></div>
+      <button type="button" class="fchip ${power.steady ? "active" : ""}" data-psteady="1" title="くらべた回が 1 回・送った月が 1 か月だけの人は、その 1 回がそのまま出てきた時の量になるので、初めは除いています。押すと出します (消してはいません)">1 回だけの人を除く${power.steady ? ` (${num(all.length - rows.length)} 人)` : ""}</button></div></div>
     <div class="hint">出てきた時の量は「次に出てきて、全力を出したら」の量です。出てくるかどうかは入っていないので、次に来る量の予測ではありません (採点では、先月の量の順の方が当たっています)。くらべた回が少ない人ほど当てになりません (信頼度: 参考 = 1 回か 1 か月だけ・低 = 3 回以下か 2 か月以下・中 = 9 回以下・高 = 10 回以上)</div>`
     + dataTable("power-rank", [
       { label: "順位", num: true, value: (r) => r.rank, html: (r) => `<b>${num(r.rank)}</b>` },

@@ -560,3 +560,17 @@ def test_archive_match_and_recheck_read_by_key(traced, monkeypatch):
 
     check(traced, run)
     c.close()
+
+
+def test_backtest_decisive_reads_one_person_and_rounds_by_key(traced):
+    from showroom_keeper import backtest, gifter_status
+
+    state_dir, seen = traced
+    with Store(state_dir) as s:
+        while gifter_status.build_rounds(s, NOW + 3 * DAY, limit=1000):
+            pass
+        users = [r["user_id"] for r in s.all("SELECT user_id FROM contributions WHERE event_id=1 LIMIT 3")]
+        seen.clear()
+        for u in users:
+            backtest.decisive(s, u, 0, NOW + 3 * DAY)
+    assert any("event_rounds b" in q for q, _ in seen) and full_scans(state_dir, seen) == []

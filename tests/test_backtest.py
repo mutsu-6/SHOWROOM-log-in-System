@@ -117,12 +117,60 @@ def test_candidate_scores():
     c.add([(1, {k: 3.0 for k in backtest.CANDIDATES}, 30.0, 5), (2, {k: 1.0 for k in backtest.CANDIDATES}, 0.0, 1),
            (3, {k: 2.0 for k in backtest.CANDIDATES}, 10.0, 1)], seed=1)
     r = c.result()["current"]
-    assert r["order"] == 1.0 and r["appear"] == 1.0 and r["came_order"] == 1.0
+    assert r["order"] == 1.0 and r["appear"] == 1.0 and r["came_order"] == 1.0 and r["month_order"] is None  # 月の合計を渡していない
+    c.add([(1, {k: 3.0 for k in backtest.CANDIDATES}, 30.0, 5, 50.0), (2, {k: 1.0 for k in backtest.CANDIDATES}, 0.0, 1, 0.0),
+           (3, {k: 2.0 for k in backtest.CANDIDATES}, 10.0, 1, 60.0)], seed=1)
+    r = c.result()["current"]
+    assert r["month_order"] == 0.667 and r["month_came"] == 0.0  # 3 の方が 1 より月の合計は多い
 
 
 def test_run_reports_candidates(tmp_path):
     with Store(tmp_path) as s:
         _fill(s)
     out = backtest.run(tmp_path, MONTHS)
-    assert set(out["candidates"]) == set(backtest.CANDIDATES)
-    assert out["candidates"]["freq"]["n_pairs"] >= 1
+    assert set(out["candidates"]) == set(backtest.CANDIDATES) | {"decisive_past", "_decisive"}
+    assert out["candidates"]["freq"]["n_pairs"] >= 1 and "candidates_split" not in out
+    # その月の合計の並び: T の月に 7 は 2 回 7 万ずつ、9 は少額、8 は出さない。先月の量の順 (7 > 8 > 9) は 7 と 9・7 と 8 で当たる
+    assert out["candidates"]["naive_month"]["month_order"] is not None and out["candidates"]["naive_month"]["month_came"] is not None
+    d = out["candidates"]["_decisive"]
+    # 7 はルーム 1 (1 位、2 位との差 5,000) に毎回 6 万ほど: 決め手。8 はルーム 2 (2 位、3 位との差 75,000) に 5 万: 決め手でない
+    assert d["people"] >= 2 and d["past_rounds"] >= 10 and d["past_block"] == 0
+    split = backtest.run(tmp_path, MONTHS, dev=MONTHS)["candidates_split"]
+    assert split["dev_months"] == MONTHS and split["check_months"] == [] and split["dev"]["decay_h2"]["n_pairs"] >= 1
+
+
+def test_decay_puts_recent_months_first_and_skips_unknown_months():
+    assert backtest.decay_sum({0: 100, 2: 100}, 2) == 150  # 2 か月前は重み半分
+    assert backtest.decay_sum({0: 0, 12: 1000}, 1) == 0  # 12 か月より前は入れない
+    once = {"overall": 1_000_000, "fire": 1_000_000, "hp": 1_000_000}
+    steady = {"overall": 200_000, "fire": 200_000, "hp": 300_000}
+    a = backtest.candidates(once, 0, 0, 1 / 6, 150, {5: 1_000_000}, 1_000_000)  # 5 か月前に 1 回だけ 100 万
+    b = backtest.candidates(steady, 250_000, 600_000, 1.0, 5, {k: 250_000 for k in range(12)}, 60_000)
+    assert a["decay_h1"] < b["decay_h1"] and a["decay_h2"] < b["decay_h2"]
+    assert a["appear_med3"] > b["appear_med3"]  # 出てくる割合 × 直近 3 回は、1 回の大きさにまだ引っぱられる (採点で見る)
+
+
+def test_decisive_counts_rounds_where_the_gift_exceeded_the_gap_below(tmp_path):
+    with Store(tmp_path) as s:
+        _fill(s, after=False)
+        while gs.build_rounds(s, NOW, limit=1000):
+            pass
+        assert backtest.decisive(s, 7, 0, NOW) == (10, 10, 0)
+        assert backtest.decisive(s, 8, 0, NOW) == (0, 10, 0)
+        assert backtest.decisive(s, 9, 0, NOW)[0] == 0  # 少額 (下のルームとの差に届かない)
+
+
+def test_mid_month_uses_what_ended_this_month():
+    st = {"overall": 0, "fire": 0, "hp": 0}
+    a = backtest.candidates(st, 100_000, 0, None, None, {0: 100_000, 1: 100_000}, 0, so_far=60_000, elapsed=0.5)
+    assert a["so_far_extrap"] == 120_000 and a["so_far_month"] == 110_000
+    assert a["so_far_decay"] == 60_000 + 100_000 * 0.5  # 2 か月とも 10 万なので、重み付きの平均も 10 万
+    b = backtest.candidates(st, 100_000, 0, None, None, {0: 100_000}, 0)  # 月の初め: 分かった分は 0
+    assert b["so_far_extrap"] == 0 and b["so_far_month"] == b["naive_month"]
+
+
+def test_run_in_the_middle_of_the_month(tmp_path):
+    with Store(tmp_path) as s:
+        _fill(s)
+    out = backtest.run(tmp_path, MONTHS, day=15)
+    assert out["day"] == 15 and out["candidates"]["so_far_month"]["month_all"] is not None
