@@ -1876,30 +1876,60 @@ def _room_pairs(s: Store, rooms: _Rooms, scan: "_PairScan") -> list[dict[str, An
 DETAIL_ROWS = 300  # 1 人の詳しい表示で返すルーム・イベントの数 (数万ルームに出てくる人もいる)
 
 
-def gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
-    """1 人のギフターの詳しい情報 (ルームごとの内訳・イベントの実績・行動のくせ)。同じページを同時に開いた時は、1 回だけ数える (once)。"""
+GIFTER_MORE_TTL = 1800  # ギフターのページの、あとから読む分析 (関わり方・今の状態・型など) を使い回す時間 (秒)。重く、すぐには変わらない
+
+
+def guessed_sql(a: str = "c") -> str:
+    """contributions の行 a が「名前で推測」した分か (SQL の式)。
+
+    guessed の欄は人で引く索引 (contributions_user_pt) に無いので、c.guessed を読むと、その人の行を全部、大きな表の本体まで
+    探しに行く (貢献ランキングに 5,800 回出た人で 12.5 秒。2026-11-14 にサーバーで測った)。推測した行だけの小さな索引
+    (contributions_guessed。主キーの user_id も入っている) を 1 行ずつ引けば、本体はほとんど読まない。"""
+    return (f"EXISTS (SELECT 1 FROM contributions g INDEXED BY contributions_guessed WHERE g.room_id={a}.room_id "
+            f"AND g.event_id={a}.event_id AND g.user_id={a}.user_id AND g.guessed IS NOT NULL)")
+
+
+def gifter_detail(state_dir: Path, user_id: Any, support: list[str], part: str = "main") -> dict[str, Any]:
+    """1 人のギフターの詳しい情報。同じページを同時に開いた時は、1 回だけ数える (once)。
+
+    part="main" はすぐ出せる分 (まとめ・ルーム別・イベントの実績・次のイベントの見込み・数字のまとめ)。
+    part="more" は重い分析 (今の状態・記録したギフトの型・関わり方・来場・時間帯の重なり)。画面は main を出してから more を読む
+    (前は全部を数え終えるまで何も出ず、記録の多い人で 1 人 30〜66 秒、サーバーが混んでいると 2〜4 分かかっていた。2026-11-14)。
+    more は GIFTER_MORE_TTL 秒使い回す。
+    """
     from . import once
 
+    if part == "more":
+        return once.shared(("gifter-more", str(state_dir), str(user_id), tuple(support)),
+                           lambda: _gifter_more(state_dir, user_id, support), ttl=GIFTER_MORE_TTL)
     return once.shared(("gifter", str(state_dir), str(user_id), tuple(support)), lambda: _gifter_detail(state_dir, user_id, support))
 
 
-def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
+def _uid(user_id: Any) -> int:
     try:
-        uid = int(str(user_id).strip())
+        return int(str(user_id).strip())
     except (TypeError, ValueError):
         raise ValueError("ユーザー ID は数字で指定してください") from None
+
+
+def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
+    uid = _uid(user_id)
     with Store(state_dir) as s:
-        rec = _Recorded(state_dir, s, user=uid, catch_up=False)  # この人と、この人が送ったルームの人の分だけ
+        rec = _Recorded(state_dir, s, users=[uid], catch_up=False)  # この人の分だけ (ほかの人の分は、あとから読む分析で使う)
         rooms = _Rooms(s, state_dir)
         slots = _slots(s, rooms, rec, [uid]).get(uid, {})
-        events = [dict(r) for r in s.all("""SELECT c.event_id, e.name AS event, c.room_id, c.point, c.rank, e.end,
-                                                   c.guessed IS NOT NULL AS guessed
-                                            FROM contributions c LEFT JOIN events e USING(event_id)
-                                            WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC LIMIT ?""", (uid, DETAIL_ROWS))]
+        # guessed は索引に無いので、並べて 300 件に絞ってから、その分だけ推測の印を見る (guessed_sql)
+        events = [dict(r) for r in s.all(f"""SELECT top.event_id, e.name AS event, top.room_id, top.point, top.rank, e.end,
+                                                    {guessed_sql("top")} AS guessed
+                                             FROM (SELECT c.event_id, c.room_id, c.user_id, c.point, c.rank FROM contributions c
+                                                   LEFT JOIN events e USING(event_id)
+                                                   WHERE c.user_id=? ORDER BY COALESCE(e.end, 0) DESC LIMIT ?) top
+                                             LEFT JOIN events e USING(event_id) ORDER BY COALESCE(e.end, 0) DESC""", (uid, DETAIL_ROWS))]
         event_total = s.scalar("SELECT COUNT(*) FROM contributions WHERE user_id=?", (uid,))
-        g = s.one("SELECT COUNT(*) AS n, SUM(point) AS points FROM contributions WHERE user_id=? AND guessed IS NOT NULL", (uid,))
+        g = s.one(f"SELECT COUNT(*) AS n, SUM(c.point) AS points FROM contributions c WHERE c.user_id=? AND {guessed_sql()}", (uid,))
         guessed = {"events": g["n"], "points": g["points"] or 0}
         gifts = rec.gifts.get(uid, [])
+        rec.gifts.close()
         if not slots and not events and not gifts:
             return {"user_id": uid, "found": False}
         sup = {rooms.id(k) for k in support}
@@ -1910,16 +1940,12 @@ def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[st
         room_list = sorted(({"key": rooms.label(rid)[0], "name": rooms.label(rid)[1], "support": rid in sup,
                              "points": room_score(v), **v} for rid, v in slots.items()), key=lambda r: -r["points"])
         w = s.one("SELECT memo, added_at FROM watch WHERE user_id=?", (uid,))
-        visits = _visit_habits(state_dir, rooms, uid)
-        overlap = _time_overlap(s, rooms, habits(gifts) or visits, [r["key"] for r in room_list[:OVERLAP_ROOMS]], support)
-        recorded = _recorded_types(s, rooms, rec, uid, gifts)
-        involve = _involvement(state_dir, s, rooms, rec, uid)
     cov = coverage(state_dir)
     from . import gifter_status, support_card
 
     with Store(state_dir) as s:
         rooms.store = s  # 最初の接続は閉じたので、名前を引く接続を替える (多くのルームに出た人で、閉じた接続を使って止まっていた)
-        return {"user_id": uid, "found": True,
+        return {"user_id": uid, "found": True, "more": True,  # 重い分析は part=more で、あとから読む
                 "coverage": {k: cov[k] for k in ("complete_from", "last_full", "cumulative_from")}, "room_total": len(room_list), "event_total": event_total,
                 "guessed": guessed,
                 "watch": {"memo": w["memo"] or "", "added_at": w["added_at"]} if w else None,
@@ -1927,10 +1953,28 @@ def _gifter_detail(state_dir: Path, user_id: Any, support: list[str]) -> dict[st
                                                           ORDER BY at DESC LIMIT 20""", (uid,))],
                 "summary": _summary(uid, name, slots, _event_stats(s, [uid]).get(uid), gifts, rooms, sup,
                                     _signup(s, rec).guess(uid)),
-                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "recorded_types": recorded, "involvement": involve, "timeline": _timeline(s, rooms, gifts, uid),
-                "visits": visits, "overlap": overlap,
-                "states": _states(s, rooms, uid), "status": gifter_status.read(s, uid),
+                "rooms": room_list[:DETAIL_ROWS], "events": events, "habits": habits(gifts), "timeline": _timeline(s, rooms, gifts, uid),
+                "status": gifter_status.read(s, uid),
                 "support": support_card.by_room(s, uid, time.time(), rooms.label)}
+
+
+def _gifter_more(state_dir: Path, user_id: Any, support: list[str]) -> dict[str, Any]:
+    """ギフターのページの重い分析 (part=more)。この人が送ったルームの、ほかの人の記録も読む。"""
+    uid = _uid(user_id)
+    with Store(state_dir) as s:
+        rec = _Recorded(state_dir, s, user=uid, catch_up=False)  # この人と、この人が送ったルームの人の分だけ
+        rooms = _Rooms(s, state_dir)
+        slots = _slots(s, rooms, rec, [uid]).get(uid, {})
+        gifts = rec.gifts.get(uid, [])
+        top = sorted(slots, key=lambda rid: -room_score(slots[rid]))[:OVERLAP_ROOMS]
+        visits = _visit_habits(state_dir, rooms, uid)
+        overlap = _time_overlap(s, rooms, habits(gifts) or visits, [rooms.label(rid)[0] for rid in top], support)
+        recorded = _recorded_types(s, rooms, rec, uid, gifts)
+        involve = _involvement(state_dir, s, rooms, rec, uid)
+        states = _states(s, rooms, uid)
+    rec.gifts.close()
+    return {"user_id": uid, "found": True, "habits": habits(gifts), "recorded_types": recorded, "involvement": involve,
+            "visits": visits, "overlap": overlap, "states": states}
 
 
 def _visits_of(state_dir: Path, s: Store, uid: int) -> list[tuple[int, str, int]]:
