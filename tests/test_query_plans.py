@@ -202,6 +202,7 @@ def test_falling_check_does_not_read_whole_tables(traced):
 
 def test_gifter_page_does_not_read_whole_tables(traced):
     check(traced, lambda d: research.gifter_detail(d, 101, []))
+    check(traced, lambda d: research.gifter_detail(d, 101, [], "more"))  # あとから読む重い分析
 
 
 def test_series_does_not_read_whole_tables(traced):

@@ -2,7 +2,9 @@ name: test
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest が 26.04 になり、Python 3.9 が入れられなくなった (2026-11-14。テストが動く前に失敗し、
+    # 自動の更新も止まる)。3.9 で確かめ続けるため、版を決めておく
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.9", "3.13"]

@@ -2808,6 +2808,46 @@ function nextScoreNote(x) {
     + `ただし、ルームの中でだれが上かの並びは何も考えない予測と同じ (${x.order} と ${x.naive_order})。出た時の幅には、実際の ${Math.round(x.band_inside * 100)}% が入った。`
     + `載った人の ${Math.round(x.newcomers * 100)}% は、そのルームに前からいない人で、ここには出ません`;
 }
+// ギフターのページの重い分析 (part=more)。ページの残りを出してから読む (前は全部を数え終えるまで何も出なかった。2026-11-14)
+function gifterMore(d, uid) {
+  let html = "";
+  if (d.states) html += gifterStates(d.states);
+  if (d.recorded_types) html += recordedTypes(d.recorded_types);
+  if (d.involvement && d.involvement.length) html += involvementTable(d.involvement);
+  if (d.visits) {
+    const v = d.visits, mx = Math.max(1, ...v.hour);
+    html += `<h3>来場の時間帯 <small class="muted">記録しているルームの「○○さんが N 度目の訪問」の知らせから</small></h3><div class="tiles">
+      ${tile("来場", `${num(v.times)} <small>回</small>`, `${num(v.rooms.length)} ルーム・最後 ${ago(v.last)}`)}
+      ${tile("よく来る時間帯", v.top_hours.length ? v.top_hours.map((h) => `${h}時`).join("・") : "—", `よく来る曜日 ${"月火水木金土日"[v.weekday.indexOf(Math.max(...v.weekday))]}曜`)}
+      ${tile("よく来るルーム", v.rooms[0] ? esc(v.rooms[0].name) : "—", v.rooms[0] ? `${num(v.rooms[0].times)} 回・いちばん多くて ${num(v.rooms[0].max_n)} 回目の訪問` : "")}
+    </div><div style="overflow-x:auto"><table class="heat" style="border-collapse:separate;border-spacing:2px;font-size:10px">
+      <tr>${v.hour.map((n, h) => `<td title="${h}時台 ${n} 回" style="vertical-align:bottom;height:44px;width:16px"><div style="height:${Math.round(40 * n / mx)}px;background:rgba(229,72,77,.8);border-radius:2px"></div></td>`).join("")}</tr>
+      <tr>${v.hour.map((n, h) => `<td style="text-align:center;color:var(--muted);width:16px">${h % 3 === 0 ? h : ""}</td>`).join("")}</tr></table></div>`
+      + dataTable("gp-visits", [
+        { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
+        { label: "来場", num: true, value: (r) => r.times, html: (r) => `${num(r.times)} 回` },
+        { label: "いちばん多い訪問の回数", num: true, value: (r) => r.max_n, html: (r) => r.max_n ? `${num(r.max_n)} 回目` : "-" },
+        { label: "最後", num: true, value: (r) => r.last, html: (r) => tm(r.last, true) },
+      ], v.rooms, { sort: 1, limit: 10, csvName: `ギフター_${uid}_来場`, note: "記録しているルーム (グリッターを取ったルーム・視聴しているルームなど) だけ。SHOWROOM が知らせを出した来場だけが分かります" });
+  }
+  if (d.overlap && d.overlap.length) {
+    html += `<h3>時間帯の重なり <small class="muted">${d.habits ? "よく送る時間帯 (記録したギフト)" : "よく来る時間帯 (来場の知らせ)"} と、ルームが配信している時間帯 (直近 30 日) の重なり</small></h3>` + dataTable("gp-overlap", [
+      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ?  ' <span class="tag live">見るルーム</span>' : ""}`, cls: "name" },
+      { label: "重なり", num: true, value: (r) => r.overlap, html: (r) => `<b>${pctText(r.overlap)}</b>` },
+      { label: "ルームのよく始める時間帯", value: (r) => r.slot.from, html: (r) => `${r.slot.from}時〜${r.slot.to}時` },
+      { label: "配信の回数", num: true, value: (r) => r.per_week, html: (r) => `${r.per_week.toFixed(1)} <small>回/週</small>` },
+    ], d.overlap, { sort: 1, limit: 10, csvName: `ギフター_${uid}_時間帯の重なり`, note: "重なりは 0〜100%。100% に近いほど、この人がよく送る時間帯に、そのルームが配信している" });
+  }
+  return html || `<div class="empty">くわしい分析に出せるものはまだありません</div>`;
+}
+async function loadGifterMore(uid, sup) {
+  let m;
+  try { m = await api(`/api/research/gifter?user=${encodeURIComponent(uid)}&support=${encodeURIComponent(sup)}&part=more`); }
+  catch (e) { m = { error: e.message }; }
+  const box = $("#gp-more");
+  if (page.name !== "gifter" || page.arg !== uid || !box) return;
+  box.innerHTML = m.error ? errorHtml(m.error) : gifterMore(m, uid);
+}
 async function showGifter(uid) {
   const box = $("#gp");
   research.selected = uid;
@@ -2851,33 +2891,7 @@ async function showGifter(uid) {
   if (d.found && d.status) html += gifterStatus(d.status, uid) + (d.status.found ? gifterPsyche(d.status, uid) : "");
   else if (rec) html += `<div class="note-box">この人は、集めたランキング (累計は上位 30 人・イベントは上位 100 人) には出ていません。記録したギフトだけで分かっています。</div>`;
   html += `<div id="r-timeline"></div>`;
-  if (d.found && d.states) html += gifterStates(d.states);
-  if (d.found && d.recorded_types) html += recordedTypes(d.recorded_types);
-  if (d.found && d.involvement && d.involvement.length) html += involvementTable(d.involvement);
-  if (d.found && d.visits) {
-    const v = d.visits, mx = Math.max(1, ...v.hour);
-    html += `<h3>来場の時間帯 <small class="muted">記録しているルームの「○○さんが N 度目の訪問」の知らせから</small></h3><div class="tiles">
-      ${tile("来場", `${num(v.times)} <small>回</small>`, `${num(v.rooms.length)} ルーム・最後 ${ago(v.last)}`)}
-      ${tile("よく来る時間帯", v.top_hours.length ? v.top_hours.map((h) => `${h}時`).join("・") : "—", `よく来る曜日 ${"月火水木金土日"[v.weekday.indexOf(Math.max(...v.weekday))]}曜`)}
-      ${tile("よく来るルーム", v.rooms[0] ? esc(v.rooms[0].name) : "—", v.rooms[0] ? `${num(v.rooms[0].times)} 回・いちばん多くて ${num(v.rooms[0].max_n)} 回目の訪問` : "")}
-    </div><div style="overflow-x:auto"><table class="heat" style="border-collapse:separate;border-spacing:2px;font-size:10px">
-      <tr>${v.hour.map((n, h) => `<td title="${h}時台 ${n} 回" style="vertical-align:bottom;height:44px;width:16px"><div style="height:${Math.round(40 * n / mx)}px;background:rgba(229,72,77,.8);border-radius:2px"></div></td>`).join("")}</tr>
-      <tr>${v.hour.map((n, h) => `<td style="text-align:center;color:var(--muted);width:16px">${h % 3 === 0 ? h : ""}</td>`).join("")}</tr></table></div>`
-      + dataTable("gp-visits", [
-        { label: "ルーム", value: (r) => r.name, html: (r) => roomLink(r.key, r.name), cls: "name" },
-        { label: "来場", num: true, value: (r) => r.times, html: (r) => `${num(r.times)} 回` },
-        { label: "いちばん多い訪問の回数", num: true, value: (r) => r.max_n, html: (r) => r.max_n ? `${num(r.max_n)} 回目` : "-" },
-        { label: "最後", num: true, value: (r) => r.last, html: (r) => tm(r.last, true) },
-      ], v.rooms, { sort: 1, limit: 10, csvName: `ギフター_${uid}_来場`, note: "記録しているルーム (グリッターを取ったルーム・視聴しているルームなど) だけ。SHOWROOM が知らせを出した来場だけが分かります" });
-  }
-  if (d.found && d.overlap && d.overlap.length) {
-    html += `<h3>時間帯の重なり <small class="muted">${d.habits ? "よく送る時間帯 (記録したギフト)" : "よく来る時間帯 (来場の知らせ)"} と、ルームが配信している時間帯 (直近 30 日) の重なり</small></h3>` + dataTable("gp-overlap", [
-      { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ?  ' <span class="tag live">見るルーム</span>' : ""}`, cls: "name" },
-      { label: "重なり", num: true, value: (r) => r.overlap, html: (r) => `<b>${pctText(r.overlap)}</b>` },
-      { label: "ルームのよく始める時間帯", value: (r) => r.slot.from, html: (r) => `${r.slot.from}時〜${r.slot.to}時` },
-      { label: "配信の回数", num: true, value: (r) => r.per_week, html: (r) => `${r.per_week.toFixed(1)} <small>回/週</small>` },
-    ], d.overlap, { sort: 1, limit: 10, csvName: `ギフター_${uid}_時間帯の重なり`, note: "重なりは 0〜100%。100% に近いほど、この人がよく送る時間帯に、そのルームが配信している" });
-  }
+  if (d.found) html += `<div id="gp-more">${loadingHtml("くわしい分析 (今の状態・記録したギフトの型・関わり方・来場・時間帯の重なり) を読み込んでいます…")}</div>`;
   if (d.found) {
     html += `<h3>ルーム別${d.room_total > d.rooms.length ? ` <small class="muted">(多い順に ${num(d.rooms.length)} / ${num(d.room_total)} ルーム)</small>` : ""}</h3>` + dataTable("gp-rooms", [
       { label: "ルーム", value: (r) => r.name, html: (r) => `${roomLink(r.key, r.name)}${r.support ?  ' <span class="tag live">見るルーム</span>' : ""}`, cls: "name" },
@@ -2911,7 +2925,7 @@ async function showGifter(uid) {
     ], rec.history, { sort: 0, limit: 50, csvName: `ギフター_${uid}_記録したギフト`, maxHeight: 520 });
   }
   box.innerHTML = html;
-  if (d.found) { renderTimeline({ ...d.timeline, coverage: d.coverage }); renderRankingCharts(d, "#r-rank-charts"); }
+  if (d.found) { renderTimeline({ ...d.timeline, coverage: d.coverage }); renderRankingCharts(d, "#r-rank-charts"); loadGifterMore(uid, sup); }
   if (rec) renderListenerCharts(rec, "#r-charts", "記録したギフトすべて");
 }
 $("#gp").addEventListener("click", async (ev) => {

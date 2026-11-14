@@ -1294,7 +1294,7 @@ def test_gifter_visits_and_overlap(tmp_path):
         s.add_room_lives([{"room_id": 1, "started_at": int(at - 600)}], at + 3000)
     for k in range(3):
         live_events.append(tmp_path, "aaa", {"at": int(at + k * 86400 - 3 * 86400), "live_id": k, "user_id": 7, "kind": "visit", "n": 10 + k})
-    d = research.gifter_detail(tmp_path, 7, [])
+    d = research.gifter_detail(tmp_path, 7, [], "more")  # 来場・時間帯の重なりは、あとから読む分析
     v = d["visits"]
     assert v["times"] == 3 and v["top_hours"] == [21] and v["rooms"][0]["key"] == "aaa" and v["rooms"][0]["max_n"] == 12
     assert d["overlap"] and d["overlap"][0]["key"] == "aaa" and d["overlap"][0]["overlap"] > 0.5  # ギフトの記録が無いので来場でくらべる
