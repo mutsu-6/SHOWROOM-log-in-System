@@ -2,10 +2,12 @@
 
 観客席 (ステージ) にアバターが並ぶのは /api/live/current_user を呼んだ時 (ステージの一覧 stage_user_list に入る)。
 配信ページは、ログインしていれば開いてから 10 秒後に /api/room/greeting を呼び、SHOWROOM はこれを受けて
-入室のお知らせ (リアルタイム通信の t=18。「○○さんが初訪問」など) を流すことがある (毎回ではない。配信ページと
-同じ順に呼んで 10 秒待っても、流れないことがある。2026-10-18 に確かめた)。
-greeting には、配信ページを開くと受け取る Cookie (uuid) が要る。uuid を 1 回もらって使い回し、
-入室は current_user と greeting の 2 回で済ませる (待たない)。
+入室のお知らせ (リアルタイム通信の t=18。「○○さんが初訪問」「N 度目の訪問」) を流すことがある
+(毎回ではない。2026-10-18 に確かめた)。
+訪問の回数は、同じ uuid の Cookie の訪問者として数える。uuid を取り直すと、来たことのあるルームでも
+また「初訪問」になる (2026-11-16。d09ba10206822 で、昨日に続き本日も初訪問だった)。
+uuid は一度決めたら残す (ログインの Cookie にあればそれを使う)。配信のたびには、そのルームの
+ページを 1 回開いてから current_user と greeting を、そのページを見ている体 (Referer) で呼ぶ。
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from .api import BASE_URL, RoomStatus
 log = logging.getLogger("entrance")
 
 ENTERED_FILE = "entered.json"
-UUID_EVERY = 6 * 3600.0  # uuid の Cookie を配信ページで取り直す間隔 (秒)。期限の無い Cookie なので念のため
+UUID_FILE = "entrance_uuid.json"  # 訪問者の印 (uuid)。取り直すと SHOWROOM が初訪問から数え直すので残す
 ENTER_GAP = 1.0  # 全ルームの入室で、入室と入室の間を空ける時間 (秒)。起動直後に数百件をまとめて送らないように
 ENTER_TRIES = 3  # 1 つの配信で入室を試す回数 (失敗が続く時に、配信が終わるまで入り直し続けないように)
 REPORT_EVERY = 3600.0  # 全ルームの入室で、入室した件数を記録 (ログ) に出す間隔 (秒)
@@ -58,8 +60,11 @@ class Session:
     def uuid(self) -> str | None:
         return next((c.value for c in self._jar if c.name == "uuid"), None)
 
-    def get(self, path: str) -> str:
-        with self._opener.open(BASE_URL + path, timeout=REQUEST_TIMEOUT) as resp:
+    def get(self, path: str, referer: str | None = None) -> str:
+        req = urllib.request.Request(BASE_URL + path)
+        if referer:
+            req.add_header("Referer", referer)
+        with self._opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
             return resp.read().decode("utf-8", "replace")
 
     def post(self, path: str, form: dict[str, Any]) -> str:
@@ -103,10 +108,9 @@ class RoomEntrance:
         self._sleep = sleep
         self._session = session
         self._clock = clock
-        self._uuid: str | None = None  # 使い回す uuid の Cookie と、受け取った時刻
-        self._uuid_at = 0.0
         # 再起動や設定の反映のあとに同じ配信へ入室し直さないよう、ファイルにも残す
         self._path = Path(state_dir) / ENTERED_FILE if state_dir is not None else None
+        self._uuid: str | None = self._load_uuid()  # 使い回す uuid。取り直さない
         # ルームごとに、入室を済ませた配信の live_id
         self.entered: dict[str, int] = self._load()
         # ルームごとに、入室に失敗した配信の (live_id, 回数)
@@ -114,6 +118,44 @@ class RoomEntrance:
         # 1 件ごとの記録 (ログ) の重さ。全ルームの入室は件数が多いので細かい記録にまわす
         self._info, self._warn = logging.INFO, logging.WARNING
         self.counts = {"entered": 0, "failed": 0}
+
+    def _uuid_path(self) -> Path | None:
+        return self._path.with_name(UUID_FILE) if self._path is not None else None
+
+    def _load_uuid(self) -> str | None:
+        path = self._uuid_path()
+        if path is None:
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        uuid = data.get("uuid") if isinstance(data, dict) else None
+        return uuid if isinstance(uuid, str) and uuid else None
+
+    def _remember_uuid(self, uuid: str) -> None:
+        """同じ訪問者の印を残す。新しく取り直すと、SHOWROOM はまた初訪問と流す。"""
+        self._uuid = uuid
+        path = self._uuid_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"uuid": uuid}), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as e:
+            log.debug("入室の uuid を保存できません: %s", e)
+
+    def _forget_uuid(self) -> None:
+        self._uuid = None
+        path = self._uuid_path()
+        if path is None:
+            return
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
     def _load(self) -> dict[str, int]:
         if self._path is None:
@@ -188,8 +230,8 @@ class RoomEntrance:
         try:
             cookies = await self._cookies()
             answer = await self._greet(cookies, status, renew=False)
-            if not _ok(answer) and self._uuid is not None:  # 使い回した uuid が古くなった時は、取り直して 1 回だけ試し直す
-                self._uuid = None
+            if not _ok(answer) and self._uuid is not None:  # 使い回した uuid を断られた時だけ、取り直して 1 回試す
+                self._forget_uuid()
                 answer = await self._greet(cookies, status, renew=True)
         except asyncio.CancelledError:
             raise
@@ -207,16 +249,23 @@ class RoomEntrance:
         return True
 
     async def _greet(self, cookies: list[dict[str, Any]], status: RoomStatus, renew: bool) -> str:
-        now = self._clock()
-        reuse = None if renew or now - self._uuid_at > UUID_EVERY else self._uuid
-        s = self._session(cookies, reuse)
-        if s.uuid is None:  # ブラウザのログイン状態にも無ければ、配信ページを 1 回開いてもらう
-            await asyncio.to_thread(s.get, f"/r/{status.room_url_key}")
+        """1 つの配信に 1 回。同じ uuid でルームのページを開き、続けて来場の回数を進める。"""
+        page = f"/r/{status.room_url_key}"
+        ident = None if renew else (self._uuid or _cookie_uuid(cookies))
+        s = self._session(cookies, ident)
+        if s.uuid is None:  # ログイン状態にも残した印にも無ければ、ページを開いて 1 つもらう
+            await asyncio.to_thread(s.get, page)
             if s.uuid is not None:
-                self._uuid, self._uuid_at = s.uuid, now
-        # 観客席 (ステージ) にアバターが並ぶのは current_user を呼んだ時。greeting だけではお知らせしか流れない
-        await asyncio.to_thread(s.get, f"/api/live/current_user?room_id={status.room_id}")
-        return await asyncio.to_thread(s.get, f"/api/room/greeting?room_id={status.room_id}")
+                self._remember_uuid(s.uuid)
+        else:
+            if self._uuid != s.uuid:
+                self._remember_uuid(s.uuid)
+            # 配信のたび、そのルームを開く (開かないと、回数は進まず初訪問のままになる)
+            await asyncio.to_thread(s.get, page)
+        referer = BASE_URL + page
+        # 観客席に並ぶのは current_user。お知らせと回数は greeting (ページを見ている体で呼ぶ)
+        await asyncio.to_thread(s.get, f"/api/live/current_user?room_id={status.room_id}", referer)
+        return await asyncio.to_thread(s.get, f"/api/room/greeting?room_id={status.room_id}", referer)
 
 
 class AllRoomsEntrance(RoomEntrance):
@@ -272,6 +321,14 @@ class AllRoomsEntrance(RoomEntrance):
                 continue
             await self._attempt(status)
             await self._sleep(self.gap)
+
+
+def _cookie_uuid(cookies: list[dict[str, Any]]) -> str | None:
+    """ログイン状態に入っている uuid。ブラウザで視聴しているときの訪問者の印。"""
+    for c in cookies:
+        if c.get("name") == "uuid" and "showroom-live.com" in str(c.get("domain") or "") and c.get("value"):
+            return str(c["value"])
+    return None
 
 
 def _ok(answer: str) -> bool:
