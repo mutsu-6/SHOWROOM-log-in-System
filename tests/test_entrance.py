@@ -23,19 +23,23 @@ class FakeShowroom:
     def __call__(self, cookies, uuid=None):
         fake = self
         asked = []
-        self.sessions.append({"cookies": cookies, "uuid": uuid, "asked": asked})
+        referers = []
+        self.sessions.append({"cookies": cookies, "uuid": uuid, "asked": asked, "referers": referers})
 
         class S:
             def __init__(self):
                 self.uuid = uuid
 
-            def get(self, path):
+            def get(self, path, referer=None):
                 asked.append(path)
+                referers.append(referer)
                 if fake.fail:
                     raise OSError("Connection reset")
                 if path.startswith("/r/"):
-                    fake.issued += 1
-                    self.uuid = f"u{fake.issued}"
+                    # 印を既に持っているときは、ページを開いても取り直さない (SHOWROOM も同じ)
+                    if self.uuid is None:
+                        fake.issued += 1
+                        self.uuid = f"u{fake.issued}"
                     return "<html>"
                 if path.startswith("/api/room/greeting"):
                     if not fake.is_login:
@@ -79,16 +83,19 @@ async def test_enters_once_per_live_with_current_user_and_greeting():
     await entrance.step()
     # 配信中の a と c に 1 回ずつ入室する。配信していない b には入室しない
     assert entrance.entered == {"a": 10, "c": 30} and len(showroom.sessions) == 2
-    # 最初の入室で配信ページを 1 回開いて uuid をもらい、あとは使い回す。current_user (ステージにアバターが並ぶ) と
-    # greeting (入室のお知らせ) を待たずに呼ぶ
+    # 配信のたびにそのルームのページを開き、同じ uuid で current_user と greeting を呼ぶ。
+    # 最初の入室で uuid をもらい、次のルームでも取り直さない
     assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
-    assert showroom.sessions[1]["asked"] == ["/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
+    assert showroom.sessions[1]["asked"] == ["/r/c", "/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
     assert showroom.sessions[1]["uuid"] == "u1"
+    assert showroom.sessions[1]["referers"][-1] == "https://www.showroom-live.com/r/c"
     assert waits == [] and showroom.sessions[0]["cookies"] == COOKIES
-    # 次の配信が始まったらもう一度入室する
+    # 次の配信が始まったら、同じ uuid でそのルームのページからもう一度入室する (回数を進める)
     statuses["a"] = live("a", 11, room_id=5)
     await entrance.step()
     assert len(showroom.sessions) == 3 and entrance.entered == {"a": 11, "c": 30}
+    assert showroom.sessions[2]["uuid"] == "u1"
+    assert showroom.sessions[2]["asked"][0] == "/r/a"
 
 
 async def test_stale_uuid_is_renewed_once():
@@ -96,18 +103,25 @@ async def test_stale_uuid_is_renewed_once():
     await entrance.step()
     # 2 件目は使い回した uuid を断られたので、配信ページで取り直して入室する
     assert entrance.entered == {"a": 10, "c": 30}
-    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/api/live/current_user?room_id=1", "/r/c"]
+    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/r/c", "/r/c"]
+    assert showroom.sessions[1]["uuid"] == "u1" and showroom.sessions[2]["uuid"] is None
 
 
-async def test_uuid_is_renewed_after_a_while():
-    entrance, showroom, _ = make({"a": live("a", 10)})
+async def test_uuid_stays_the_same_visitor_across_hours(tmp_path):
+    entrance, showroom, _ = make({"a": live("a", 10)}, state_dir=tmp_path)
     now = [0.0]
     entrance._clock = lambda: now[0]
     await entrance.step()
     now[0] = 7 * 3600
     entrance.entered = {}
     await entrance.step()
-    assert [s["asked"][0] for s in showroom.sessions] == ["/r/a", "/r/a"]
+    # 時間が経っても uuid は取り直さない。取り直すと、次の配信も初訪問になる
+    assert showroom.sessions[1]["uuid"] == "u1"
+    assert json.loads((tmp_path / "entrance_uuid.json").read_text()) == {"uuid": "u1"}
+    # 起動し直しても、同じ訪問者のまま入室する
+    again, showroom2, _ = make({"a": live("a", 12)}, state_dir=tmp_path)
+    await again.step()
+    assert showroom2.sessions[0]["uuid"] == "u1"
 
 
 async def test_not_logged_in_is_not_counted_as_entered():
@@ -153,6 +167,27 @@ async def test_entered_lives_survive_a_restart(tmp_path):
     again, showroom, _ = make({"a": live("a", 10)}, state_dir=tmp_path)
     await again.step()
     assert showroom.sessions == [] and again.entered == {"a": 10}
+
+
+async def test_login_cookie_uuid_is_the_visitor_we_keep():
+    cookies = [*COOKIES, {"name": "uuid", "value": "from-browser", "domain": "www.showroom-live.com", "path": "/"}]
+
+    async def fetch(key):
+        return live(key, 10)
+
+    async def give():
+        return cookies
+
+    async def sleep(_s):
+        return None
+
+    showroom = FakeShowroom()
+    entrance = RoomEntrance(["a"], 60, fetch, give, sleep=sleep, session=showroom)
+    await entrance.step()
+    # ブラウザが持っている uuid を使い、ページを開いても別の印に取り換えない
+    assert showroom.sessions[0]["uuid"] == "from-browser"
+    assert showroom.issued == 0
+    assert showroom.sessions[0]["asked"][0] == "/r/a"
 
 
 def test_session_keeps_only_showroom_cookies_and_the_reused_uuid(monkeypatch):
