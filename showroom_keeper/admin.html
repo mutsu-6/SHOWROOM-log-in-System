@@ -649,7 +649,7 @@ td a.name-link, td a { word-break: break-word; }
       <div class="card">
         <form id="gp-load" class="row">
           <input type="text" id="gp-room" class="grow" autocomplete="off" placeholder="配信中のルームの URL（ルーム番号でもよい）">
-          <button class="btn" type="submit">ギフトを読む</button>
+          <button class="btn" type="submit">ギフトを送る</button>
         </form>
         <div id="gp-form" hidden>
           <div class="row" style="margin-top:10px">
@@ -2698,7 +2698,7 @@ $("#gp-load").addEventListener("submit", async (ev) => {
     $("#gp-confirm").hidden = true;
     fillGiftNums();
     gpSetAhead(2);
-    toast(`${d.room_name} のギフトを読みました`);
+    toast(`${d.room_name} のギフトを出しました`);
   } catch (e) { toast(e.message); }
 });
 function gpPlanGift(p) {
