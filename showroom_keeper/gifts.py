@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import packed
 from .api import BASE_URL
 from .status import JST
 
@@ -38,18 +39,17 @@ def record_gift(state_dir: Path, room_key: str, live_id: int | None, event: dict
     for key, src in (("av", "av"), ("cl", "cl"), ("h", "h")):
         if event.get(src) is not None:
             entry[key] = event.get(src)
-    path = gift_dir(state_dir) / f"{room_key}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    packed.append(gift_dir(state_dir) / f"{room_key}.jsonl", json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def load_recorded(state_dir: Path, room_key: str) -> list[dict[str, Any]]:
     path = gift_dir(state_dir) / f"{room_key}.jsonl"
-    if not path.exists():
+    try:
+        text = packed.read_text(path)  # 終わった月の分 (.gz) も
+    except OSError:
         return []
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         try:
             out.append(json.loads(line))
         except ValueError:

@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import packed
+
 _VISIT = re.compile(r"さんが(?:(初)訪問|(\d+)[回度]目の訪問)")
 _LEVEL = re.compile(r"ファンレベルが(\d+)にあがりました！?(?:[(（](.*?)[)）])?\s*$")
 _STREAK = re.compile(r"(\d+)ヶ月連続(\d+)回目")
@@ -66,17 +68,14 @@ def record(state_dir: Path, room: str, live_id: Any, data: dict[str, Any]) -> bo
 
 
 def append(state_dir: Path, room: str, ev: dict[str, Any]) -> None:
-    path = event_dir(state_dir) / f"{room}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    packed.append(event_dir(state_dir) / f"{room}.jsonl", json.dumps(ev, ensure_ascii=False) + "\n")
 
 
 def load(state_dir: Path, room: str, since: float | None = None) -> list[dict[str, Any]]:
     path = event_dir(state_dir) / f"{room}.jsonl"
     out = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = packed.read_text(path, since).splitlines()  # 終わった月の分 (.gz) も (since より前に終わった月は読まない)
     except OSError:
         return []
     for line in lines:

@@ -383,6 +383,10 @@ class Sweeper:
             log.debug("ギフターの一覧を先に数えられませんでした: %s", err)
         if not research._coverage_cache:
             research.coverage(self.state_dir)  # 集まり具合を先に数えておく (起動し直したあと、最初にページを開いた人を待たせない)
+        from . import gifts, live_events, memory, packed
+
+        # 記録のファイルの終わった月の分を .gz にしまう (裏のスレッドで少しずつ。管理画面を開かなくても進める)
+        packed.soon([gifts.gift_dir(self.state_dir), live_events.event_dir(self.state_dir)], memory.holding)
 
     def _aggregate(self) -> None:
         """前に集めた貢献ランキングを、月ごとの集計 (user_month) に少しずつ入れる。

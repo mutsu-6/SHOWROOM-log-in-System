@@ -34,3 +34,7 @@ def no_gift_updates(monkeypatch):
 
     # ルームのページの部品を保存しない (保存すると、あとから足したデータがページに出なくなる。保存はそれを確かめるテストで)
     monkeypatch.setattr(room_parts, "SAVE", False)
+    from showroom_keeper import packed
+
+    # 記録のファイルの古い月を .gz にしまう裏の仕事を、ほかのテストの途中で動かさない (しまうのは test_packed で確かめる)
+    monkeypatch.setattr(packed, "soon", lambda *a, **k: False)
