@@ -89,6 +89,26 @@ def test_event_detail(db):
     assert explore.event_detail(db, 999) == {"event_id": "999", "found": False}
 
 
+def test_event_page_ranks_each_block(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "aaa", "name": "高"}, {"room_id": 2, "key": "bbb", "name": "低"},
+                        {"room_id": 3, "key": "ccc", "name": "別"}], "event", NOW)
+        s.upsert_events([{"event_id": 5, "name": "分け", "key": "div", "start": NOW - 9 * 86400, "end": NOW - 86400}])
+        s.set_event_rooms(5, [{"room_id": 1, "point": 500, "rank": 2}, {"room_id": 2, "point": 100, "rank": 3},
+                              {"room_id": 3, "point": 900, "rank": 1}], NOW)
+        # 公式のブロック順位はポイントが隠れていた時の順。画面の順位はポイントの多い順
+        s.set_room_blocks(5, [{"block_id": 11, "group_label": "Gold", "label": "1", "pos": 1},
+                              {"block_id": 21, "group_label": "Silver", "label": "2", "pos": 2}],
+                          {1: (11, 2, None), 2: (11, 1, None), 3: (21, 1, None)}, NOW)
+    d = explore.event_detail(tmp_path, 5)
+    by = {r["room_id"]: r for r in d["rooms"]}
+    assert [b["name"] for b in d["blocks"]] == ["Gold 1", "Silver 2"]
+    assert by[1]["block"] == "Gold 1" and by[1]["block_place"] == 1 and by[1]["block_rank"] == 2
+    assert by[2]["block_place"] == 2 and by[3]["block"] == "Silver 2" and by[3]["block_place"] == 1
+    ev = next(e for e in explore.room_detail(tmp_path, "aaa")["events"] if e["event_id"] == 5)
+    assert ev["rank"] == 2 and ev["block"] == "Gold 1" and ev["block_rank"] == 2
+
+
 def test_search_finds_former_names_recorded_gifters_and_known_rooms(db, search_mode):
     from showroom_keeper.gifts import record_gift
     from showroom_keeper.listing import remember_rooms

@@ -438,6 +438,8 @@ def test_older_research_db_gets_new_columns(tmp_path):
     with Store(tmp_path) as s:
         s.set_event_rooms(7, [{"room_id": 1, "key": "a", "point": 10, "rank": 1}], NOW)
         assert tuple(s.one("SELECT point, rank FROM room_events")) == (10, 1)
+        assert s.one("SELECT block_id FROM room_events")["block_id"] is None
+        assert "blocks_at" in {r[1] for r in s.conn.execute("PRAGMA table_info(events)")}
         assert s.room(room_id=1)["retry_at"] is None
 
 
@@ -580,6 +582,97 @@ def test_events_keep_names_and_hidden_rankings(tmp_path):
         assert s.one("SELECT show_ranking FROM events WHERE event_id=6")[0] == 1
 
 
+def test_block_ranking_keeps_room_list_points(tmp_path):
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path.startswith("/api/event/room_list"):
+            return {"list": [{"room_id": 1, "room_url_key": "a", "room_name": "高", "point": 900, "rank": 1},
+                             {"room_id": 2, "room_url_key": "b", "room_name": "低", "point": 100, "rank": 2}], "next_page": None}
+        if path.endswith("/ranking"):
+            return {"event_block_list": [
+                {"show_rank_label": "Gold", "block_list": [{"block_id": 0, "label": "総合"}, {"block_id": 11, "label": "1"}]},
+                {"show_rank_label": "Silver", "block_list": [{"block_id": 21, "label": "1"}]},
+            ]}
+        if "block_id=11" in path:
+            return {"block_ranking_list": [{"room_id": "1", "room_url_key": "a", "room_name": "高", "rank": 1, "point": 0}],
+                    "total_entries": 1, "entries_per_page": 30}
+        if "block_id=21" in path:
+            return {"block_ranking_list": [
+                {"room_id": "2", "rank": 1, "point": 0, "room_url_key": "b", "room_name": "低"},
+                {"room_id": "9", "rank": 2, "point": 50, "room_url_key": "c", "room_name": "足す"},
+            ], "total_entries": 2, "entries_per_page": 30}
+        raise AssertionError(path)
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 7, "key": "gold_ev", "name": "分け", "end": NOW}])
+        s.upsert_event_info([{"event_id": 7, "is_event_block": True, "event_block_label": "全ライバー"}], NOW)
+    sw._read_event_rooms(7, NOW)
+    with Store(tmp_path) as s:
+        assert tuple(s.one("SELECT point, block_id, block_rank FROM room_events WHERE event_id=7 AND room_id=1")) == (900, 11, 1)
+        assert tuple(s.one("SELECT point, block_id FROM room_events WHERE event_id=7 AND room_id=2")) == (100, 21)
+        assert s.one("SELECT point, block_rank FROM room_events WHERE event_id=7 AND room_id=9")[0] == 50
+        assert s.room(room_id=9)["name"] == "足す"
+        assert [r["label"] for r in s.all("SELECT label FROM event_blocks WHERE event_id=7 ORDER BY pos")] == ["1", "1"]
+        assert s.scalar("SELECT COUNT(*) FROM event_blocks WHERE event_id=7 AND block_id=0") == 0
+    assert any(c.endswith("/ranking") for c in calls)
+    with Store(tmp_path) as s:
+        s.conn.execute("UPDATE events SET blocks_at=NULL WHERE event_id=7")
+    calls.clear()
+    assert sw._next_blocks(NOW) is True
+    assert calls and all("room_list" not in c for c in calls)
+
+    def down(path):
+        if path.startswith("/api/event/room_list"):
+            return {"list": [{"room_id": 1, "point": 10, "rank": 1, "room_url_key": "a", "room_name": "高"}], "next_page": None}
+        raise RuntimeError("down")
+
+    sw.c._get = down
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 8, "key": "miss", "name": "失敗", "end": NOW - 1}])
+        s.upsert_event_info([{"event_id": 8, "is_event_block": True}], NOW)
+    sw._read_event_rooms(8, NOW)
+    with Store(tmp_path) as s:
+        assert s.one("SELECT point FROM room_events WHERE event_id=8 AND room_id=1")[0] == 10
+        assert s.one("SELECT blocks_at, blocks_retry FROM events WHERE event_id=8")[0] is None
+        assert s.one("SELECT blocks_retry FROM events WHERE event_id=8")[0] == NOW + sweep.BLOCK_RETRY
+    assert sw._next_blocks(NOW) is False  # 6 時間は待つ
+
+
+def test_plain_event_does_not_read_blocks(tmp_path):
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path.startswith("/api/event/room_list"):
+            return {"list": [{"room_id": 1, "point": 10, "rank": 1}], "next_page": None}
+        raise AssertionError(path)
+
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(tmp_path, get=get, throttle=quiet_throttle()), scan=False)
+    with Store(tmp_path) as s:
+        s.upsert_events([{"event_id": 4, "key": "plain", "name": "普通", "end": NOW}])
+        s.upsert_event_info([{"event_id": 4, "is_event_block": False, "event_block_label": "全ライバー"}], NOW)
+    sw._read_event_rooms(4, NOW)
+    assert calls == ["/api/event/room_list?event_id=4&p=1"]
+    assert sw._next_blocks(NOW) is False
+
+
+def test_old_event_info_marks_block_events(tmp_path):
+    import sqlite3
+
+    c = sqlite3.connect(tmp_path / "research.db")
+    c.execute("""CREATE TABLE event_info (event_id INTEGER PRIMARY KEY, at REAL, parent_id INTEGER, reward_rank INTEGER,
+                 block TEXT, leagues TEXT, required_level INTEGER, box INTEGER, official INTEGER, data TEXT)""")
+    c.execute("INSERT INTO event_info(event_id, data) VALUES (1, ?)", ('{"is_event_block": true}',))
+    c.execute("INSERT INTO event_info(event_id, data) VALUES (2, ?)", ('{"is_event_block": false}',))
+    c.commit()
+    c.close()
+    with Store(tmp_path) as s:
+        assert [tuple(r) for r in s.all("SELECT event_id, divided FROM event_info ORDER BY event_id")] == [(1, 1), (2, 0)]
+
+
 def test_forbidden_counts_as_busy():
     th, _ = throttle()
     with pytest.raises(urllib.error.HTTPError):
@@ -601,15 +694,15 @@ def _stub_jobs(sw, cost, done, rankings=True):
     """収集の仕事を、問い合わせを cost[name] 回使ったことにする偽物に置き換える。"""
     def job(name):
         def run(now):
-            if name == "_next_progress" or (name == "_next_ranking" and not rankings):
+            if name in ("_next_progress", "_next_blocks") or (name == "_next_ranking" and not rankings):
                 return False
             done.append(name)
             sw.c.requests += cost.get(name, 1)
             return True
         return run
-    for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_fans", "_next_event_history",
-                 "_next_owner", "_next_event_page", "_next_notices", "_next_fans_history", "_next_room_profile", "_next_scan",
-                 "_next_fans_closed"):
+    for name in ("_next_progress", "_next_ranking", "_next_room", "_next_event_rooms", "_next_blocks", "_next_fans",
+                 "_next_event_history", "_next_owner", "_next_event_page", "_next_notices", "_next_fans_history",
+                 "_next_room_profile", "_next_scan", "_next_fans_closed"):
         setattr(sw, name, job(name))
     with Store(sw.state_dir) as s:
         s.set_meta("live_at", NOW)
@@ -1287,7 +1380,11 @@ def test_room_profile_is_read_weekly_and_each_month(tmp_path):
 def test_gifter_visits_and_overlap(tmp_path):
     from showroom_keeper import live_events
 
-    at = datetime(2026, 10, 18, 21, 10, tzinfo=JST).timestamp()
+    now = datetime.now(JST)
+    at = now.replace(hour=21, minute=10, second=0, microsecond=0).timestamp()
+    if at > now.timestamp():
+        at -= 86400
+    at -= 5 * 86400  # 配信の時間帯は直近 30 日だけ見るので、その中に入れる
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": 1, "key": "aaa", "name": "A"}], "live", at)
         s.set_cumulative(1, [{"user_id": 7, "name": "常連", "point": 10, "visits": 1, "rank": 1}], at)

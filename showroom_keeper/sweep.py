@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import urllib.parse
 from datetime import datetime
 import sys
 import threading
@@ -41,6 +42,15 @@ LIVE_EVERY = 300  # 配信中のルームを見る間隔 (秒)
 EVENTS_EVERY = 6 * 3600  # イベントの一覧を見る間隔 (秒)
 EVENT_PAGES = 30  # イベントの一覧 (1 ページ 30 件) を状態ごとに読むページ数の上限
 EVENT_ROOM_PAGES = 100  # 1 つのイベントの参加ルーム (1 ページ 30 件) を読むページ数の上限
+BLOCK_PAGES = 20  # 1 つのブロックの順位 (1 ページ 30 件) を読むページ数の上限
+BLOCK_RETRY = 6 * 3600  # ブロックを読めなかったイベントを、次に読むまでの時間 (秒)
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 EVENT_ROOMS_EVERY = 12 * 3600  # 開催中・開催予定のイベントの参加ルームを読み直す間隔 (秒。利用者の指示で 2026-10-21 に 24 時間から縮めた)
 ROOM_EVERY = 7 * 86400  # 最近配信したルームの累計ランキングなどを取り直す間隔 (秒)
 ACTIVE_DAYS = 30  # この日数のうちに配信したルームを、取り直しの対象にする
@@ -222,7 +232,7 @@ class Sweeper:
         # 貢献ランキングはギフター分析にいちばん効くので、問い合わせの数で数えて ranking_share の割合を回す。
         # ほかの仕事は 1 つで何回も問い合わせる (ルームの取り直し・参加ルームのページなど) ので、仕事の数ではなく問い合わせの数でくらべる。
         # 取る貢献ランキングが無くなれば、ほかの仕事だけが回る
-        others = [self._next_room, self._next_event_rooms, self._next_fans, self._next_event_history,
+        others = [self._next_room, self._next_event_rooms, self._next_blocks, self._next_fans, self._next_event_history,
                   self._next_owner, self._next_event_page, self._next_notices, self._next_fans_history,
                   self._next_room_profile, self._next_fans_closed]
         # 埋め終わるまでは順番に入れる。終わったあとは入れない (False を返して、ほかの仕事の回数をずらさない)
@@ -320,7 +330,83 @@ class Sweeper:
             # (最後のページより先を頼むと、1 ページ目や最後のページが返ってくるため。同じページを読み続けないように)
             page = next_page_number(page, data.get("next_page")) if new else None
         self.store.set_event_rooms(event_id, rooms, now)
+        self._blocks_for(event_id, now)
         return rooms
+
+    def _divided(self, event_id: int) -> str | None:
+        """ブロック分けのイベントなら、その URL キー。違う時は None。"""
+        row = self.store.one("""SELECT e.key FROM events e JOIN event_info i ON i.event_id=e.event_id
+                                WHERE e.event_id=? AND i.divided=1 AND e.key IS NOT NULL""", (int(event_id),))
+        return row["key"] if row is not None else None
+
+    def _blocks_for(self, event_id: int, now: float) -> None:
+        """ブロック分けなら、ブロックの一覧と各ルームのブロックを読む。失敗しても参加ルームのポイントは残す。"""
+        key = self._divided(event_id)
+        if not key:
+            return
+        try:
+            blocks, member, named = self._read_block_membership(event_id, key)
+        except Exception as err:  # noqa: BLE001 - 次の回に読む。ポイントの保存は済ませてある
+            self.store.conn.execute("UPDATE events SET blocks_retry=? WHERE event_id=?", (now + BLOCK_RETRY, event_id))
+            log.warning("イベント %s のブロックを読めませんでした: %s", event_id,
+                        str(err).splitlines()[0] if str(err) else type(err).__name__)
+            return
+        if named:
+            self.store.upsert_rooms(named, "event", now)
+        self.store.set_room_blocks(event_id, blocks, member, now)
+
+    def _read_block_membership(self, event_id: int, key: str) -> tuple[list[dict[str, Any]], dict[int, tuple[Any, Any, Any]], list[dict[str, Any]]]:
+        """(ブロックの一覧, {room_id: (block_id, ブロック内順位, ポイント)}, ルームの名前)。総合 (block_id 0) は分けではないので入れない。"""
+        data = self.c.get(f"/api/event/{urllib.parse.quote(key, safe='')}/ranking") or {}
+        blocks: list[dict[str, Any]] = []
+        pos = 0
+        for group in data.get("event_block_list") or []:
+            if not isinstance(group, dict):
+                continue
+            group_label = str(group.get("show_rank_label") or "")
+            for b in group.get("block_list") or []:
+                if not isinstance(b, dict):
+                    continue
+                bid = _as_int(b.get("block_id"))
+                if not bid:  # 0 は総合
+                    continue
+                pos += 1
+                blocks.append({"block_id": bid, "group_label": group_label, "label": str(b.get("label") or ""), "pos": pos})
+        member: dict[int, tuple[Any, Any, Any]] = {}
+        named: list[dict[str, Any]] = []
+        for b in blocks:
+            page = 1
+            seen = 0
+            while page <= BLOCK_PAGES:
+                got = self.c.get(f"/api/event/block_ranking?event_id={event_id}&block_id={b['block_id']}&page={page}") or {}
+                rows = [r for r in got.get("block_ranking_list") or [] if isinstance(r, dict)]
+                for r in rows:
+                    rid = _as_int(r.get("room_id"))
+                    if rid is None:
+                        continue
+                    point = _as_int(r.get("point"))
+                    member[rid] = (b["block_id"], _as_int(r.get("rank")), point if point else None)
+                    named.append({"room_id": rid, "key": r.get("room_url_key"), "name": r.get("room_name")})
+                seen += len(rows)
+                total = _as_int(got.get("total_entries")) or 0
+                per = _as_int(got.get("entries_per_page")) or 30
+                if not rows or (total and seen >= total) or len(rows) < per:
+                    break
+                page += 1
+        return blocks, member, named
+
+    def _next_blocks(self, now: float) -> bool:
+        """ブロックをまだ読んでいないブロック分けのイベントを 1 つ読む (参加ルームは読み直さない)。"""
+        e = self.store.one("""SELECT e.event_id, e.key FROM event_info i
+                              JOIN events e ON e.event_id=i.event_id
+                              WHERE i.divided=1 AND e.blocks_at IS NULL AND e.rooms_at IS NOT NULL AND e.key IS NOT NULL
+                                AND (e.blocks_retry IS NULL OR e.blocks_retry < ?)
+                              ORDER BY COALESCE(e.end, 0) DESC LIMIT 1""", (now,))
+        if e is None:
+            return False
+        self.doing = f"イベントのブロック ({e['event_id']})"
+        self._blocks_for(e["event_id"], now)
+        return True
 
     def _next_event_rooms(self, now: float) -> bool:
         """一覧で見つけたイベントの参加ルームを、まだ読んでいない (または読み直す時期の) ものから 1 つ読む。

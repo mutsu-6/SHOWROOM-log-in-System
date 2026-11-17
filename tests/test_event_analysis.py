@@ -34,6 +34,28 @@ def test_needed_points_from_past_events_and_projection(tmp_path):
     assert cur[2]["now"] == 500 and cur[3]["now"] is None
 
 
+def test_needed_points_stay_inside_the_same_block(tmp_path):
+    with Store(tmp_path) as s:
+        # 総合の 1 位は Silver。Gold の必要ポイントは Gold の前の回だけを見る
+        for eid, end, gold, silver in ((1, NOW - 10 * DAY, 1000, 9000), (9, NOW - DAY, 4000, 8000)):
+            s.upsert_events([{"event_id": eid, "name": f"分け Vol.{eid}", "start": end - 7 * DAY, "end": end}])
+            s.set_event_rooms(eid, [{"room_id": eid * 10 + 1, "point": gold, "rank": 2},
+                                    {"room_id": eid * 10 + 2, "point": silver, "rank": 1}], end + 1)
+            s.set_room_blocks(eid, [{"block_id": 11, "group_label": "Gold", "label": "1", "pos": 1},
+                                    {"block_id": 21, "group_label": "Silver", "label": "1", "pos": 2}],
+                              {eid * 10 + 1: (11, 1, gold), eid * 10 + 2: (21, 1, silver)}, end + 1)
+        n = ea.needed_points(s, 9, NOW)
+        gold = next(b for b in n["blocks"] if b["name"] == "Gold 1")
+        silver = next(b for b in n["blocks"] if b["name"] == "Silver 1")
+        st = ea.event_strength(s, 9, NOW, [91])
+        room = next(r for r in st["rooms"] if r["room_id"] == 91)
+    assert n["similar"] == 1 and next(r for r in n["ranks"] if r["rank"] == 1)["median"] == 9000
+    assert gold["similar"] == 1 and gold["ranks"][0] == {"rank": 1, "events": 1, "min": 1000, "median": 1000, "max": 1000}
+    assert gold["top"] == 4000 and silver["top"] == 8000
+    assert room["place"] == 2 and room["block"] == "Gold 1" and room["block_place"] == 1 and room["block_of"] == 1
+    assert st["focus"][0]["block_place"] == 1
+
+
 def test_strength_and_event_choice(tmp_path):
     with Store(tmp_path) as s:
         s.upsert_rooms([{"room_id": r, "key": f"k{r}", "name": f"ルーム{r}"} for r in (1, 2, 3, 4)], "event", NOW)

@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS rooms (
 CREATE INDEX IF NOT EXISTS rooms_key ON rooms(key);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY, key TEXT, name TEXT, start REAL, end REAL, type TEXT,
-    show_ranking INTEGER DEFAULT 1, rooms_at REAL, retry_at REAL);
+    show_ranking INTEGER DEFAULT 1, rooms_at REAL, retry_at REAL, blocks_at REAL, blocks_retry REAL);
 CREATE TABLE IF NOT EXISTS watch (user_id INTEGER PRIMARY KEY, memo TEXT, added_at REAL, updated_at REAL);
 CREATE TABLE IF NOT EXISTS event_progress (
     event_id INTEGER, room_id INTEGER, at REAL, point INTEGER, rank INTEGER, PRIMARY KEY (event_id, room_id, at));
@@ -134,8 +134,12 @@ CREATE INDEX IF NOT EXISTS owner_todo_level ON owner_todo(level);
 -- data は一覧の 1 件をそのまま (画像の URL を除く) 残したもの
 CREATE TABLE IF NOT EXISTS event_info (
     event_id INTEGER PRIMARY KEY, at REAL, parent_id INTEGER, reward_rank INTEGER, block TEXT, leagues TEXT,
-    required_level INTEGER, box INTEGER, official INTEGER, data TEXT);
+    required_level INTEGER, box INTEGER, official INTEGER, divided INTEGER, data TEXT);
 CREATE INDEX IF NOT EXISTS event_info_parent ON event_info(parent_id) WHERE parent_id > 0;
+-- ブロック分けのイベントの、ブロック (総合の block_id 0 は入れない)。名前は「Gold 1」のように組む
+CREATE TABLE IF NOT EXISTS event_blocks (
+    event_id INTEGER, block_id INTEGER, group_label TEXT, label TEXT, pos INTEGER, at REAL,
+    PRIMARY KEY (event_id, block_id)) WITHOUT ROWID;
 -- イベントのページ (ルール・特典・応募条件) の文章。status は 200 (読めた)・404 (無い)・0 (失敗、あとで読み直す)
 CREATE TABLE IF NOT EXISTS event_pages (event_id INTEGER PRIMARY KEY, at REAL, status INTEGER, text TEXT);
 -- ルームのプロフィール (SHOWランク・リーグ・グレード・まいにち配信の日数など)。data はプロフィールの 1 件 (画像・長い一覧を除く)
@@ -374,7 +378,10 @@ class Store:
                                    ("gift_senders", "first_at REAL"), ("gift_senders", "unknown INTEGER DEFAULT 0"),
                                    ("room_events", "try_at REAL"), ("room_events", "try_status TEXT"),
                                    ("room_events", "ok_at REAL"), ("room_events", "gone_at REAL"),
-                                   ("users", "shown_points INTEGER")):
+                                   ("users", "shown_points INTEGER"),
+                                   ("room_events", "block_id INTEGER"), ("room_events", "block_rank INTEGER"),
+                                   ("events", "blocks_at REAL"), ("events", "blocks_retry REAL"),
+                                   ("event_info", "divided INTEGER")):
                     cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                     if col.split()[0] not in cols:  # この欄が無かったころの research.db
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
@@ -387,6 +394,12 @@ class Store:
                             self.conn.execute("DELETE FROM gift_sender_pos")
                         if (table, col.split()[0]) == ("event_series", "route"):
                             self.conn.execute("DELETE FROM event_series WHERE how='auto'")  # 木の形でまとめ直す
+                        if (table, col.split()[0]) == ("event_info", "divided"):
+                            # 一覧を保存した JSON から、ブロック分けかを一度入れる (次の一覧の読み直しを待たない)
+                            self.conn.execute("""UPDATE event_info SET divided=json_extract(data, '$.is_event_block')
+                                                 WHERE divided IS NULL AND json_extract(data, '$.is_event_block') IS NOT NULL""")
+                # divided の欄を足したあとに作る (古い research.db は、この欄が無い状態で上の CREATE が走る)
+                self.conn.execute("CREATE INDEX IF NOT EXISTS event_info_divided ON event_info(event_id) WHERE divided=1")
                 self.conn.execute("DROP INDEX IF EXISTS contributions_user")  # 上の contributions_user_pt に替えた (人で引くのは同じ)
                 # 名前で推測した分だけの索引 (ルームがあると分かった時に、表を全部読まずに探すため)。guessed の欄を足したあとに作る
                 self.conn.execute("""CREATE INDEX IF NOT EXISTS contributions_guessed ON contributions(room_id, event_id)
@@ -583,14 +596,16 @@ class Store:
             old = self.one("SELECT data FROM event_info WHERE event_id=?", (int(e["event_id"]),))
             if old is not None and old[0]:
                 data = {**json.loads(old[0]), **{k: v for k, v in data.items() if v is not None}}
+            divided = data.get("is_event_block")
             rows.append((int(e["event_id"]), now, data.get("parent_event_id") or None, data.get("reward_rank"),
                          data.get("event_block_label"), json.dumps(data["league_ids"]) if data.get("league_ids") else None,
                          data.get("required_level"), None if data.get("is_box_event") is None else int(bool(data["is_box_event"])),
                          None if data.get("is_official") is None else int(bool(data["is_official"])),
+                         None if divided is None else int(bool(divided)),
                          json.dumps(data, ensure_ascii=False)))
         with self.tx() as c:
             c.executemany("""INSERT OR REPLACE INTO event_info(event_id, at, parent_id, reward_rank, block, leagues, required_level,
-                             box, official, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+                             box, official, divided, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
 
     def set_room_info(self, room_id: int, p: dict[str, Any], now: float, ym: str) -> None:
         """ルームのプロフィールを残す (月ごとのランクも)。"""
@@ -799,6 +814,28 @@ class Store:
             if rows:
                 c.execute("UPDATE events SET room_count=?, median_point=? WHERE event_id=?",
                           (len(rows), _median_point(r.get("point") for r in rows), event_id))
+
+    def set_room_blocks(self, event_id: int, blocks: list[dict[str, Any]],
+                        member: dict[int, tuple[Any, Any, Any]], now: float) -> None:
+        """ブロックの一覧と、ルームがどのブロックにいるかを入れる。ポイントは変えない (参加ルームの一覧の値を残す)。
+
+        member は {room_id: (block_id, block_rank, point)}。参加ルームに無いルームは、ポイントがある時だけ足す。
+        """
+        event_id = int(event_id)
+        with self.tx() as c:
+            c.execute("DELETE FROM event_blocks WHERE event_id=?", (event_id,))
+            c.executemany("""INSERT INTO event_blocks(event_id, block_id, group_label, label, pos, at)
+                             VALUES (?, ?, ?, ?, ?, ?)""",
+                          [(event_id, int(b["block_id"]), b.get("group_label") or "", b.get("label") or "",
+                            int(b.get("pos") or 0), now) for b in blocks if b.get("block_id")])
+            c.execute("UPDATE room_events SET block_id=NULL, block_rank=NULL WHERE event_id=?", (event_id,))
+            for rid, (bid, br, point) in member.items():
+                cur = c.execute("UPDATE room_events SET block_id=?, block_rank=? WHERE event_id=? AND room_id=?",
+                                (bid, br, event_id, int(rid)))
+                if cur.rowcount == 0 and point:
+                    c.execute("""INSERT INTO room_events(room_id, event_id, point, block_id, block_rank)
+                                 VALUES (?, ?, ?, ?, ?)""", (int(rid), event_id, int(point), bid, br))
+            c.execute("UPDATE events SET blocks_at=?, blocks_retry=NULL WHERE event_id=?", (now, event_id))
 
     def build_room_stats(self, step: int = ROOM_STATS_STEP) -> bool:
         """前に集めたイベントの参加ルームの数・ポイントの真ん中と、貢献ランキングの数字 (c_*) を、少しずつ作る。
