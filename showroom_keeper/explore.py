@@ -24,7 +24,8 @@ ROOM_GIFTERS = 200  # ルームのページに出すギフターの数
 ROOM_EVENTS = 300  # ルームのページに出すイベントの数
 OVERLAP_GIFTERS = 300  # 重なるルームを調べる、このルームのギフターの数 (多い順)
 OVERLAP_ROOMS = 20  # 重なるルームとして出す数
-EVENT_ROOMS = 500  # イベントのページに出す参加ルームの数
+EVENT_ROOMS = 500  # イベントのページに出す参加ルームの数 (総合の上位)
+BLOCK_SHOW = 80  # ブロック分けの時、総合の上位に入らないブロックからも出すルームの数
 EVENT_LIST = 200  # イベントの一覧に出す数 (終わったもの)
 PROGRESS_ROOMS = 10  # 推移のグラフに出すルームの数 (今のポイントの多い順)
 CONTRIBUTORS = 100  # イベントのページに出す貢献者の数
@@ -754,12 +755,17 @@ def _room_detail(state_dir: Path, key: Any) -> dict[str, Any]:
             g["rooms"] = counts.get(g["user_id"], 0)
         event_total = s.scalar("SELECT COUNT(*) FROM room_events WHERE room_id=?", (rid,))
         events = []
-        for r in s.all("""SELECT e.*, re.point, re.rank, re.ranking_at, re.final, re.c_count, re.c_sum,
+        for r in s.all("""SELECT e.*, re.point, re.rank, re.block_id, re.block_rank, re.ranking_at, re.final, re.c_count, re.c_sum,
+                                 b.group_label, b.label AS block_label,
                                  (SELECT COUNT(*) FROM room_events o WHERE o.event_id=e.event_id) AS rooms,
                                  (SELECT COUNT(*) FROM contributions c WHERE c.event_id=e.event_id AND c.room_id=re.room_id) AS contributors
-                          FROM room_events re JOIN events e USING(event_id) WHERE re.room_id=?
+                          FROM room_events re JOIN events e USING(event_id)
+                          LEFT JOIN event_blocks b ON b.event_id=re.event_id AND b.block_id=re.block_id
+                          WHERE re.room_id=?
                           ORDER BY COALESCE(e.end, e.start, 0) DESC, e.event_id DESC LIMIT ?""", (rid, ROOM_EVENTS)):
             events.append({**_event_row(r, now), "point": r["point"], "rank": r["rank"], "rooms": r["rooms"],
+                           "block": event_analysis.block_name(r["group_label"], r["block_label"]) if r["block_id"] else None,
+                           "block_rank": r["block_rank"],
                            "contributors": r["contributors"], "ranking": bool(r["final"]),
                            # 100 位より下の人たちの分 (100 人に届いたイベントだけ。ポイント - 上位 100 人の合計)
                            "below": max(0, (r["point"] or 0) - r["c_sum"]) if r["final"] and (r["c_count"] or 0) >= 100
@@ -878,6 +884,26 @@ def event_choice(state_dir: Path, support: list[str]) -> dict[str, Any]:
         return out
 
 
+def _block_view(s: Store, eid: int) -> tuple[list[dict[str, Any]], dict[int, list[int]]]:
+    """(ブロックの一覧, {block_id: ポイント順の room_id})。ポイントが 0 の時は公式のブロック順位を使う。"""
+    rows = s.all("SELECT block_id, group_label, label FROM event_blocks WHERE event_id=? ORDER BY pos, block_id", (eid,))
+    if not rows:
+        return [], {}
+    by: dict[int, list[Any]] = {}
+    for r in s.all("SELECT room_id, block_id, point, block_rank FROM room_events WHERE event_id=? AND block_id IS NOT NULL", (eid,)):
+        by.setdefault(r["block_id"], []).append(r)
+    ordered: dict[int, list[int]] = {}
+    summary = []
+    for b in rows:
+        got = by.get(b["block_id"], [])
+        got.sort(key=lambda r: (-(r["point"] or 0), r["block_rank"] is None, r["block_rank"] or 0, r["room_id"]))
+        ordered[b["block_id"]] = [int(r["room_id"]) for r in got]
+        summary.append({"block_id": b["block_id"], "name": event_analysis.block_name(b["group_label"], b["label"]),
+                        "group": b["group_label"], "label": b["label"], "rooms": len(got),
+                        "top": got[0]["point"] if got else None})
+    return summary, ordered
+
+
 def event_detail(state_dir: Path, event_id: Any, support: list[str] | None = None) -> dict[str, Any]:
     """1 つのイベントの参加ルームの順位・ポイントの推移・貢献者。同じページを同時に開いた時は、1 回だけ数える (once)。"""
     from . import once
@@ -899,17 +925,39 @@ def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = No
         eid = int(e["event_id"])
         rooms = [dict(r) for r in s.all(
             """SELECT re.room_id, r.key, COALESCE(r.name, r.key, re.room_id) AS name, re.point, re.rank, re.final,
+                      re.block_id, re.block_rank,
                       (SELECT COUNT(*) FROM contributions c WHERE c.event_id=re.event_id AND c.room_id=re.room_id) AS contributors
                FROM room_events re LEFT JOIN rooms r USING(room_id) WHERE re.event_id=?
                ORDER BY re.rank IS NULL, re.rank, re.point DESC LIMIT ?""", (eid, EVENT_ROOMS))]
+        blocks, place = _block_view(s, eid)
+        for r in rooms:
+            r["listed"] = True  # 総合の上位。ブロックの上位で足したルームは総合の表には出さない
+        have = {r["room_id"] for r in rooms}
+        extra_ids = [rid for bid in (b["block_id"] for b in blocks) for rid in place.get(bid, [])[:BLOCK_SHOW]
+                     if rid not in have]
+        if extra_ids:
+            marks = ",".join("?" * len(extra_ids))
+            more = {r["room_id"]: dict(r) for r in s.all(
+                f"""SELECT re.room_id, r.key, COALESCE(r.name, r.key, re.room_id) AS name, re.point, re.rank, re.final,
+                           re.block_id, re.block_rank,
+                           (SELECT COUNT(*) FROM contributions c WHERE c.event_id=re.event_id AND c.room_id=re.room_id) AS contributors
+                    FROM room_events re LEFT JOIN rooms r USING(room_id)
+                    WHERE re.event_id=? AND re.room_id IN ({marks})""", (eid, *extra_ids))}
+            rooms.extend(more[rid] for rid in extra_ids if rid in more)
         # 開催中は順位が入っていないことがあるので、ポイントの多い順の位置を使う (place)
-        points = sorted((r["point"] or 0 for r in rooms), reverse=True)
+        points = sorted((r["point"] or 0 for r in rooms if r["room_id"] in have), reverse=True)
         styles = {r["room_id"]: r for r in s.all("SELECT room_id, style, early, final, last_day_share FROM room_event_style WHERE event_id=?",
                                                   (eid,))}
+        names = {b["block_id"]: b["name"] for b in blocks}
+        counts = {b["block_id"]: b["rooms"] for b in blocks}
+        order = {bid: {rid: i + 1 for i, rid in enumerate(ids)} for bid, ids in place.items()}
         for r in rooms:
-            r["place"] = r["rank"] or (points.index(r["point"] or 0) + 1 if r["point"] else None)
+            r["place"] = r["rank"] or (points.index(r["point"] or 0) + 1 if r["point"] and r["room_id"] in have else None)
             st = styles.get(r["room_id"])
             r["style"] = st["style"] if st is not None else None
+            r["block"] = names.get(r["block_id"]) if r["block_id"] else None
+            r["block_place"] = order.get(r["block_id"], {}).get(r["room_id"]) if r["block_id"] else None
+            r["block_rooms"] = counts.get(r["block_id"]) if r["block_id"] else None
         room_total = s.scalar("SELECT COUNT(*) FROM room_events WHERE event_id=?", (eid,))
         pending = s.scalar(f"""SELECT COUNT(*) FROM room_events re JOIN events e USING(event_id)
                                WHERE re.event_id=? AND {PENDING_RANKING}""", (eid, now - 3600, RANKING_RETRIES))
@@ -942,7 +990,7 @@ def _event_detail(state_dir: Path, event_id: Any, support: list[str] | None = No
                    "series": series,
                    "page": {**dict(pg), "text": unpack_text(pg["text"])} if pg is not None else None}
         return {**_event_row(e, now), "found": True, "type": e["type"], "show_ranking": bool(e["show_ranking"]),
-                "rooms": rooms, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
+                "rooms": rooms, "blocks": blocks, "room_total": room_total, "rankings": sum(1 for r in rooms if r["final"]),
                 "rankings_pending": pending, "contributors": contributors, "contributor_total": contributor_total,
                 "progress": _progress(s, eid, rooms), "styled": bool(e["style_at"]) and bool(styles), "details": details,
                 "needed": event_analysis.needed_points(s, eid, now), "strength": _strength(s, eid, now, support),

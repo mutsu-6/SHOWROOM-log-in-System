@@ -26,6 +26,15 @@ _NUM = re.compile(r"(vol|ver|season|no|part|第|#)?\s*[0-9]+\s*(回|弾|期生|�
 _PUNCT = re.compile(r"[\s\W_]+")
 
 
+def block_name(group: str | None, label: str | None) -> str:
+    """ブロックの表示名。組の名前と番号が違う時は「Gold 1」のように並べる。"""
+    group = (group or "").strip()
+    label = (label or "").strip()
+    if group and label and group != label:
+        return f"{group} {label}"
+    return group or label
+
+
 def series_key(name: str | None) -> str | None:
     """名前から、回ごとに変わる数字 (Vol.54・第12弾・2026年・10月第2週など) を除いたもの。短すぎれば None。"""
     if not name:
@@ -149,6 +158,74 @@ def needed_points(s: Store, eid: int, now: float | None = None) -> dict[str, Any
             rows.append({"rank": k, "now": current.get(k), "growth": g, "events": len(growth),
                          "projected": current[k] * g if g and current.get(k) else None})
         out["current"] = {"elapsed": frac, "ranks": rows}
+    out["blocks"] = _block_needed(s, eid, now, reward, sims, e)
+    return out
+
+
+def _ordered(rows: list[Any]) -> list[tuple[int, int, int]]:
+    """ポイントのあるルームを、ポイントの多い順の (順位, ポイント, room_id) にする。"""
+    rows = [r for r in rows if (r["point"] or 0) > 0]
+    rows.sort(key=lambda r: (-(r["point"] or 0), r["block_rank"] is None, r["block_rank"] or 0, r["room_id"]))
+    return [(i + 1, int(r["point"]), int(r["room_id"])) for i, r in enumerate(rows)]
+
+
+def _block_needed(s: Store, eid: int, now: float, reward: int | None, sims: list[Any],
+                  event: Any) -> list[dict[str, Any]]:
+    """ブロックごとの必要ポイント。前の回は、同じ続きもので同じ名前のブロックだけをくらべる。"""
+    mine = s.all("SELECT block_id, group_label, label FROM event_blocks WHERE event_id=? ORDER BY pos, block_id", (eid,))
+    if not mine:
+        return []
+    ids = [eid, *(ev["event_id"] for ev in sims)]
+    marks = ",".join("?" * len(ids))
+    meta: dict[int, list[Any]] = {}
+    for r in s.all(f"SELECT event_id, block_id, group_label, label FROM event_blocks WHERE event_id IN ({marks})", ids):
+        meta.setdefault(r["event_id"], []).append(r)
+    pts: dict[tuple[int, int], list[Any]] = {}
+    counts: dict[tuple[int, int], int] = {}
+    for r in s.all(f"""SELECT event_id, block_id, room_id, point, block_rank FROM room_events
+                       WHERE event_id IN ({marks}) AND block_id IS NOT NULL""", ids):
+        key = (r["event_id"], r["block_id"])
+        counts[key] = counts.get(key, 0) + 1
+        if (r["point"] or 0) > 0:
+            pts.setdefault(key, []).append(r)
+    names = {ev["event_id"]: ev["name"] for ev in sims}
+    ongoing = event is not None and event["start"] and event["end"] and event["start"] < now < event["end"]
+    frac = (now - event["start"]) / (event["end"] - event["start"]) if ongoing else None
+    ranks = sorted(set(RANKS) | ({reward} if reward else set()))
+    out = []
+    for b in mine:
+        name = block_name(b["group_label"], b["label"])
+        here = _ordered(pts.get((eid, b["block_id"]), []))
+        past = []
+        for ev in sims:
+            same = next((x for x in meta.get(ev["event_id"], []) if block_name(x["group_label"], x["label"]) == name), None)
+            if same is None:
+                continue
+            ordered = _ordered(pts.get((ev["event_id"], same["block_id"]), []))
+            past.append({"event_id": ev["event_id"], "name": names.get(ev["event_id"]), "end": ev["end"],
+                         "rooms": counts.get((ev["event_id"], same["block_id"]), len(ordered)),
+                         "points": {k: p for k, p, _ in ordered if k in ranks}, "_rows": ordered, "_ev": ev})
+        summary = []
+        for k in ranks:
+            vals = [p["points"][k] for p in past if k in p["points"]]
+            if vals:
+                summary.append({"rank": k, "events": len(vals), "min": min(vals), "median": median(vals), "max": max(vals)})
+        row: dict[str, Any] = {"block_id": b["block_id"], "name": name, "group": b["group_label"], "label": b["label"],
+                               "rooms": counts.get((eid, b["block_id"]), 0), "similar": len(past), "reward_rank": reward,
+                               "top": here[0][1] if here else None,
+                               "reward_point": next((p for k, p, _ in here if k == reward), None) if reward else None,
+                               "ranks": summary, "past": [{k: v for k, v in p.items() if k not in ("_rows", "_ev")} for p in past]}
+        if frac is not None:
+            current = {k: p for k, p, _ in here if k in ranks}
+            grows = []
+            for k in ranks:
+                growth = [g for p in past for kk, final, rid in p["_rows"] if kk == k
+                          for g in [_growth(s, p["_ev"], frac, rid, final)] if g]
+                g = median(growth) if growth else None
+                grows.append({"rank": k, "now": current.get(k), "growth": g, "events": len(growth),
+                              "projected": current[k] * g if g and current.get(k) else None})
+            row["current"] = {"elapsed": frac, "ranks": grows}
+        out.append(row)
     return out
 
 
@@ -210,7 +287,11 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
     参加していなくても、出た時に何位くらいかを出す。"""
     now = time.time() if now is None else now
     cache = {} if cache is None else cache
-    rooms = [r[0] for r in s.all("SELECT room_id FROM room_events WHERE event_id=?", (int(eid),))]
+    joined = s.all("SELECT room_id, block_id FROM room_events WHERE event_id=?", (int(eid),))
+    rooms = [r["room_id"] for r in joined]
+    block_of = {r["room_id"]: r["block_id"] for r in joined if r["block_id"] is not None}
+    block_names = {r["block_id"]: block_name(r["group_label"], r["label"])
+                   for r in s.all("SELECT block_id, group_label, label FROM event_blocks WHERE event_id=?", (int(eid),))}
     known = {rid: st for rid in rooms for st in [room_strength(s, rid, now, cache)] if st}
     vals = {rid: st["per_day"] for rid, st in known.items()}
     order = sorted(vals, key=lambda r: -vals[r])
@@ -221,6 +302,18 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
     for r in out_rooms:
         lg = room_league(s, r["room_id"], start, now)
         r["league"] = LEAGUES.get(lg) if lg is not None else None
+        bid = block_of.get(r["room_id"])
+        r["block_id"] = bid
+        r["block"] = block_names.get(bid) if bid is not None else None
+    by_block: dict[int, list[dict[str, Any]]] = {}
+    for r in out_rooms:
+        if r.get("block_id") is not None:
+            by_block.setdefault(r["block_id"], []).append(r)
+    for members in by_block.values():
+        members.sort(key=lambda r: -r["per_day"])
+        for i, r in enumerate(members):
+            r["block_place"] = i + 1
+            r["block_of"] = len(members)
     focus_out = []
     for rid in focus or []:
         st = room_strength(s, rid, now, cache)
@@ -230,7 +323,9 @@ def event_strength(s: Store, eid: int, now: float | None = None, focus: list[int
         base = {"room_id": rid, "joined": rid in rooms, "league": LEAGUES.get(lg) if lg is not None else None, "can_enter": can}
         if st:
             others = [v for r, v in vals.items() if r != rid]
-            focus_out.append({**base, **st, "place": _place(st["per_day"], others), "of": len(others) + 1})
+            hit = next((r for r in out_rooms if r["room_id"] == rid and r.get("block_place")), None)
+            extra = {"block": hit["block"], "block_place": hit["block_place"], "block_of": hit["block_of"]} if hit else {}
+            focus_out.append({**base, **st, "place": _place(st["per_day"], others), "of": len(others) + 1, **extra})
         else:
             focus_out.append({**base, "per_day": None, "place": None, "of": len(vals) + 1})
     info = s.one("SELECT reward_rank FROM event_info WHERE event_id=?", (int(eid),))
