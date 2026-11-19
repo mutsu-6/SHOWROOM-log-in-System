@@ -197,6 +197,33 @@ async def _user_agent(browser: Browser, cfg: Config) -> str | None:
     return ua.replace("HeadlessChrome", "Chrome")
 
 
+COMMENT_POST_RE = re.compile(r"/api/live/post_live_comment")
+# このシステムが開いた配信ページで、コメント欄からの送信を出さない
+LISTENER_COMMENT_BLOCK_JS = """
+(() => {
+  const note = "リスナーのコメントは止めています";
+  const stop = () => {
+    for (const box of document.querySelectorAll('input[placeholder="コメントを投稿"], input[placeholder="' + note + '"]')) {
+      box.disabled = true;
+      box.placeholder = note;
+      box.value = "";
+    }
+  };
+  const root = document.documentElement;
+  if (root) new MutationObserver(stop).observe(root, { childList: true, subtree: true });
+  stop();
+})();
+"""
+
+
+async def install_listener_comment_block(ctx: BrowserContext, cfg: Config) -> None:
+    """リスナーのコメントを止めるとき、開いたページからの投稿を通信の前で捨てる。"""
+    if listener_may_comment(cfg):
+        return
+    await ctx.add_init_script(LISTENER_COMMENT_BLOCK_JS)
+    await ctx.route(COMMENT_POST_RE, lambda route: route.abort())
+
+
 async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
     state = _readable_state(Path(cfg.state_file))
     if state:
@@ -220,6 +247,7 @@ async def new_context(browser: Browser, cfg: Config) -> BrowserContext:
         await _limit_quality(ctx, quality)
     elif str(cfg.video_quality).lower() != "auto":
         log.warning("video_quality %r は使えません (low / medium / original / auto)。SHOWROOM の再生プレーヤーに任せます", cfg.video_quality)
+    await install_listener_comment_block(ctx, cfg)
     return ctx
 
 
@@ -227,7 +255,7 @@ def page_factory(ctx: BrowserContext, cfg: Config) -> Any:
     """配信ページを開く関数。background_tabs なら、開いたページを空白のページの裏に回す。
 
     ヘッドレスのブラウザでも、前面に無いタブは画面の描き直しが減り CPU が下がる
-    (映像の再生・ページのスクリプト・コメントの受信と投稿はそのまま動く)。
+    (映像の再生・ページのスクリプト・コメントの受信はそのまま動く。コメントの送信は listener_comment が on のときだけ)。
     """
     cover: Any = None
 
