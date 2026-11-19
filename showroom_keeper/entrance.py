@@ -7,7 +7,8 @@
 訪問の回数は、同じ uuid の Cookie の訪問者として数える。uuid を取り直すと、来たことのあるルームでも
 また「初訪問」になる (2026-11-16。d09ba10206822 で、昨日に続き本日も初訪問だった)。
 uuid は一度決めたら残す (ログインの Cookie にあればそれを使う)。配信のたびには、そのルームの
-ページを 1 回開いてから current_user と greeting を、そのページを見ている体 (Referer) で呼ぶ。
+ページを 1 回開いてから live_info と current_user と greeting を、そのページを見ている体 (Referer) で呼ぶ。
+訪問の回数を進めるのは live_info (配信ページが配信中に必ず呼ぶもの)。ページの HTML だけでは進まない。
 """
 
 from __future__ import annotations
@@ -263,7 +264,9 @@ class RoomEntrance:
             # 配信のたび、そのルームを開く (開かないと、回数は進まず初訪問のままになる)
             await asyncio.to_thread(s.get, page)
         referer = BASE_URL + page
-        # 観客席に並ぶのは current_user。お知らせと回数は greeting (ページを見ている体で呼ぶ)
+        # 訪問の回数は live_info で進む (配信ページが配信中に必ず呼ぶ)。HTML を取るだけでは進まない
+        await asyncio.to_thread(s.get, f"/api/live/live_info?room_id={status.room_id}", referer)
+        # 観客席に並ぶのは current_user。お知らせは greeting (ページを見ている体で呼ぶ)
         await asyncio.to_thread(s.get, f"/api/live/current_user?room_id={status.room_id}", referer)
         return await asyncio.to_thread(s.get, f"/api/room/greeting?room_id={status.room_id}", referer)
 
