@@ -7,7 +7,8 @@ SHOWROOM には問い合わせない。research.db と記録したギフトを�
 - big_rooms: イベントでいちばん多く集めたルーム
 - close_races: 1 位と 2 位の差の割合 (差 ÷ 1 位のポイント) がいちばん小さかったイベント
 - comebacks: 終わる 24 時間前は下の順位だったのに、1 位で終えたルーム (1 時間ごとの推移から)
-- last_shots: 終わる直前の一気投げ (終わる直前の細かい推移 event_final の、続く 2 回の間の増え方)
+- last_shots: 終わる直前の一気投げ (終わる直前の細かい推移 event_final の、続く 2 回の間の増え方)。
+  イベントごとに 1 行で残し、画面は新しい順に 30 件 (選んだ日数より前に終わった分も出す)
 - new_stars: 今月の貢献が多いのに、前の月の記録が無いギフター
 - top_month: 今月いちばん送っているギフター (イベントの貢献ランキングで見えた分)
 - rising_rooms: 勢いが上り調子のルーム (ルームの分析。ルーム自身のポイントの伸び)
@@ -29,6 +30,12 @@ BIG_GIFT_MIN = 10_000  # 大きなギフトに数える 1 回のポイント
 CLOSE_MIN_POINT = 100_000  # 接戦に数える、1 位のポイントの下限 (小さいイベントの僅差を除く)
 COMEBACK_MIN_RANK = 3  # 大逆転に数える、終わる 24 時間前の順位 (これより下から 1 位)
 LAST_WINDOW = 600  # 一気投げを探す、終わる前の秒数
+SHOT_AFTER = 60  # 終わるあと、この秒までの推移を一気投げに数える
+SHOT_SHOW = 30  # 画面に出す件数。表には終わったイベントを全部 1 行で残す (1 行なので軽い)
+REMEMBER_SCAN = 40  # 収集の 1 回で、一気投げを残し終えたか確かめるイベントの数
+REMEMBER_HEAVY = 5  # そのうち、細かい推移を読んでまとめる件数 (1 イベント数千行になることがある)
+RECENT_FILL = 5  # ニュースを開いた時に、直近の未記録を足す件数
+RECENT_DAYS = 31  # その対象 (ニュースの期間の上限と同じ)
 NEW_STAR_POOL = 200  # 新星を探す、今月の多い順の人数
 JST = timezone(timedelta(hours=9))
 
@@ -57,7 +64,7 @@ def build(state_dir: Path, days: float = 7, now: float | None = None, use_cache:
                 ("big_rooms", "イベントでいちばん集めたルーム", _big_rooms(s, names, since, now)),
                 ("close_races", "接戦のイベント", *_close_races(s, names, since, now)),
                 ("comebacks", "最終日の大逆転", _comebacks(s, names, since, now)),
-                ("last_shots", "終わる直前の一気投げ", _last_shots(s, names, since, now)),
+                ("last_shots", "終わる直前の一気投げ（新しい 30 件）", _last_shots(s, names, since, now)),
                 ("new_stars", "今月の新星ギフター", _new_stars(s, names, now)),
                 ("top_month", "今月いちばん送っているギフター", _top_month(s, names, now)),
                 ("rising_rooms", "上り調子のルーム", _rising_rooms(s)),
@@ -169,23 +176,82 @@ def _comebacks(s: Store, names: _Names, since: float, now: float) -> list[dict[s
     return sorted(out, key=lambda x: (-x["before"], -(x["gained"] or 0)))[:TOP]
 
 
+def _best_jump(s: Store, event_id: int, end: float) -> dict[str, Any] | None:
+    """終わる 10 分前からの細かい推移で、続く 2 回のあいだにいちばん増えたところ。無ければ None。"""
+    last: dict[int, Any] = {}
+    best = None
+    for r in s.all("SELECT at, room_id, point, rank FROM event_final WHERE event_id=? AND at>=? AND at<=? ORDER BY at",
+                   (event_id, end - LAST_WINDOW - 120, end + SHOT_AFTER)):
+        prev = last.get(r["room_id"])
+        if prev is not None and r["point"] > prev["point"] and r["at"] >= end - LAST_WINDOW:
+            jump = r["point"] - prev["point"]
+            if best is None or jump > best["jump"]:
+                best = {"jump": jump, "room_id": r["room_id"], "left": max(0.0, end - r["at"]),
+                        "before": prev["rank"], "after": r["rank"], "point": r["point"], "at": r["at"]}
+        last[r["room_id"]] = r
+    return best
+
+
+def _save_event_shot(s: Store, event_id: int, end: float, now: float) -> None:
+    s.save_last_shot(event_id, end, _best_jump(s, event_id, end), now)
+
+
+def remember_pending(s: Store, now: float, scan: int = REMEMBER_SCAN, heavy: int = REMEMBER_HEAVY) -> int:
+    """終わってから SHOT_AFTER 秒たったイベントの一気投げを、古い順に少しずつ 1 行で残す。残す分があれば 1。
+
+    SHOWROOM には問い合わせない。細かい推移の無いイベントは印だけ残して先へ進む。
+    """
+    cursor_end = s.meta("last_shot_end") or 0
+    cursor_id = int(s.meta("last_shot_event") or 0)
+    rows = s.all("""SELECT event_id, end FROM events
+                    WHERE end IS NOT NULL AND end <= ?
+                      AND (end > ? OR (end = ? AND event_id > ?))
+                    ORDER BY end, event_id LIMIT ?""",
+                 (now - SHOT_AFTER, cursor_end, cursor_end, cursor_id, int(scan)))
+    if not rows:
+        if cursor_end < now - SHOT_AFTER:
+            s.set_meta("last_shot_end", now - SHOT_AFTER)
+            s.set_meta("last_shot_event", 0)
+        return 0
+    done = 0
+    last = None
+    for r in rows:
+        has = s.one("SELECT 1 FROM event_final WHERE event_id=? LIMIT 1", (r["event_id"],))
+        if has and done >= heavy:
+            break
+        if has:
+            done += 1
+        _save_event_shot(s, r["event_id"], r["end"], now)
+        last = r
+    if last is not None:
+        s.set_meta("last_shot_end", last["end"])
+        s.set_meta("last_shot_event", last["event_id"])
+    return 0 if last is None else 1
+
+
+def _fill_recent(s: Store, now: float) -> None:
+    """直近のイベントで、まだ残し終えていない一気投げを新しい順に少し足す (収集が古い方から辿る間も、画面に出すため)。"""
+    rows = s.all("""SELECT event_id, end FROM events e
+                    WHERE e.end IS NOT NULL AND e.end <= ? AND e.end >= ?
+                      AND EXISTS (SELECT 1 FROM event_final f WHERE f.event_id = e.event_id)
+                      AND NOT EXISTS (SELECT 1 FROM last_shots ls
+                                      WHERE ls.event_id = e.event_id AND ls.saved_at >= e.end + ?)
+                    ORDER BY e.end DESC LIMIT ?""",
+                 (now - SHOT_AFTER, now - RECENT_DAYS * 86400, SHOT_AFTER, RECENT_FILL))
+    for r in rows:
+        _save_event_shot(s, r["event_id"], r["end"], now)
+
+
 def _last_shots(s: Store, names: _Names, since: float, now: float) -> list[dict[str, Any]]:
-    out = []
+    """残している一気投げを、新しい順に SHOT_SHOW 件。選んだ日数より前に終わった分も出す。"""
     for e in _ended(s, since, now):
-        last: dict[int, Any] = {}
-        best = None
-        for r in s.all("SELECT at, room_id, point, rank FROM event_final WHERE event_id=? AND at>=? AND at<=? ORDER BY at",
-                       (e["event_id"], e["end"] - LAST_WINDOW - 120, e["end"] + 60)):
-            prev = last.get(r["room_id"])
-            if prev is not None and r["point"] > prev["point"] and r["at"] >= e["end"] - LAST_WINDOW:
-                jump = r["point"] - prev["point"]
-                if best is None or jump > best["jump"]:
-                    best = {"jump": jump, "room_id": r["room_id"], "left": max(0, e["end"] - r["at"]),
-                            "before": prev["rank"], "after": r["rank"], "point": r["point"]}
-            last[r["room_id"]] = r
-        if best:
-            out.append({**names.event(e["event_id"]), **names.room(best.pop("room_id")), **best})
-    return sorted(out, key=lambda x: -x["jump"])[:TOP]
+        _save_event_shot(s, e["event_id"], e["end"], now)
+    _fill_recent(s, now)
+    remember_pending(s, now)
+    rows = s.all("""SELECT event_id, room_id, jump, left_sec, rank_before, rank_after, point
+                    FROM last_shots WHERE jump > 0 ORDER BY event_end DESC, event_id DESC LIMIT ?""", (SHOT_SHOW,))
+    return [{**names.event(r["event_id"]), **names.room(r["room_id"]), "jump": r["jump"], "left": r["left_sec"],
+             "before": r["rank_before"], "after": r["rank_after"], "point": r["point"]} for r in rows]
 
 
 def _month(now: float) -> str:
