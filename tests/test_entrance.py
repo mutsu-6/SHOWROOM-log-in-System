@@ -83,10 +83,10 @@ async def test_enters_once_per_live_with_current_user_and_greeting():
     await entrance.step()
     # 配信中の a と c に 1 回ずつ入室する。配信していない b には入室しない
     assert entrance.entered == {"a": 10, "c": 30} and len(showroom.sessions) == 2
-    # 配信のたびにそのルームのページを開き、同じ uuid で current_user と greeting を呼ぶ。
+    # 配信のたびにそのルームのページを開き、同じ uuid で live_info (回数) と current_user と greeting を呼ぶ。
     # 最初の入室で uuid をもらい、次のルームでも取り直さない
-    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
-    assert showroom.sessions[1]["asked"] == ["/r/c", "/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
+    assert showroom.sessions[0]["asked"] == ["/r/a", "/api/live/live_info?room_id=5", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
+    assert showroom.sessions[1]["asked"] == ["/r/c", "/api/live/live_info?room_id=7", "/api/live/current_user?room_id=7", "/api/room/greeting?room_id=7"]
     assert showroom.sessions[1]["uuid"] == "u1"
     assert showroom.sessions[1]["referers"][-1] == "https://www.showroom-live.com/r/c"
     assert waits == [] and showroom.sessions[0]["cookies"] == COOKIES
@@ -95,7 +95,7 @@ async def test_enters_once_per_live_with_current_user_and_greeting():
     await entrance.step()
     assert len(showroom.sessions) == 3 and entrance.entered == {"a": 11, "c": 30}
     assert showroom.sessions[2]["uuid"] == "u1"
-    assert showroom.sessions[2]["asked"][0] == "/r/a"
+    assert showroom.sessions[2]["asked"] == ["/r/a", "/api/live/live_info?room_id=5", "/api/live/current_user?room_id=5", "/api/room/greeting?room_id=5"]
 
 
 async def test_stale_uuid_is_renewed_once():
