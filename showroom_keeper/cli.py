@@ -11,7 +11,7 @@ import signal
 from contextlib import suppress
 
 from . import __version__
-from .config import Config, load_dotenv
+from .config import LISTENER_COMMENT_STOPPED, Config, listener_may_comment, load_dotenv
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,6 +72,9 @@ def enable_utf8_line_editing() -> None:
 def send_comment(cfg: Config, text: str, room: str | None) -> int:
     from .comments import enqueue, queue_dir, validate, wait_result
 
+    if not listener_may_comment(cfg):
+        print(f"❌ {LISTENER_COMMENT_STOPPED}")
+        return 1
     try:
         text = validate(text)
     except ValueError as e:

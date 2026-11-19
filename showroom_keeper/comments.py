@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
-from .config import Config
+from .config import LISTENER_COMMENT_STOPPED, Config
 
 log = logging.getLogger("comments")
 
@@ -85,12 +85,14 @@ class CommentDispatcher:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         min_interval: float = MIN_INTERVAL,
+        may_comment: Callable[[], bool] | None = None,
     ):
         self.qdir = qdir
         self.targets = {t.key: t for t in targets}
         self._clock = clock
         self._sleep = sleep
         self.min_interval = min_interval
+        self.may_comment = may_comment
         self._last_post: float | None = None
 
     async def run(self, poll_interval: float = 1.0) -> None:
@@ -112,6 +114,8 @@ class CommentDispatcher:
             _write_json(self.qdir / f"{req_id}.result.json", {"ok": ok, "message": message})
 
     async def _handle(self, data: dict[str, Any]) -> tuple[bool, str]:
+        if self.may_comment is not None and not self.may_comment():
+            return False, LISTENER_COMMENT_STOPPED
         if self._clock() - float(data.get("at", 0)) > REQUEST_TTL:
             return False, "依頼が古いため投稿しませんでした"
         try:

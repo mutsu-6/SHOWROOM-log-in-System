@@ -37,6 +37,12 @@ def test_load_yaml_and_env(tmp_path):
     assert cfg.headless is False
 
 
+def test_listener_comment_stays_off_until_turned_on():
+    assert Config.load(None, env={}).listener_comment is False
+    assert Config.load(None, env={"SHOWROOM_LISTENER_COMMENT": "on"}).listener_comment is True
+    assert Config.load(None, env={"SHOWROOM_LISTENER_COMMENT": "off"}).listener_comment is False
+
+
 def test_env_rooms_override(tmp_path):
     cfg = Config.load(None, env={"SHOWROOM_ROOMS": "x, y"})
     assert cfg.rooms == ["x", "y"]

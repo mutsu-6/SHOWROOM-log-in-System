@@ -15,7 +15,7 @@ from typing import Any
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from .api import BASE_URL, ShowroomAPI, public_get
-from .config import Config, apply_settings, settings_path
+from .config import Config, apply_settings, listener_may_comment, settings_path
 from .comments import CommentDispatcher, queue_dir
 from .entrance import AllRoomsEntrance, RoomEntrance
 from .gift_plan import GiftRunner
@@ -628,7 +628,9 @@ class Keeper:
             self.browser_state = "動作中"
             tasks = [asyncio.create_task(w.run(), name=f"room:{w.key}") for w in watchers]
             # 止める指示を待たず動き続けるので、終了時に取り消す
-            background = [asyncio.create_task(CommentDispatcher(queue_dir(self.cfg), watchers).run(), name="comments")]
+            background = [asyncio.create_task(
+                CommentDispatcher(queue_dir(self.cfg), watchers, may_comment=lambda: listener_may_comment(self.cfg)).run(),
+                name="comments")]
             if self.cfg.enter_all:  # 入室するルーム (enter_rooms) も配信中の一覧から見つかる
                 entrance: RoomEntrance = AllRoomsEntrance(self.cfg.status_poll_interval, api.onlives, ctx.cookies,
                                                           skip=[*self.cfg.rooms, *no_visit], state_dir=Path(self.cfg.state_file).parent)

@@ -12,7 +12,7 @@ from . import comment_counts, live_events
 from .api import RoomStatus
 from .activity import ActivityTracker, parse_frame
 from .gifts import record_gift
-from .config import Config
+from .config import LISTENER_COMMENT_STOPPED, Config, listener_may_comment
 from .status import write_live_stat
 
 # 動画要素の状態を返しつつ、止まっていたら(ミュートで)再生を再開する
@@ -248,10 +248,13 @@ class RoomWatcher:
 
     @property
     def can_comment(self) -> bool:
-        return self._page_alive() and bool(self.status and self.status.is_live) and not self.blocked
+        return (listener_may_comment(self.cfg) and self._page_alive()
+                and bool(self.status and self.status.is_live) and not self.blocked)
 
     async def post_comment(self, text: str) -> tuple[bool, str]:
         """開いている配信ページのコメント欄から投稿し、コメント履歴で反映を確認する。"""
+        if not listener_may_comment(self.cfg):
+            return False, LISTENER_COMMENT_STOPPED
         if not self._page_alive() or not (self.status and self.status.is_live):
             return False, "配信中のページが開いていません"
         if self.blocked:

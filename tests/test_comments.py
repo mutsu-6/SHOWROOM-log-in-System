@@ -77,6 +77,27 @@ async def test_requires_room_when_multiple(tmp_path):
     assert result(tmp_path, b)["ok"] and t2.posted == ["hi"] and t1.posted == []
 
 
+def test_cli_listener_comment_off_does_not_enqueue(tmp_path, capsys):
+    from showroom_keeper.cli import send_comment
+    from showroom_keeper.config import Config
+
+    cfg = Config(state_file=tmp_path / "s.json")
+    assert send_comment(cfg, "こんにちは", None) == 1
+    assert "リスナーのコメントは止めています" in capsys.readouterr().out
+    assert not (tmp_path / "comments").exists()
+
+
+async def test_listener_comment_off_does_not_call_the_room(tmp_path):
+    clock = Clock()
+    t = Target("room1")
+    d, _ = make(tmp_path, [t], clock)
+    d.may_comment = lambda: False
+    a = enqueue(tmp_path, "こんにちは", room="room1", now=clock.t)
+    await d.process_pending()
+    assert t.posted == []
+    assert result(tmp_path, a) == {"ok": False, "message": "リスナーのコメントは止めています"}
+
+
 async def test_stale_request_is_not_posted(tmp_path):
     clock = Clock()
     t = Target("r1")

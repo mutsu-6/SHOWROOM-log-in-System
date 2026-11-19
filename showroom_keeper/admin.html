@@ -624,7 +624,7 @@ td a.name-link, td a { word-break: break-word; }
     </div>
 
     <div class="sub-panel" data-panel="comment">
-      <p class="sub">開いている配信ページのコメント欄から 1 件ずつ投稿します。投稿と投稿の間は 3 秒以上空きます。</p>
+      <p class="sub">開いている配信ページのコメント欄から 1 件ずつ投稿します。投稿と投稿の間は 3 秒以上空きます。リスナーのコメントを止めている時は送りません。</p>
       <div class="card">
         <div class="row" style="margin-bottom:10px">
           <label for="c-room" style="color:var(--muted)">投稿先</label>
@@ -1051,7 +1051,7 @@ function roomCard(r) {
     <div class="card-foot">
       ${r.started_at && live ? `<span>${tm(r.started_at, true)} 開始</span>` : ""}
       <span class="spacer"></span>
-      <button class="btn small" data-act="comment" data-room="${esc(r.key)}" ${w.can_comment ? "" : "disabled"} title="${w.can_comment ? "" : "配信中のページが開いている時に使えます"}">コメント</button>
+      <button class="btn small" data-act="comment" data-room="${esc(r.key)}" ${w.can_comment ? "" : "disabled"} title="${w.can_comment ? "" : (overview && overview.listener_comment === false ? "リスナーのコメントは止めています" : "配信中のページが開いている時に使えます")}">コメント</button>
       <button class="btn small" data-act="gifts" data-room="${esc(r.key)}">ギフト</button>
     </div>
   </div>`;
@@ -1081,6 +1081,10 @@ $("#c-form").addEventListener("submit", async (ev) => {
   const len = countText();
   if (!text) return;
   if (len > MAX) { toast(`コメントは ${MAX} 文字以内にしてください`); return; }
+  if (overview && overview.listener_comment === false) {
+    toast("リスナーのコメントは止めています");
+    return;
+  }
   const room = $("#c-room").value;
   const li = document.createElement("li");
   li.innerHTML = `<span class="t">${tm(Date.now() / 1000)}</span><span>${esc(text)}</span><span class="m">投稿中…</span>`;
@@ -2555,11 +2559,14 @@ function renderOverview() {
     ? `<div class="chips">${o.recording.map((r) => `<a class="chip" href="#room/${encodeURIComponent(r.room)}" title="${esc(r.source)}">${esc(r.name)}</a>`).join("")}</div>`
     : `<div class="hint">${targets ? "設定したルーム・イベントで配信が始まると、ここに表示されます (2 分ごとに確認)。" : "ギフトだけ記録するルーム・イベントは設定されていません。"}</div>`;
   const sel = $("#c-room"), cur = sel.value;
-  const live = o.rooms.filter((r) => r.watcher && r.watcher.can_comment);
-  sel.innerHTML = live.length ? live.map((r) => `<option value="${esc(r.key)}">${esc(r.name || r.key)}</option>`).join("") : `<option value="">配信中のルームがありません</option>`;
+  const stopped = o.listener_comment === false;
+  const live = stopped ? [] : o.rooms.filter((r) => r.watcher && r.watcher.can_comment);
+  sel.innerHTML = live.length ? live.map((r) => `<option value="${esc(r.key)}">${esc(r.name || r.key)}</option>`).join("")
+    : `<option value="">${stopped ? "リスナーのコメントは止めています" : "配信中のルームがありません"}</option>`;
   if (live.some((r) => r.key === cur)) sel.value = cur;
-  $("#c-send").disabled = !live.length;
-  $("#c-hint").textContent = live.length ? "" : "視聴中のルームで配信が始まると投稿できます。";
+  $("#c-send").disabled = stopped || !live.length;
+  $("#c-text").disabled = stopped;
+  $("#c-hint").textContent = stopped ? "リスナーのコメントは止めています。" : (live.length ? "" : "視聴中のルームで配信が始まると投稿できます。");
   if (!settingsDirty) loadSettings(o.settings);
   if (page.name === "home") renderHomeTiles();
   if (page.name === "notices") renderNotices();

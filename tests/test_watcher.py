@@ -43,7 +43,8 @@ class Clock:
 
 @pytest.fixture
 def env():
-    cfg = Config(rooms=["k"], status_poll_interval=60, health_check_interval=30, stall_threshold=2, periodic_reload_minutes=10)
+    cfg = Config(rooms=["k"], status_poll_interval=60, health_check_interval=30, stall_threshold=2,
+                 periodic_reload_minutes=10, listener_comment=True)
     live = {"v": True}
     pages = []
     clock = Clock()
@@ -308,6 +309,22 @@ async def test_someone_elses_same_comment_does_not_count(env):
     w.comment_echo_wait = 0.05
     ok, msg = await w.post_comment("こんにちは")
     assert not ok and "確認できませんでした" in msg
+
+
+async def test_listener_comment_off_does_not_touch_the_page(env):
+    w, live, pages, clock = env
+    w.cfg.listener_comment = False
+    await w.step()
+    called = []
+
+    async def fill(*a, **k):
+        called.append("fill")
+
+    pages[0].fill = fill
+    assert w.can_comment is False
+    ok, msg = await w.post_comment("こんにちは")
+    assert ok is False and msg == "リスナーのコメントは止めています"
+    assert called == []
 
 
 async def test_post_comment_requires_open_live_page(env):

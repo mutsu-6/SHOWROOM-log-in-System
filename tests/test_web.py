@@ -75,6 +75,7 @@ def test_page_and_overview(admin):
     assert a["watcher"]["state"] == "watching" and a["watcher"]["can_comment"] is True
     assert b["watcher"]["state"] == "waiting" and a["excitement"] == 10
     assert data["settings"] == {"rooms": ["a", "b"], "record_rooms": [], "events": [], "enter_rooms": [], "no_visit_rooms": [], "support_rooms": [], "research_rooms": []}
+    assert data["listener_comment"] is False
 
 
 def test_rejects_other_hosts_and_cross_site_posts(admin):
@@ -120,7 +121,7 @@ def test_password_allows_other_hosts(tmp_path):
 def test_post_comment_waits_for_keeper(tmp_path):
     from showroom_keeper.comments import queue_dir
 
-    cfg = Config(rooms=["a"], state_file=tmp_path / "s.json")
+    cfg = Config(rooms=["a"], state_file=tmp_path / "s.json", listener_comment=True)
     qdir = queue_dir(cfg)
 
     def keeper_side():  # 常駐中の keeper が依頼を拾って結果を書く代わり
@@ -144,6 +145,14 @@ def test_post_comment_waits_for_keeper(tmp_path):
     assert post_comment(FakeKeeper(cfg), "あ" * 51, None)["ok"] is False
     assert post_comment(FakeKeeper(cfg), "誰も受け取らない", None, timeout=0.3)["ok"] is False
     assert not list(qdir.glob("*.req.json"))  # 受け取られなかった依頼は取り消す
+
+
+def test_listener_comment_off_does_not_enqueue(tmp_path):
+    cfg = Config(rooms=["a"], state_file=tmp_path / "s.json")
+    assert cfg.listener_comment is False
+    result = post_comment(FakeKeeper(cfg), "こんにちは", "a", timeout=0.1)
+    assert result == {"ok": False, "message": "リスナーのコメントは止めています"}
+    assert not (tmp_path / "comments").exists()
 
 
 def test_host_is_loopback():

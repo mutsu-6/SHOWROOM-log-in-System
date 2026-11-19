@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import room_parts, selfcheck
-from .config import SETTINGS_KEYS, fold_support, normalize_room_key, save_settings
+from .config import LISTENER_COMMENT_STOPPED, SETTINGS_KEYS, fold_support, listener_may_comment, normalize_room_key, save_settings
 from .status import LOGIN_KEY, fetch, read_live_stats
 
 log = logging.getLogger("web")
@@ -172,6 +172,7 @@ def build_overview(keeper: Any, cache: StatusCache) -> dict[str, Any]:
         "rooms": rooms,
         "recording": recorder.active() if recorder is not None else [],
         "settings": {key: list(getattr(cfg, key)) for key in SETTINGS_KEYS},
+        "listener_comment": listener_may_comment(cfg),
         "password": bool(cfg.web_password),
         "research_pause": _pause_view(),
         "version": _version(),
@@ -267,6 +268,8 @@ def post_comment(keeper: Any, text: str, room: str | None, timeout: float = COMM
     """comment コマンドと同じキューに依頼を置き、keeper の投稿結果を待つ。"""
     from .comments import enqueue, queue_dir, validate
 
+    if not listener_may_comment(keeper.cfg):
+        return {"ok": False, "message": LISTENER_COMMENT_STOPPED}
     try:
         text = validate(text)
     except ValueError as e:

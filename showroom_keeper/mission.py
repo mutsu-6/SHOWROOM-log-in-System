@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .config import listener_may_comment
 from .entrance import Session
 from .status import JST
 
@@ -284,7 +285,7 @@ class MissionRunner:
         missions = flatten(await self._get_json(s, f"/api/mission?room_id={cands[0]['room_id']}"))
         left = views_left(missions)
         text = (self.cfg.mission_comment or "").strip()
-        say = text.lower() not in COMMENT_OFF
+        say = listener_may_comment(self.cfg) and text.lower() not in COMMENT_OFF
         # 新人・きっかけ配信のルームの中にだけ出るミッション (毎日のコメント・期間限定の視聴など) は、そのルームで読む
         need: dict[str, int] = {}  # その種類のルームでコメントする残り
         more: dict[str, int] = {}  # その種類のルームを見る残り (期間限定の視聴)
@@ -369,6 +370,9 @@ class MissionRunner:
             waited += step
 
     async def comment(self, s: Session, room: dict[str, Any], text: str) -> bool:
+        if not listener_may_comment(self.cfg):
+            log.info("リスナーのコメントは止めています")
+            return False
         try:
             answer = json.loads(await asyncio.to_thread(
                 s.post, "/api/live/post_live_comment", {"live_id": room["live_id"], "comment": text, "is_delay": 0}))

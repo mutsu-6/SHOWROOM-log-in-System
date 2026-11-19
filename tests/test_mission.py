@@ -175,7 +175,7 @@ def _runner(tmp_path, now, **cfg):
     sv = SimpleNamespace(level=1, value=0, comment=0, remain=0, login=True, targeted=False, polls={}, calls=[], now=now,
                          new_rooms={2}, new_comments=0, new_remain=1, kik_comments=0)
     base = dict(state_file=tmp_path / "storage_state.json", rooms=["watched"], no_visit_rooms=[], mission_rooms=20,
-                mission_comment="1", mission_times="12:00,21:00", mission_view_seconds=60.0)
+                mission_comment="1", mission_times="12:00,21:00", mission_view_seconds=60.0, listener_comment=True)
     base.update(cfg)
 
     async def sleep(sec):
@@ -294,6 +294,16 @@ async def test_does_nothing_more_when_daily_is_done_and_no_limited_left(tmp_path
     sv.new_comments = 3
     await r.step(mission.parse_times("21:00"))
     assert r.state["views"] == 0 and r.state["done"]
+
+
+async def test_listener_comment_off_views_without_posting(tmp_path):
+    r, sv = _runner(tmp_path, jst(2026, 10, 22, 21, 5).timestamp(), listener_comment=False)
+    await r.step(mission.parse_times("21:00"))
+    assert r.state["views"] == 20
+    assert not any(c[1] == "/api/live/post_live_comment" for c in sv.calls if c[0] == "POST")
+    ok = await r.comment(object(), {"live_id": 1}, "こんにちは")
+    assert ok is False
+    assert not any(c[1] == "/api/live/post_live_comment" for c in sv.calls if c[0] == "POST")
 
 
 async def test_waits_for_the_start_time_and_skips_comment_when_off(tmp_path):

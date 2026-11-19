@@ -84,6 +84,10 @@ class Config:
     mission_auto: bool = True
     mission_rooms: int = 20  # 1 回 (昼か夜) に見るルームの数 (「配信を視聴しよう (1/20)」が済めばそこで終える)
     mission_comment: str = "1"  # コメントのミッションが残っている時だけ、昼と夜に 1 回送る文 (off なら送らない)
+    # ログイン中のアカウント (リスナー) からコメントを送るか。既定は送らない。
+    # 視聴ページのコメント欄、管理画面、comment コマンド、視聴ミッションのコメントを、通信の前で止める。
+    # 送るには SHOWROOM_LISTENER_COMMENT=on
+    listener_comment: bool = False
     mission_times: str = "12:00,21:00"  # 始める時刻 (日本時間)。昼と夜の区切りの中で、この時刻を過ぎたら始める
     mission_view_seconds: float = 60.0
     # ギフトの時間指定 (予約) 投げ (showroom_keeper/gift_plan.py)。管理画面の「ライブ」→「予約投げ」で予約する。
@@ -271,6 +275,14 @@ FALSE_WORDS = {"0", "false", "no", "off"}
 
 def env_key(name: str) -> str:
     return ENV_PREFIX + name.upper()
+
+
+LISTENER_COMMENT_STOPPED = "リスナーのコメントは止めています"
+
+
+def listener_may_comment(cfg: Any) -> bool:
+    """ログイン中のアカウントからコメントを送ってよいか。項目が無い時は送らない。"""
+    return bool(getattr(cfg, "listener_comment", False))
 
 
 def parse_env_value(type_name: str, raw: str) -> Any:
