@@ -497,6 +497,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self._json(explore.event_list(state_dir, q.get("state", "ongoing")))
                 else:
                     self._json(explore.event_detail(state_dir, q.get("event", ""), self._support(q)))
+            elif url.path == "/api/event_chart":  # イベントのページのチャート (ルームを選んだ時だけ読む)
+                from . import event_chart
+
+                self._json(event_chart.event_chart(self._state_dir(), q.get("event", ""), q.get("room") or None,
+                                                   [x for x in q.get("compare", "").split(",") if x], self._support(q)))
             elif url.path == "/api/event_live":
                 from . import live_contrib
 

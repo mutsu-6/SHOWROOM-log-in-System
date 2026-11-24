@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from showroom_keeper import explore, heat, live_contrib, research, research_store, room_analysis as ra, series, sweep
+from showroom_keeper import event_chart, explore, heat, once, live_contrib, research, research_store, room_analysis as ra, series, sweep
 from showroom_keeper.research_store import Store
 
 NOW = time.time()
@@ -122,6 +122,13 @@ def test_room_and_event_pages_do_not_read_whole_tables(traced):
     check(traced, lambda d: explore.room_profiles(d))
     live_contrib.forget()
     check(traced, lambda d: live_contrib.event_live(d, "1", get=lambda p: {}, now=NOW - 12 * DAY, paused=lambda: False))
+
+
+def test_event_chart_reads_by_room_and_by_time(traced):
+    """イベントのチャートは、ルームごとの推移 (主キー) と、時刻ごとの全ルーム (event_progress_at) を数回読むだけ。"""
+    once._done.clear()
+    check(traced, lambda d: event_chart.event_chart(d, "1", room="2", compare=["3", "5"], support=["k4"]))
+    check(traced, lambda d: event_chart.event_chart(d, "2"))
 
 
 def test_saving_does_not_read_whole_tables(traced):

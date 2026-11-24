@@ -4189,7 +4189,7 @@ async function showEvent(id) {
       ${tile("貢献ランキング", `${num(d.rankings)} <small>/ ${num(d.room_total)}</small>`, d.rankings_pending ? `取る予定 ${num(d.rankings_pending)} ルーム` : d.state === "ended" ? "取れる分は取りました" : "終わってから取ります", d.rankings_pending ? "warn" : "")}
       ${tile("推移を残した回数", p.times.length ? `${num(p.times.length)} <small>回</small>` : "—", p.times.length ? `${tm(p.times[0], true).slice(0, 11)} から` : "開催中に 1 時間ごとに残します")}
     </div>
-    ${taikaiBox(d)}<div id="ep-chart"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
+    ${taikaiBox(d)}<div id="ep-chart"></div><div id="ep-trade"></div>${neededPoints(d.needed, d.state)}${eventStrength(d.strength)}${eventDetails(d.details)}`;
   const live = d.state === "ongoing" && d.show_ranking;
   html += `<div class="cols"><div><h3>参加ルームの順位</h3>${eventBlockBar(d)}<div id="ep-rooms-box">${eventRoomsTable(d)}</div></div>
     <div id="ep-contrib-box">${live ? `<h3>貢献者 <small class="muted">今</small></h3>${loadingHtml("SHOWROOM から今の貢献ランキングを読んでいます…")}` : eventContribTable(d)}</div></div>`;
@@ -4207,8 +4207,173 @@ async function showEvent(id) {
     const sub = (d.blocks || []).length ? "線は全体のポイントの多いルームです。ブロックの順位は下の表です" : `今のポイントの多い ${num(series.length)} ルーム (1 時間ごと。終わったイベントは、最後の点が最終結果)`;
     chart.innerHTML = `<div class="charts one"><div class="chart-card wide"><div class="chart-head"><div><b>ポイントの推移</b><div class="chart-sub">${sub}</div></div></div>
       ${lineChart(p.times, series, { width: full })}${chartLegend(series.map((s) => [s.name, s.color]))}</div></div>`;
+    loadEventTrade(d);
   }
 }
+
+/* ------------------------------------------------------------ イベントのチャート (株の取引の画面のような見方。1 時間ごとの推移から作る) */
+const trade = { tf: "1h", room: "", compare: [] };
+const TF = [["1h", "1 時間足"], ["6h", "6 時間足"], ["1d", "日足"]];
+const UP_COLOR = "var(--ok)", DOWN_COLOR = "var(--accent)";
+const signed = (v) => v == null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${num(Math.abs(Math.round(v)))}`;
+const ratioText = (v) => v == null ? "—" : `${v.toFixed(v >= 10 ? 0 : 1)} 倍`;
+async function loadEventTrade(d, keep = false) {
+  const box = $("#ep-trade");
+  if (!box) return;
+  const id = page.arg;
+  if (!keep) { trade.room = ""; trade.compare = []; }
+  if (!box.innerHTML) box.innerHTML = loadingHtml("チャートを作っています…");
+  let x;
+  try {
+    x = await api(`/api/event_chart?event=${encodeURIComponent(d.event_id)}&room=${encodeURIComponent(trade.room)}&compare=${encodeURIComponent(trade.compare.join(","))}&support=${encodeURIComponent(currentSupport())}`);
+  } catch (e) { if (page.name === "event" && page.arg === id) box.innerHTML = errorHtml(e); return; }
+  if (page.name !== "event" || page.arg !== id) return;
+  if (!x.found || !x.room) { box.innerHTML = ""; return; }
+  trade.room = String(x.room.room_id);
+  trade.data = x;
+  renderEventTrade(x);
+}
+function renderEventTrade(x) {
+  const box = $("#ep-trade");
+  const st = x.stats, me = x.room;
+  const full = Math.max(260, (box.clientWidth || 720) - 30);
+  const opts = x.movers.map((m) => `<option value="${esc(m.room_id)}"${m.room_id === me.room_id ? " selected" : ""}>${esc(m.rank ? `${m.rank} 位 ` : "")}${esc(m.name)}</option>`).join("");
+  const addOpts = `<option value="">ルームを重ねる…</option>` + x.movers.filter((m) => m.room_id !== me.room_id && !trade.compare.includes(String(m.room_id)))
+    .map((m) => `<option value="${esc(m.room_id)}">${esc(m.rank ? `${m.rank} 位 ` : "")}${esc(m.name)}</option>`).join("");
+  const chips = trade.compare.map((rid) => { const m = x.movers.find((y) => String(y.room_id) === rid); return m ? `<span class="tag">${esc(m.name)} <a href="#" data-trade-drop="${esc(rid)}" title="外す">×</a></span>` : ""; }).join(" ");
+  const tf = `<div class="seg" role="group">${TF.map(([k, l]) => `<button type="button" class="${trade.tf === k ? "active" : ""}" aria-pressed="${trade.tf === k}" data-trade-tf="${k}">${l}</button>`).join("")}</div>`;
+  const ratioCls = st.ratio == null ? "" : st.ratio >= 1.5 ? "ok" : st.ratio < 0.67 ? "warn" : "";
+  const rankMove = st.rank_change ? `<span style="color:${st.rank_change > 0 ? UP_COLOR : DOWN_COLOR}">${st.rank_change > 0 ? "↑" : "↓"}${num(Math.abs(st.rank_change))}</span>` : "";
+  const recentH = x.recent.from ? Math.round((x.recent.to - x.recent.from) / 3600) : null;
+  const tiles = `<div class="tiles">
+      ${tile("今", `${num(st.point)} <small>pt</small>`, `${num(st.rank)} 位 / ${num(st.rooms)} ${rankMove} ・ ${tm(st.at, true)} の記録`)}
+      ${tile(`直近 ${recentH ?? 6} 時間`, st.gain == null ? "—" : `${signed(st.gain)} <small>pt</small>`, st.rate == null ? "前の記録がありません" : `1 時間あたり ${num(Math.round(st.rate))} pt`)}
+      ${tile("勢い (前日比)", ratioText(st.ratio), st.base_rate == null ? "前の日の同じ時間帯の記録がありません" : `前の日の同じ時間帯 (1 時間あたり ${num(Math.round(st.base_rate))} pt) と比べて`, ratioCls)}
+      ${st.above_gap != null ? tile("1 つ上との差", `${num(st.above_gap)} <small>pt</small>`, st.need_rate != null ? `抜くには 1 時間あたり ${num(Math.round(st.need_rate))} pt <span class="tag" title="上のルームが直近のペースのまま続けた場合の計算です">予測</span>` : "") : ""}
+      ${st.below_gap != null ? tile("1 つ下との差", `${num(st.below_gap)} <small>pt</small>`, "") : ""}
+      ${st.projected != null ? tile("このペースの最終", `${shortNum(Math.round(st.projected))} <small>pt</small>`, `<span class="tag" title="直近 ${recentH ?? 6} 時間のペースが残り ${Math.round(st.hours_left)} 時間そのまま続いた場合です。終盤の追い上げは入っていません">予測</span> 残り ${Math.round(st.hours_left)} 時間`) : ""}
+    </div>`;
+  const bars = x.bars[trade.tf] || [];
+  const gapNote = x.thinned ? "終わって 7 日たったイベントは、最後の 24 時間を除いて 6 時間ごとに間引いてあります (間引いた所は「観測なし」になります)。" : "";
+  const first = me.first_at ? `最初に記録したのは ${tm(me.first_at, true)} (${num(me.first_point)} pt。それより前の動きは分かりません)。` : "";
+  const lineSeries = x.lines.map((l, i) => ({ name: `${l.name}${l.role === "above" ? " (1 つ上)" : l.role === "below" ? " (1 つ下)" : ""}`,
+    color: l.role === "target" ? "#2f5bd3" : l.role === "above" ? DOWN_COLOR : l.role === "below" ? "#667085" : ROOM_COLORS[i % ROOM_COLORS.length], values: l.points, ranks: l.ranks }));
+  const diffSeries = x.lines.filter((l) => l.role !== "target").map((l) => ({ name: l.role === "above" ? `1 つ上 ${l.name}` : l.role === "below" ? `1 つ下 ${l.name}` : l.name,
+    color: lineSeries[x.lines.indexOf(l)].color, values: l.diff }));
+  box.innerHTML = `<div class="chart-card wide" style="margin:12px 0">
+    <div class="chart-head"><div><b>チャート</b><div class="chart-sub">1 時間ごとの記録から作っています。ポイントは SHOWROOM のイベントのポイントそのまま (倍率は入っています)</div></div></div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"><select id="trade-room" aria-label="見るルーム">${opts}</select>
+      <select id="trade-add" aria-label="重ねるルーム"${trade.compare.length >= 4 ? " disabled" : ""}>${addOpts}</select> ${chips}</div>
+    ${tiles}
+    <div class="charts one">
+      <div class="chart-card wide"><div class="chart-head"><div><b>出来高</b><div class="chart-sub">${trade.tf === "1h" ? "記録と記録のあいだに増えたポイント (1 時間あたり)。線は 24 時間の平均" : `${trade.tf === "6h" ? "6 時間" : "1 日 (日本時間)"}ごとに増えたポイント`}。斜線は観測なし (0 ではありません)</div></div>${tf}</div>
+        ${bars.length ? volumeChart(bars, trade.tf, full) : chartEmpty("増え方を出すには、記録が 2 回以上要ります")}
+        <div class="hint">${first}${gapNote}</div></div>
+      <div class="chart-card wide"><div class="chart-head"><div><b>順位のローソク足</b><div class="chart-sub">日ごと (日本時間) の始め・いちばん良い・いちばん悪い・終わりの順位。ポイントは下がらないので、順位で作っています</div></div></div>
+        ${x.candles.length ? rankCandles(x.candles, full) + chartLegend([["順位が上がった日", UP_COLOR], ["下がった日", DOWN_COLOR], ["変わらない日", "var(--muted)"]]) : chartEmpty("順位の記録がまだありません")}</div>
+      ${diffSeries.length ? `<div class="chart-card wide"><div class="chart-head"><div><b>上下のルームとの差</b><div class="chart-sub">${esc(me.name)} − 相手。0 より下は負けている分。上下は今の順位で決めています (その時々の上下ではありません)</div></div></div>
+        ${signedChart(x.times, diffSeries, full)}${chartLegend(diffSeries.map((s) => [s.name, s.color]))}</div>` : ""}
+      <div class="chart-card wide"><div class="chart-head"><div><b>ポイントの重ね合わせ</b><div class="chart-sub">記録の無い時刻は線が切れます</div></div></div>
+        ${lineChart(x.times, lineSeries, { width: full })}${chartLegend(lineSeries.map((s) => [s.name, s.color]))}</div>
+    </div>
+    <h3>値上がり率の一覧 <small class="muted">直近 ${recentH ?? 6} 時間の増え方 (今のポイントの多い ${num(x.movers.length)} ルーム)</small></h3>
+    ${dataTable("ep-movers", [
+      { label: "ルーム", value: (m) => m.name, html: (m) => `<a href="#" data-trade-pick="${esc(m.room_id)}">${esc(m.name)}</a>`, cls: "name" },
+      { label: "順位", num: true, value: (m) => m.rank, html: (m) => `${num(m.rank)} 位${m.rank_change ? ` <span class="uid" style="color:${m.rank_change > 0 ? UP_COLOR : DOWN_COLOR}">${m.rank_change > 0 ? "↑" : "↓"}${num(Math.abs(m.rank_change))}</span>` : ""}` },
+      { label: "直近の増え方", num: true, value: (m) => m.gain, html: (m) => m.gain == null ? '<span class="uid" title="前の記録がありません">—</span>' : `<b>${signed(m.gain)}</b>` },
+      { label: "1 時間あたり", num: true, value: (m) => m.rate, html: (m) => m.rate == null ? "—" : num(Math.round(m.rate)) },
+      { label: "前日比", num: true, value: (m) => m.ratio, html: (m) => m.ratio == null ? `<span class="uid" title="${m.base_rate === 0 ? "前の日の同じ時間帯に増えていません" : "前の日の同じ時間帯の記録がありません"}">—</span>` : `<span style="color:${m.ratio >= 1.5 ? UP_COLOR : m.ratio < 0.67 ? DOWN_COLOR : "inherit"}">${ratioText(m.ratio)}</span>` },
+      { label: "pt", num: true, value: (m) => m.point, html: (m) => num(m.point) },
+    ], x.movers, { sort: 2, limit: 20, csvName: `イベント_${x.event_id}_値上がり率`,
+      note: "前日比 = 直近の 1 時間あたり ÷ 前の日の同じ時間帯の 1 時間あたり (夜は少なく夜の配信の時間は多いので、同じ時間帯どうしで比べます)。記録の無いルームは「—」(0 とはしません)。ルームの名前を押すと、上のチャートに出します" })}
+  </div>`;
+}
+function volumeChart(bars, tf, width) {
+  const W = Math.round(width), height = 200, left = 46, right = 8, top = 10, bottom = 22, plot = height - top - bottom, plotW = W - left - right;
+  const val = (b) => tf === "1h" ? b.rate : b.gain;
+  const vals = bars.map(val).filter((v) => v != null);
+  const hi = niceMax(Math.max(1, ...vals, ...(tf === "1h" ? bars.map((b) => b.ma24 || 0) : [])));
+  const lo = Math.min(0, ...vals);
+  const t0 = bars[0].t0, t1 = bars[bars.length - 1].t1, span = Math.max(t1 - t0, 1);
+  const xOf = (t) => left + ((t - t0) / span) * plotW, yOf = (v) => top + plot - ((v - lo) / (hi - lo)) * plot;
+  const grid = [0, 0.5, 1].map((f) => { const v = lo + (hi - lo) * f; return `<line class="${f ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${yOf(v).toFixed(1)}" y2="${yOf(v).toFixed(1)}"></line><text x="${left - 5}" y="${(yOf(v) + 3.5).toFixed(1)}" text-anchor="end">${shortNum(Math.round(v))}</text>`; }).join("");
+  const nLabels = Math.max(2, Math.floor(plotW / 90));
+  const labels = Array.from({ length: nLabels }, (_, i) => t0 + (span * i) / (nLabels - 1))
+    .map((t, i, a) => `<text x="${xOf(t).toFixed(1)}" y="${top + plot + 14}" text-anchor="${i === 0 ? "start" : i === a.length - 1 ? "end" : "middle"}">${esc(day(t).slice(0, tf === "1d" ? 5 : 8))}</text>`).join("");
+  const y0 = yOf(0);
+  const rects = bars.map((b) => {
+    const v = val(b), x0 = xOf(b.t0), x1 = xOf(b.t1), w = Math.max(1, x1 - x0 - (x1 - x0 > 4 ? 1 : 0));
+    const tip = `${tm(b.t0, true)} 〜 ${tm(b.t1, true)}\n${b.gap ? "観測なし (記録の間が空いています。この間のどこで増えたかは分かりません)\n" : ""}${b.partial && !b.gap ? `見た時間 ${b.hours.toFixed(1)} 時間 (区切りの一部だけ)\n` : ""}増えた ${signed(b.gain)} pt${b.rate != null ? ` (1 時間あたり ${num(Math.round(b.rate))})` : ""}${b.drop ? "\n減っています (不正なポイントが引かれたなど)" : ""}`;
+    const y = yOf(Math.max(v || 0, 0)), h = Math.max(0.5, Math.abs(yOf(v || 0) - y0));
+    const fill = b.gap ? "url(#hatch)" : b.drop || (v || 0) < 0 ? DOWN_COLOR : "#2f5bd3";
+    return `<g class="col"><rect x="${x0.toFixed(1)}" y="${((v || 0) < 0 ? y0 : y).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="${fill}" fill-opacity="${b.partial || b.gap ? 0.45 : 0.85}"${b.gap ? ' stroke="var(--muted)" stroke-width=".5"' : ""}></rect>
+      <rect class="hit" data-tip="${esc(tip)}" x="${x0.toFixed(1)}" y="${top}" width="${Math.max(2, x1 - x0).toFixed(1)}" height="${plot}"></rect></g>`;
+  }).join("");
+  let ma = "";
+  if (tf === "1h") {
+    let d = "", pen = false;
+    bars.forEach((b) => { if (b.ma24 == null) { pen = false; return; } d += `${pen ? "L" : "M"}${xOf(b.t1).toFixed(1)},${yOf(b.ma24).toFixed(1)}`; pen = true; });
+    ma = `<path d="${d}" fill="none" stroke="var(--warn)" stroke-width="1.6" pointer-events="none"></path>`;
+  }
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img"><defs><pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="var(--muted)" stroke-width="2"></line></pattern></defs>${grid}${labels}${rects}${ma}</svg>`;
+}
+function rankCandles(cs, width) {
+  const W = Math.round(width), height = 200, left = 46, right = 8, top = 10, bottom = 22, plot = height - top - bottom, plotW = W - left - right;
+  const best = Math.min(...cs.map((c) => c.high)), worst = Math.max(...cs.map((c) => c.low));
+  const lo = Math.max(1, best - 1), hi = worst + 1;
+  const yOf = (r) => top + ((r - lo) / Math.max(hi - lo, 1)) * plot;  // 1 位が上
+  const slot = plotW / cs.length, bw = Math.max(2, Math.min(18, slot * 0.6));
+  const ticks = [...new Set([lo, Math.round((lo + hi) / 2), hi])];
+  const grid = ticks.map((r) => `<line class="grid" x1="${left}" x2="${W - right}" y1="${yOf(r).toFixed(1)}" y2="${yOf(r).toFixed(1)}"></line><text x="${left - 5}" y="${(yOf(r) + 3.5).toFixed(1)}" text-anchor="end">${num(r)} 位</text>`).join("");
+  const every = Math.max(1, Math.ceil(cs.length / Math.max(2, Math.floor(plotW / 50))));
+  const body = cs.map((c, i) => {
+    const cx = left + slot * (i + 0.5), color = c.close < c.open ? UP_COLOR : c.close > c.open ? DOWN_COLOR : "var(--muted)";
+    const y1 = yOf(Math.min(c.open, c.close)), y2 = yOf(Math.max(c.open, c.close));
+    const tip = `${c.day}\n始め ${c.open} 位 → 終わり ${c.close} 位\nいちばん良い ${c.high} 位 / いちばん悪い ${c.low} 位\n記録 ${c.n} 回`;
+    return `<g class="col"><line x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" y1="${yOf(c.high).toFixed(1)}" y2="${yOf(c.low).toFixed(1)}" stroke="${color}" stroke-width="1.2"></line>
+      <rect x="${(cx - bw / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1.5, y2 - y1).toFixed(1)}" fill="${color}"></rect>
+      <rect class="hit" data-tip="${esc(tip)}" x="${(cx - slot / 2).toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plot}"></rect>
+      ${i % every === 0 ? `<text x="${cx.toFixed(1)}" y="${top + plot + 14}" text-anchor="middle">${esc(c.day.slice(5).replace("-", "/"))}</text>` : ""}</g>`;
+  }).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img">${grid}${body}</svg>`;
+}
+function signedChart(times, series, width) {
+  const W = Math.round(width), height = 200, left = 52, right = 8, top = 10, bottom = 22, plot = height - top - bottom, plotW = W - left - right;
+  const all = series.flatMap((s) => s.values.filter((v) => v != null));
+  if (!all.length) return chartEmpty("差を出せる記録がありません");
+  const m = niceMax(Math.max(1, ...all.map(Math.abs)));
+  const lo = Math.min(...all) < 0 ? -m : 0, hi = Math.max(...all) > 0 ? m : 0;
+  const t0 = times[0], span = Math.max(times[times.length - 1] - t0, 1);
+  const xOf = (t) => left + ((t - t0) / span) * plotW, yOf = (v) => top + plot - ((v - lo) / Math.max(hi - lo, 1)) * plot;
+  const grid = [...new Set([lo, 0, hi])].map((v) => `<line class="${v ? "grid" : "axis"}" x1="${left}" x2="${W - right}" y1="${yOf(v).toFixed(1)}" y2="${yOf(v).toFixed(1)}"></line><text x="${left - 5}" y="${(yOf(v) + 3.5).toFixed(1)}" text-anchor="end">${v < 0 ? "−" : v > 0 ? "+" : ""}${shortNum(Math.abs(v))}</text>`).join("");
+  const nLabels = Math.max(2, Math.min(times.length, Math.floor(plotW / 90)));
+  const labels = Array.from({ length: nLabels }, (_, i) => times[Math.round((i * (times.length - 1)) / Math.max(nLabels - 1, 1))]).filter((t, i, a) => a.indexOf(t) === i)
+    .map((t, i, a) => `<text x="${xOf(t).toFixed(1)}" y="${top + plot + 14}" text-anchor="${i === 0 ? "start" : i === a.length - 1 ? "end" : "middle"}">${esc(day(t).slice(0, 8))}</text>`).join("");
+  const lines = series.map((s) => {
+    let d = "", pen = false, prev = null;
+    times.forEach((t, i) => { const v = s.values[i]; if (v == null) { pen = false; return; }
+      if (pen && prev != null && t - prev > (trade.data ? trade.data.gap : 5400)) pen = false;  // 記録の間が空いた所はつながない
+      d += `${pen ? "L" : "M"}${xOf(t).toFixed(1)},${yOf(v).toFixed(1)}`; pen = true; prev = t; });
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"></path>`;
+  }).join("");
+  const slot = plotW / Math.max(times.length, 1);
+  const hits = times.map((t, i) => `<rect class="hit" data-tip="${esc(`${tm(t, true)}\n${series.map((s) => `${s.name}: ${s.values[i] == null ? "記録なし" : `${signed(s.values[i])} pt`}`).join("\n")}`)}" x="${(xOf(t) - slot / 2).toFixed(1)}" y="${top}" width="${slot.toFixed(1)}" height="${plot}"></rect>`).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img">${grid}${labels}${lines}<g class="col">${hits}</g></svg>`;
+}
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest("[data-trade-tf], [data-trade-drop], [data-trade-pick]");
+  if (!a || !trade.data) return;
+  ev.preventDefault();
+  if (a.dataset.tradeTf) { trade.tf = a.dataset.tradeTf; renderEventTrade(trade.data); return; }
+  if (a.dataset.tradeDrop) trade.compare = trade.compare.filter((x) => x !== a.dataset.tradeDrop);
+  if (a.dataset.tradePick) { trade.room = a.dataset.tradePick; trade.compare = trade.compare.filter((x) => x !== trade.room); $("#ep-trade").scrollIntoView({ behavior: "smooth", block: "start" }); }
+  loadEventTrade({ event_id: trade.data.event_id }, true);
+});
+document.addEventListener("change", (ev) => {
+  if (!trade.data) return;
+  if (ev.target.id === "trade-room") { trade.room = ev.target.value; trade.compare = trade.compare.filter((x) => x !== trade.room); loadEventTrade({ event_id: trade.data.event_id }, true); }
+  else if (ev.target.id === "trade-add" && ev.target.value && trade.compare.length < 4) { trade.compare.push(ev.target.value); loadEventTrade({ event_id: trade.data.event_id }, true); }
+});
 
 /* ------------------------------------------------------------ 大会 (段階ごとに別のイベントになっている大きな大会) */
 const SERIES_NOTE = "段階ごとのイベント (予選・準決勝・決勝など) を、名前 (【】の大会の名前が同じか、段階の言葉を除くと似ている。年・第何回がちがえば別)・時期 (前の段階の終わりから 200 日のうち)・参加ルームの重なり (半分以上が同じ大会の前の段階にいた) から自動でまとめています。大会 → 道すじ (本選権#1・SR枠・ラストチャンス など) → 段階 の木の形です。【】の印だけでは、ほかのオーディションの中の枠か大会の本体かを分けられないので、まちがっていたら、イベントのページで手でつないだり外したりしてください";
