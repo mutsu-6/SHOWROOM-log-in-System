@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import catchup, memory
+from . import catchup, memory, packed
 from .gifts import contribution_cache, fetch_catalog, gift_dir, gift_label
 from .schedule import parse_slots, previous_time
 from .status import JST
@@ -182,7 +182,7 @@ def _load_file(path: Path) -> list[dict[str, Any]]:
         return cached[2]
     rows = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in packed.read_text(path).splitlines():  # 終わった月の分 (.gz) も
             try:
                 g = json.loads(line)
             except ValueError:
@@ -727,10 +727,8 @@ def _added(files: dict[str, Path], pos: dict[str, int]) -> set[str]:
 
 
 def _size(path: Path) -> int | None:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return None
+    """表に足した位置とくらべる大きさ (終わった月の分を .gz にしまったあとも、しまう前と同じ通しの大きさ)。"""
+    return packed.size(path)
 
 
 LISTENERS_TTL = 60  # ギフターの一覧 (記録したギフト) を使い回す秒数 (何人もが続けて開いた時に、数え直さない)

@@ -43,7 +43,7 @@ def soon(state_dir: Path) -> bool:
 
 def _run(state_dir: Path, mark: bool = True) -> None:
     global _running
-    from . import explore, listing, search_index, shrink
+    from . import explore, gifts, listing, live_events, packed, search_index, shrink
     from .research_store import Store
 
     try:
@@ -70,6 +70,8 @@ def _run(state_dir: Path, mark: bool = True) -> None:
                 shrink.step(s, memory.holding)  # データを消さずに research.db を小さくする (少しずつ。終われば表を見るだけ)
             except Exception as e:  # noqa: BLE001 - できなくても、次にまた続ける
                 log.warning("research.db を小さくする仕事が進みませんでした: %s", e)
+            # 記録のファイルの終わった月の分を .gz にしまう (別のスレッドで少しずつ。見終えれば、月が変わるまで何もしない)
+            packed.soon([gifts.gift_dir(state_dir), live_events.event_dir(state_dir)], memory.holding)
     except Exception as e:  # noqa: BLE001
         log.debug("新しい分を足せませんでした: %s", e)
     finally:
