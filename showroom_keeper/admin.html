@@ -949,7 +949,7 @@ function dtInner(id) {
   // 表の上の道具 (行が少なく列も少ない表には出さない): 絞り込みと、出す列を選ぶ
   const tools = t.rows.length > 8 || t.cols.length > 4 ? `<div class="dt-tools">
       ${t.rows.length > 8 ? `<input type="search" data-dt-q value="${esc(t.q)}" placeholder="絞り込み (名前・数字など)" aria-label="表を絞り込む">` : ""}
-      ${t.cols.length > 2 ? `<details class="dt-colpick"${t.colOpen ? " open" : ""}><summary class="btn small">列${t.off.size ? ` (${num(t.cols.length - t.off.size)}/${num(t.cols.length)})` : ""}</summary><div class="dt-colmenu">${t.cols.map((c, i) => `<label><input type="checkbox" data-dt-col="${i}"${vis[i] ? " checked" : ""}> ${esc(c.label)}</label>`).join("")}</div></details>` : ""}
+      ${t.cols.length > 4 ? `<details class="dt-colpick"${t.colOpen ? " open" : ""}><summary class="btn small">列${t.off.size ? ` (${num(t.cols.length - t.off.size)}/${num(t.cols.length)})` : ""}</summary><div class="dt-colmenu">${t.cols.map((c, i) => `<label><input type="checkbox" data-dt-col="${i}"${vis[i] ? " checked" : ""}> ${esc(c.label)}</label>`).join("")}</div></details>` : ""}
     </div>` : "";
   const head = t.cols.map((c, i) => !vis[i] ? "" : `<th class="${c.num ? "num " : ""}${minor[i] ? "ph-hide " : ""}${c.sort === false ? "" : "sortable"}${t.sort === i ? " on" : ""}" ${c.sort === false ? "" : `data-dt-sort="${i}" title="クリックで並べ替え"`}>${esc(c.label)}${c.sort === false ? "" : `<span class="arr">${t.sort === i ? (t.desc ? "▼" : "▲") : "↕"}</span>`}</th>`).join("");
   const body = rows.slice(0, t.shown).map((r, n) => `<tr ${t.o.rowAttr ? t.o.rowAttr(r) : ""}>${t.cols.map((c, i) => !vis[i] ? "" : `<td class="${c.num ? "num" : c.cls || ""}${minor[i] ? " ph-hide" : ""}">${c.html ? c.html(r, n) : esc(c.value(r) ?? "")}</td>`).join("")}</tr>`).join("");
