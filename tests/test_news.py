@@ -49,6 +49,65 @@ def test_news_picks_flashy_topics(tmp_path):
     assert topic(out, "top_month")[0]["user_id"] == 7
 
 
+def test_last_shots_keep_older_events_and_a_zero_second_jump(tmp_path):
+    """選んだ日数より前の一気投げも残し、終わる時刻以降の増えは 0 秒前になる。画面は新しい順に 30 件。"""
+    old_end = NOW - 40 * DAY
+    new_end = NOW - 2 * H
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "k1", "name": "ルーム1"}], "archive", NOW)
+        s.upsert_events([
+            {"event_id": 1, "name": "古い回", "start": old_end - 7 * DAY, "end": old_end},
+            {"event_id": 2, "name": "新しい回", "start": new_end - DAY, "end": new_end},
+        ])
+        s.add_final(1, [{"room_id": 1, "point": 100, "rank": 2}], old_end - 30)
+        s.add_final(1, [{"room_id": 1, "point": 180, "rank": 1}], old_end + 10)  # 終了のあと 10 秒 → 0 秒前
+        s.add_final(2, [{"room_id": 1, "point": 10, "rank": 1}], new_end - 20)
+        s.add_final(2, [{"room_id": 1, "point": 15, "rank": 1}], new_end - 5)
+    shots = topic(news.build(tmp_path, 1, now=NOW, use_cache=False), "last_shots")
+    assert [x["event_id"] for x in shots] == [2, 1]
+    assert shots[1]["left"] == 0 and shots[1]["jump"] == 80
+    assert shots[0]["left"] == 5 and shots[0]["jump"] == 5
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT COUNT(*) FROM last_shots WHERE jump > 0") == 2
+
+
+def test_last_shots_show_the_newest_thirty_and_keep_the_rest(tmp_path):
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "k1", "name": "ルーム1"}], "archive", NOW)
+        for i in range(1, 32):
+            end = NOW - (40 - i) * H  # 全部、1 日より前に終わっている
+            s.upsert_events([{"event_id": i, "name": f"回{i}", "start": end - DAY, "end": end}])
+            s.add_final(i, [{"room_id": 1, "point": 1, "rank": 1}], end - 10)
+            s.add_final(i, [{"room_id": 1, "point": 1 + i, "rank": 1}], end - 2)
+    news.build(tmp_path, 1, now=NOW, use_cache=False)  # 開いた時に一部を残す
+    with Store(tmp_path) as s:  # 残りは収集が少しずつ残す
+        while news.remember_pending(s, NOW):
+            pass
+    shots = topic(news.build(tmp_path, 1, now=NOW, use_cache=False), "last_shots")
+    assert len(shots) == 30 and shots[0]["event_id"] == 31 and shots[-1]["event_id"] == 2
+    with Store(tmp_path) as s:
+        assert s.scalar("SELECT COUNT(*) FROM last_shots WHERE jump > 0") == 31
+
+
+def test_sweep_step_saves_a_closed_last_shot(tmp_path):
+    from showroom_keeper import research, sweep
+
+    end = NOW - 2000
+    with Store(tmp_path) as s:
+        s.upsert_rooms([{"room_id": 1, "key": "k1", "name": "ルーム1"}], "archive", NOW)
+        s.upsert_events([{"event_id": 3, "name": "終わった", "start": end - DAY, "end": end}])
+        s.add_final(3, [{"room_id": 1, "point": 10, "rank": 1}], end - 20)
+        s.add_final(3, [{"room_id": 1, "point": 50, "rank": 1}], end)
+        s.set_meta("live_at", NOW)
+        s.set_meta("events_at", NOW)
+    sw = sweep.Sweeper(tmp_path, collector=research.Collector(
+        tmp_path, get=lambda path: {}, throttle=research.Throttle(0.0, sleep=lambda x: None)), scan=False, clock=lambda: NOW)
+    sw.step()
+    with Store(tmp_path) as s:
+        row = s.one("SELECT jump, left_sec FROM last_shots WHERE event_id=3")
+    assert row["jump"] == 40 and row["left_sec"] == 0
+
+
 def test_news_period_and_empty(tmp_path):
     setup(tmp_path)
     assert topic(news.build(tmp_path, 1, now=NOW), "top_fans") == []  # 2 日前に終わったので、1 日には入らない
