@@ -208,17 +208,65 @@ CANDIDATES: dict[str, str] = {
     "freq": "候補: 直近 6 か月で送った月の割合 × 火力",
     "freq_recent": "候補: 送った月の割合 × 最後に見えてからの日数で減らす × 火力",
     "freq_recent_budget": "候補: 送った月の割合 × 日数で減らす × 火力と月の予算の小さい方",
+    # 2026-11-13 の Cursor の提案 (現役の強さ = 直近 12 か月の月ごとの量を、古いほど軽く数えて足す)。重みが半分になる月数を 3 つ並べ、
+    # どれを使うかは開発の期間 (前の月) で決め、確かめる期間 (あとの月) の結果で入れるかを決める (同じ月で選んで同じ月で褒めない)
+    "decay_h1": "候補: 直近 12 か月の月ごとの量を、古いほど軽く足す (1 か月で重み半分)",
+    "decay_h2": "候補: 同じ (2 か月で重み半分)",
+    "decay_h3": "候補: 同じ (3 か月で重み半分)",
+    # ギフター × ルームの採点 (backtest_pair) で、出てきた時の量は直近 3 回の中ほどが火力 (上から 2 番目) より外れが小さかった (2,997 と 10,866)
+    "appear_med3": "候補: 直近 6 か月で送った月の割合 × 直近 3 回の中ほど",
+    # 月の途中の時点 (--day) で、その月に終わったイベントで分かった分を使う (2026-11-13 の M さんの「当月をデータ補正しながら」)。
+    # 月の初め (--day 1) では分かった分が 0 なので、so_far は 0、so_far_month は先月の量、so_far_decay は月ごとの重み付きの平均と同じ
+    "so_far_extrap": "候補: 今月ここまでの量を、月の残りの日数の分だけ伸ばす (何も考えない予測)",
+    "so_far_month": "候補: 今月ここまでの量 + 先月の量 × 月の残りの割合",
+    "so_far_decay": "候補: 今月ここまでの量 + 古いほど軽く数えた月の平均 (1 か月で重み半分) × 月の残りの割合",
 }
+DECAY_MONTHS = 12  # 古いほど軽く足す月数
+DECAY_HALF = {"decay_h1": 1, "decay_h2": 2, "decay_h3": 3}  # 重みが半分になる月数
 
 
-def candidates(st: dict[str, Any], last_month_pt: float, recent90: float, share: float | None, days_since: float | None) -> dict[str, float]:
-    """1 人の候補の値。share は送った月の割合 (分からなければ None)、days_since は最後に見えてからの日数。"""
+def decay_sum(months: dict[int, float], half: float) -> float:
+    """months: {何か月前か (0 = 集め終えたいちばん新しい月): その月の量}。集め終わっていない月は入れないで渡す。"""
+    return sum(v * 0.5 ** (age / half) for age, v in months.items() if 0 <= age < DECAY_MONTHS)
+
+
+def candidates(st: dict[str, Any], last_month_pt: float, recent90: float, share: float | None, days_since: float | None,
+               months: dict[int, float] | None = None, med3: float = 0.0, so_far: float = 0.0, elapsed: float = 0.0) -> dict[str, float]:
+    """1 人の候補の値。share は送った月の割合 (分からなければ None)、days_since は最後に見えてからの日数、
+    months は何か月前 → 月の量 (decay_sum と同じ形)、med3 は直近 3 回 (1 イベント × 1 ルーム) の中ほど、
+    so_far は今月ここまでに終わったイベントの量、elapsed は今月の過ぎた割合 (0〜1)。"""
     fire = float(st.get("fire") or 0)
     hp = float(st.get("hp") or 0)
     p = share or 0.0
     fade = math.exp(-days_since / CAND_RECENT_DAYS) if days_since is not None else 0.0
-    return {"current": float(st.get("overall") or 0), "naive_month": float(last_month_pt), "naive_90": float(recent90),
-            "freq": p * fire, "freq_recent": p * fade * fire, "freq_recent_budget": p * fade * min(fire, hp or fire)}
+    out = {"current": float(st.get("overall") or 0), "naive_month": float(last_month_pt), "naive_90": float(recent90),
+           "freq": p * fire, "freq_recent": p * fade * fire, "freq_recent_budget": p * fade * min(fire, hp or fire),
+           "appear_med3": p * float(med3)}
+    for name, half in DECAY_HALF.items():
+        out[name] = decay_sum(months or {}, half)
+    weights = sum(0.5 ** age for age in (months or {}) if 0 <= age < DECAY_MONTHS)
+    left = max(0.0, 1.0 - elapsed)
+    out["so_far_extrap"] = so_far / elapsed if elapsed > 0 else 0.0
+    out["so_far_month"] = so_far + float(last_month_pt) * left
+    out["so_far_decay"] = so_far + (decay_sum(months or {}, 1) / weights if weights else 0.0) * left
+    return out
+
+
+# 決定力 (2026-11-13 の Cursor の提案): 勝負の回 (event_rounds の battle) で、その人の量が、すぐ下の順位のルームとの差より多かった回。
+# 「その人が出さなければ、ルームの順位が 1 つ下がった」回 (ほかの人が代わりに出さなかったとして。言えるのは過去の事実だけ)。
+# すぐ下のルームが勝負の回の表に無い (残す順位の外) 回は数えない。ブロック分けのイベントは、順位がブロックをまたいで振り直されている
+# おそれがあるので (Cursor の確認待ち)、block の付いたイベントの回の割合も出す
+DECISIVE_SQL = """SELECT c.event_id, c.point, r.point - b.point AS down, COALESCE(i.block, '') != '' AS block
+                  FROM contributions c JOIN event_rounds r ON r.event_id = c.event_id AND r.room_id = c.room_id AND r.battle = 1
+                  JOIN event_rounds b ON b.event_id = r.event_id AND b.rank = r.rank + 1
+                  LEFT JOIN event_info i ON i.event_id = c.event_id
+                  WHERE c.user_id = ? AND c.point > 0 AND c.guessed IS NULL AND r.end > ? AND r.end <= ?"""
+
+
+def decisive(s: Store, uid: int, t0: float, t1: float) -> tuple[int, int, int]:
+    """t0 より後・t1 までに終わった勝負の回のうち、(決め手になった回, 下のルームが分かった勝負の回, そのうち block の付いた回)。"""
+    rows = s.all(DECISIVE_SQL, (uid, t0, t1))
+    return (sum(1 for r in rows if r["down"] is not None and r["point"] > r["down"]), len(rows), sum(1 for r in rows if r["block"]))
 
 
 def auc_counts(pred: dict[int, float], came: dict[int, bool]) -> tuple[float, int]:
@@ -243,18 +291,41 @@ class Cands:
     """候補ごとの採点 (時点をまたいで足す)。"""
 
     def __init__(self) -> None:
-        self.c = {k: {"order": [0, 0], "came_order": [0, 0], "appear": [0.0, 0], "top": [0, 0], "top_once": [0, 0]} for k in CANDIDATES}
+        # month_order・month_came: 次の 1 か月 (T の月) の合計で並べた時の当たり (2026-11-13 に M さんが「その月なら」と聞いた。
+        # 1 回の最大より合計の方がならされる。出さなかった人は 0、month_came は出した人どうし)
+        # month_all: 今月の合計 (月の途中の時点なら、分かった分も入れた月全体)。month_order は、時点のあとに終わった分だけ (残り)
+        self.c = {k: {"order": [0, 0], "came_order": [0, 0], "appear": [0.0, 0], "top": [0, 0], "top_once": [0, 0],
+                      "month_order": [0, 0], "month_came": [0, 0], "month_all": [0, 0]} for k in CANDIDATES}
+        # 次の 30 日の勝負の回で決め手になるか (AUC)。候補のほかに、過去の決定力も並べる
+        self.d = {k: [0.0, 0] for k in (*CANDIDATES, "decisive_past")}
+        self.d_count = {"people": 0, "came": 0, "past_rounds": 0, "past_block": 0}
 
-    def add(self, rows: list[tuple[int, dict[str, float], float, int | None]], seed: int) -> None:
-        """rows: (人, 候補の値, 次の 30 日の 1 イベント × 1 ルームの最大, 量を見た回の数)。"""
-        actual = {u: a for u, _, a, _ in rows}
-        came = {u: a > 0 for u, _, a, _ in rows}
+    def add_decisive(self, rows: list[tuple[int, dict[str, float], bool]], past_rounds: int = 0, past_block: int = 0) -> None:
+        """rows: (人, 候補の値と decisive_past, 次の 30 日に決め手になったか)。"""
+        came = {u: c for u, _, c in rows}
+        for name, sc in self.d.items():
+            agree, total = auc_counts({u: v[name] for u, v, _ in rows}, came)
+            sc[0] += agree
+            sc[1] += total
+        self.d_count["people"] += len(rows)
+        self.d_count["came"] += sum(1 for c in came.values() if c)
+        self.d_count["past_rounds"] += past_rounds
+        self.d_count["past_block"] += past_block
+
+    def add(self, rows: list[tuple[Any, ...]], seed: int) -> None:
+        """rows: (人, 候補の値, 次の 30 日の 1 イベント × 1 ルームの最大, 量を見た回の数[, 時点の月の残りの合計[, その月全体の合計]])。"""
+        actual = {x[0]: x[2] for x in rows}
+        came = {u: a > 0 for u, a in actual.items()}
         came_actual = {u: a for u, a in actual.items() if a > 0}
-        rounds = {u: r for u, _, _, r in rows}
+        rounds = {x[0]: x[3] for x in rows}
+        month = {x[0]: x[4] for x in rows if len(x) > 4}
+        month_came = {u: a for u, a in month.items() if a > 0}
+        month_all = {x[0]: x[5] for x in rows if len(x) > 5}
         k = min(len(rows), max(10, len(rows) // 40))
         for name, sc in self.c.items():
-            pred = {u: v[name] for u, v, _, _ in rows}
-            for key, act in (("order", actual), ("came_order", came_actual)):
+            pred = {x[0]: x[1][name] for x in rows}
+            for key, act in (("order", actual), ("came_order", came_actual), ("month_order", month), ("month_came", month_came),
+                             ("month_all", month_all)):
                 pp = {u: pred[u] for u in act}
                 agree, total = pairs_agree(pp, act) if len(pp) <= 5000 else _pairs_sampled(pp, act, seed)
                 sc[key][0] += agree
@@ -271,8 +342,13 @@ class Cands:
     def result(self) -> dict[str, Any]:
         def rate(x: list[Any]) -> float | None:
             return round(x[0] / x[1], 3) if x[1] else None
-        return {name: {"label": CANDIDATES[name], **{k: rate(v) for k, v in sc.items()}, "n_pairs": sc["order"][1]}
-                for name, sc in self.c.items()}
+        out: dict[str, Any] = {name: {"label": CANDIDATES[name], **{k: rate(v) for k, v in sc.items()}, "n_pairs": sc["order"][1]}
+                               for name, sc in self.c.items()}
+        for name, sc in self.d.items():
+            row = out.setdefault(name, {"label": "決定力 (過去 12 か月に決め手になった回の数)"})
+            row["decisive"], row["decisive_pairs"] = rate(sc), sc[1]
+        out["_decisive"] = dict(self.d_count)
+        return out
 
 
 # ------------------------------------------------------------------ 1 つの時点を採点する
@@ -282,8 +358,9 @@ def _future(full: Store, uid: int, t0: float, t1: float) -> list[Any]:
 
 
 def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 1,
-             scores: dict[str, Score] | None = None, rooms_limit: int | None = None, cands: Cands | None = None) -> dict[str, Score]:
-    """時点 at (月の初め) で予測を作り、そのあとの実際とくらべて scores に足す。"""
+             scores: dict[str, Score] | None = None, rooms_limit: int | None = None, cands: Cands | None = None,
+             extra_cands: tuple[Cands, ...] = ()) -> dict[str, Score]:
+    """時点 at (月の初め) で予測を作り、そのあとの実際とくらべて scores に足す。extra_cands は、候補をほかにも足す入れ物 (開発の期間・確かめる期間の分)。"""
     scores = {k: Score() for k in PREDICTIONS} if scores is None else scores
     month = gifter_analysis.last_month(at)  # at の時に集め終わっていた月
     cur = _add(month, 1)
@@ -304,7 +381,9 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
         phase_rows: list[tuple[str, float, float, float]] = []
         edges: dict[int, int] = {}
         cache: dict[Any, Any] = {}
-        cand_rows: list[tuple[int, dict[str, float], float, int | None]] = []
+        cand_rows: list[tuple[Any, ...]] = []
+        dec_rows: list[tuple[int, dict[str, float], bool]] = []
+        dec_past = [0, 0]
         unk = gifter_status._unknown(past, cache)
         cand_months = [m for m in (_add(month, -k) for k in range(CAND_MONTHS)) if m not in unk]
         for uid in people:
@@ -344,7 +423,22 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
                                           WHERE c.user_id=? AND c.point > 0 AND e.end <= ?""", (uid, at))
                 days = max(0.0, (at - seen_end) / DAY) if seen_end else None
                 r90 = float(sum(r["point"] for r in before if r["end"] > at - 90 * DAY))
-                cand_rows.append((uid, candidates(st, months[month], r90, share, days), float(near_max), st.get("max_out_rounds")))
+                pts = {r["month"]: r["points"] for r in past.all("SELECT month, points FROM user_month WHERE user_id=? AND month>=?",
+                                                                  (uid, _add(month, -(DECAY_MONTHS - 1))))}
+                by_age = {k: float(pts.get(m) or 0) for k in range(DECAY_MONTHS) for m in [_add(month, -k)] if m not in unk}
+                last3 = [r["point"] for r in past.all("""SELECT c.point FROM contributions c JOIN events e USING(event_id)
+                                                         WHERE c.user_id=? AND c.point > 0 AND c.guessed IS NULL AND e.end <= ?
+                                                         ORDER BY e.end DESC LIMIT 3""", (uid, at))]
+                m0, m1 = month_start(cur), month_start(_add(cur, 1))
+                so_far = float(sum(r["point"] for r in before if r["end"] >= m0))
+                vals = candidates(st, months[month], r90, share, days, by_age, median(last3) if last3 else 0.0, so_far, (at - m0) / (m1 - m0))
+                month_total = float(sum(r["point"] for r in fut if r["end"] < m1))  # 時点のあとに終わった分 (月の残り)
+                cand_rows.append((uid, vals, float(near_max), st.get("max_out_rounds"), month_total, so_far + month_total))
+                hit, n_past, n_block = decisive(past, uid, at - 365 * DAY, at)
+                came_dec = decisive(full, uid, at, at + NEAR)[0] > 0
+                dec_rows.append((uid, {**vals, "decisive_past": float(hit)}, came_dec))
+                dec_past[0] += n_past
+                dec_past[1] += n_block
             state_rows.append((st["state"], next3, recent3, usual))
             # 前からある「戦力」(ギフターのページの別のタイル)
             pw = gifter_analysis.power(past, uid, month, at)
@@ -380,7 +474,9 @@ def score_at(state_dir: Path, at: float, sample: int | None = None, seed: int = 
         scores["status_order"].naive[0] += agree
         scores["status_order"].naive[1] += total
         if cands is not None and cand_rows:
-            cands.add(cand_rows, seed)
+            for cs in (cands, *extra_cands):
+                cs.add(cand_rows, seed)
+                cs.add_decisive(dec_rows, *dec_past)
         _score_rooms(past, full, at, scores, rooms_limit)
     gifter_analysis._cuts.clear()
     return scores
@@ -482,15 +578,19 @@ def default_months(now: float, count: int = 3) -> list[str]:
     return [_add(m, -k) for k in range(count - 1, -1, -1)]
 
 
-def run(state_dir: Path, months: Iterable[str], sample: int | None = None, rooms_limit: int | None = None) -> dict[str, Any]:
+def run(state_dir: Path, months: Iterable[str], sample: int | None = None, rooms_limit: int | None = None,
+        dev: Iterable[str] | None = None, day: int = 1) -> dict[str, Any]:
     started = time.time()
     scores: dict[str, Score] = {k: Score() for k in PREDICTIONS}
     cands = Cands()
     months = list(months)
+    dev = set(dev or ())
+    parts = (Cands(), Cands())  # 開発の期間・確かめる期間
     for m in months:
         log.info("採点: %s の初めの時点", m)
-        score_at(Path(state_dir), month_start(m), sample, scores=scores, rooms_limit=rooms_limit, cands=cands)
-    out = {"version": VERSION, "at": time.time(), "seconds": round(time.time() - started), "months": months, "sample": sample,
+        score_at(Path(state_dir), month_start(m) + (day - 1) * DAY, sample, scores=scores, rooms_limit=rooms_limit, cands=cands,
+                 extra_cands=(parts[0 if m in dev else 1],) if dev else ())
+    out = {"version": VERSION, "at": time.time(), "seconds": round(time.time() - started), "months": months, "day": day, "sample": sample,
            "min_n": MIN_N, "predictions": {}}
     for k, (label, claim) in PREDICTIONS.items():
         r = scores[k].result()
@@ -499,6 +599,10 @@ def run(state_dir: Path, months: Iterable[str], sample: int | None = None, rooms
     # 見込み量の式の候補 (画面には出さない。order = 2 人の並び、came_order = 出てきた人どうしの並び、appear = 出てくるかの当たり (AUC)、
     # top = 予測の上から 2.5% (最低 10 人) が実際も上から 2.5% に入った割合、top_once = その上の人のうち、量を見た回が 1 回以下の人の割合)
     out["candidates"] = cands.result()
+    # 開発の期間 (dev の月) と確かめる期間 (それ以外の月) に分けた分。候補は dev で選び、check の結果で入れるかを決める
+    if dev:
+        out["candidates_split"] = {"dev": parts[0].result(), "check": parts[1].result(),
+                                   "dev_months": [m for m in months if m in dev], "check_months": [m for m in months if m not in dev]}
     return out
 
 
@@ -520,10 +624,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sample", type=int, default=None, help="ギフターを何人まで選ぶか (省くと全員。地力は選んだ人だけで足す)")
     p.add_argument("--rooms", type=int, default=None, help="勢いを採点するルームの数の上限")
     p.add_argument("--out", default=None, help="結果の JSON (省くと、写しのフォルダの backtest.json)")
+    p.add_argument("--dev", action="append", help="開発の期間にする月 (--at のうち。残りは確かめる期間)。候補を分けて採点する")
+    p.add_argument("--day", type=int, default=1, help="時点を月の何日にするか (既定 1 = 月の初め。15 なら月の途中で、その月に終わった分を使う)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     months = a.at or default_months(time.time())
-    out = run(Path(a.state_dir), months, a.sample, a.rooms)
+    out = run(Path(a.state_dir), months, a.sample, a.rooms, a.dev, a.day)
     path = Path(a.out) if a.out else Path(a.state_dir) / FILE
     path.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     for k, v in out["predictions"].items():
@@ -531,10 +637,19 @@ def main(argv: list[str] | None = None) -> int:
         if v.get("naive"):
             rate += f" ・ 何も考えない予測 {v['naive']['rate'] * 100:.0f}%"
         print(f"{v['label']}: {rate}")
-    print("見込み量の式の候補 (並び / 出てきた人どうしの並び / 出てくるか / 上の人の重なり / 上の人のうち 1 回だけの人):")
-    for k, v in out["candidates"].items():
-        cells = " / ".join("-" if v[x] is None else f"{v[x] * 100:.0f}%" for x in ("order", "came_order", "appear", "top", "top_once"))
-        print(f"  {v['label']}: {cells}")
+    parts = [("全部の月", out["candidates"])] + [(f"{k} ({'・'.join(out['candidates_split'][k + '_months'])})", out["candidates_split"][k])
+                                                for k in ("dev", "check") if out.get("candidates_split")]
+    for title, cands in parts:
+        print(f"見込み量の式の候補 [{title}] (並び / 出てきた人どうしの並び / 出てくるか / 上の人の重なり / 上の人のうち 1 回だけの人 / 次の勝負で決め手になるか"
+              " / その月の残りの合計の並び / その月の残りの、出した人どうしの並び / その月全体の合計の並び):")
+        for k, v in cands.items():
+            if k.startswith("_"):
+                continue
+            cells = " / ".join("-" if v.get(x) is None else f"{v[x] * 100:.0f}%" for x in ("order", "came_order", "appear", "top", "top_once", "decisive",
+                                                                                     "month_order", "month_came", "month_all"))
+            print(f"  {v['label']}: {cells}")
+        d = cands["_decisive"]
+        print(f"  決め手の数え方: 人 {d['people']} ・ 次の 30 日に決め手になった人 {d['came']} ・ 過去の勝負の回 {d['past_rounds']} (うち block の付いたイベント {d['past_block']})")
     print(f"結果: {path} ({out['seconds']} 秒)")
     return 0
 
